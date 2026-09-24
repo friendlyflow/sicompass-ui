@@ -26,7 +26,7 @@
 /// from this very face through the fallback chain.
 pub const PRIMARY: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fonts/DejaVuSansMono.ttf"
+    "/fonts/DejaVuSansMono.ttf"
 ));
 
 /// Faces tried, in order, for any codepoint [`PRIMARY`] lacks.
@@ -36,7 +36,7 @@ pub const PRIMARY: &[u8] = include_bytes!(concat!(
 /// covered. Add e.g. Noto Sans Mono CJK here to enable it.)
 pub const FALLBACKS: &[&[u8]] = &[include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fonts/DejaVuSans.ttf"
+    "/fonts/DejaVuSans.ttf"
 ))];
 
 /// Color emoji face, rasterised into the separate RGBA atlas.
@@ -53,15 +53,38 @@ pub const FALLBACKS: &[&[u8]] = &[include_bytes!(concat!(
 /// `freetype2 >= 24.3.18`, and otherwise falls back to a vendored `cc` build
 /// that has PNG support switched off. So on Linux, `libfreetype-dev` at build
 /// time and `libfreetype6` at run time are functional requirements, not
-/// leftovers, and both `ci.yml` and `dist-workspace.toml` install them
+/// leftovers, and both sicompass's `ci.yml` and `dist-workspace.toml` install them
 /// deliberately.
 ///
 /// `text::tests::color_atlas_rasterizes_emoji_to_rgba` is what catches a
 /// build that lost it. The symptom otherwise is emoji silently disappearing.
 pub const COLOR_EMOJI: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fonts/NotoColorEmoji.ttf"
+    "/fonts/NotoColorEmoji.ttf"
 ));
+
+/// The license texts of the faces above, as `(file name, text)`.
+///
+/// The fonts are compiled into every binary that links this crate, so every
+/// package of such a binary has to ship these texts. Exposed so that an
+/// embedder can check that the copies it ships are the ones that match what
+/// it links (sicompass does, in `tests/packaging.rs`).
+pub const LICENSES: &[(&str, &str)] = &[
+    (
+        "LICENSE-DejaVu.txt",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fonts/LICENSE-DejaVu.txt"
+        )),
+    ),
+    (
+        "LICENSE-NotoColorEmoji.txt",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fonts/LICENSE-NotoColorEmoji.txt"
+        )),
+    ),
+];
 
 #[cfg(test)]
 mod tests {

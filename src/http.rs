@@ -24,9 +24,7 @@ static BODY_FETCHER: OnceLock<BodyFetcher> = OnceLock::new();
 
 /// Install the HTTP fetcher. Only the first call takes effect, matching
 /// [`sicompass_sdk::register_url_fetcher`].
-pub fn register_body_fetcher(
-    f: impl Fn(&str) -> Result<Vec<u8>, String> + Send + Sync + 'static,
-) {
+pub fn register_body_fetcher(f: impl Fn(&str) -> Result<Vec<u8>, String> + Send + Sync + 'static) {
     let _ = BODY_FETCHER.set(Box::new(f));
 }
 
@@ -34,7 +32,9 @@ pub fn register_body_fetcher(
 pub fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
     match BODY_FETCHER.get() {
         Some(f) => f(url),
-        None => Err(format!("cannot follow {url}: this build has no HTTP client")),
+        None => Err(format!(
+            "cannot follow {url}: this build has no HTTP client"
+        )),
     }
 }
 

@@ -1,18 +1,20 @@
 [package]
-publish = false  # internal crate, never published to crates.io
+# Not on crates.io. sicompass and loginsicompass depend on this repo by git tag
+# (`tag = "vX.Y.Z"`, see the release skill), which is the whole distribution.
+publish = false
 name = "sicompass-ui"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "sicompass-ui — the Vulkan/SDL3 list renderer, shared by the app and the greeter"
-repository = "https://github.com/friendlyflow/sicompass"
+version = "0.2.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "The Vulkan/SDL3 list renderer shared by sicompass and its login greeter"
+repository = "https://github.com/friendlyflow/sicompass-ui"
 authors = ["Nico Verrijdt <nico@friendlyflow.com>"]
 
 # ---------------------------------------------------------------------------
 # Why this crate exists
 # ---------------------------------------------------------------------------
 #
-# The login greeter (`src/loginsicompass`) draws the same lists, in the same
+# The login greeter (loginsicompass) draws the same lists, in the same
 # font, with the same AccessKit tree as the app. Linking the *app* to get them
 # cost 465 crates: wasmtime, a bundled SQLite, a headless-Chromium driver, an
 # IMAP client and an SMTP client, all linked into a login screen and none of
@@ -40,52 +42,76 @@ path = "src/lib.rs"
 # system cannot stop the login screen from starting.
 bundled-sdl3 = ["sdl3/build-from-source-static"]
 
+# The versions below are the ones sicompass's workspace pinned when this crate
+# was split out. Keep them in step with sicompass's `[workspace.dependencies]`,
+# or cargo builds two copies of a crate into the app.
 [dependencies]
-sicompass-sdk = { workspace = true }
-async-trait = { workspace = true }
+sicompass-sdk = "0.8.0"
+async-trait = "0.1"
 
-serde = { workspace = true }
-serde_json = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
-ash = { workspace = true }
-glam = { workspace = true }
+ash = "0.38"
+glam = "0.33"
 
-freetype = { workspace = true }
+# Pinned to 0.7 (freetype-sys 0.20.1): it bundles + builds FreeType from source
+# by default, which is what the Windows release runner needs (no pkg-config, no
+# system freetype). 0.8 pulls freetype-sys 0.23, whose default build needs
+# pkg-config and whose `bundled` feature has a broken libpng/zlib include path
+# on MSVC. Revisit when freetype-sys fixes the bundled build.
+freetype = "0.7"
 
-image = { workspace = true }
-base64 = { workspace = true }
+image = { version = "0.25", features = ["jpeg", "png", "webp"] }
+base64 = "0.23"
 
-sdl3 = { workspace = true }
+sdl3 = "0.18"
 # Pulled in transitively by `sdl3`; declared here so the Windows-only
 # `no-sdl-libc` knob below has something to attach to. Version constraint
 # matches `sdl3`'s own pin so Cargo unifies to one copy.
 sdl3-sys = "0.6.7"
 
-accesskit = { workspace = true }
+accesskit = "0.25"
 
-whatlang = { workspace = true }
+# Language detection: tags each spoken AccessKit node with a BCP-47 language
+# so the screen reader speaks each item in its own language.
+whatlang = "0.18"
 
-unicode-normalization = { workspace = true }
-zeroize = { workspace = true }
+unicode-normalization = "0.1"
+# Wiping a typed password out of the buffers that held it, rather than only
+# setting their length to zero.
+zeroize = "1"
 
-nucleo-matcher = { workspace = true }
+nucleo-matcher = "0.3"
 
-tokio = { workspace = true }
+tokio = { version = "1", features = ["full"] }
 
-tracing = { workspace = true }
+tracing = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-accesskit_unix = { workspace = true }
+accesskit_unix = "0.23"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-accesskit_windows = { workspace = true }
-windows = { workspace = true }
-# See the long note on this same key in `src/sicompass/Cargo.toml`: it must
-# stay Windows-only, because `-DSDL_LIBC=OFF` breaks SDL's own build on Linux.
+accesskit_windows = "0.35"
+windows = { version = "0.62", features = ["Win32_Foundation"] }
+# See the long note on this same key in sicompass's `src/sicompass/Cargo.toml`:
+# it must stay Windows-only, because `-DSDL_LIBC=OFF` breaks SDL's own build on
+# Linux.
 sdl3-sys = { version = "0.6.7", features = ["no-sdl-libc"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-accesskit_macos = { workspace = true }
+accesskit_macos = "0.27"
 
 [dev-dependencies]
-tempfile = { workspace = true }
+tempfile = "3"
+
+# Local override so sicompass-sdk edits in the sibling checkout are picked up
+# immediately.
+#
+# MUST STAY COMMENTED ON MAIN. CI, `nix build` and every repo that pins this
+# one by git tag only see this repo, so a path to a sibling that is not there
+# fails at manifest-parse time. Uncomment while iterating on the SDK, and
+# re-comment before committing.
+#
+# [patch.crates-io]
+# sicompass-sdk = { path = "../sicompass-plugin-sdk" }

@@ -285,10 +285,8 @@ pub fn main_loop(app: &mut AppState) {
         // The queue itself lives on AppState; what to do with its contents is
         // the embedder's business, so the hook reads it back off the renderer.
         if app.renderer.settings_queue.is_some() {
-            let hooks = std::mem::replace(
-                &mut app.renderer.hooks,
-                Box::new(crate::registry::NoHooks),
-            );
+            let hooks =
+                std::mem::replace(&mut app.renderer.hooks, Box::new(crate::registry::NoHooks));
             hooks.apply_pending_settings(&mut app.renderer, false);
             app.renderer.hooks = hooks;
         }
@@ -299,10 +297,8 @@ pub fn main_loop(app: &mut AppState) {
         // FUTURE NOTIFICATION SYSTEM: the banner write inside this call is
         // interim.
         {
-            let hooks = std::mem::replace(
-                &mut app.renderer.hooks,
-                Box::new(crate::registry::NoHooks),
-            );
+            let hooks =
+                std::mem::replace(&mut app.renderer.hooks, Box::new(crate::registry::NoHooks));
             hooks.process_update_events(&mut app.renderer);
             app.renderer.hooks = hooks;
         }

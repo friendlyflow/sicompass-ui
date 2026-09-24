@@ -5150,7 +5150,6 @@ pub fn handle_f5(r: &mut AppRenderer) {
 // Input buffer population
 // ---------------------------------------------------------------------------
 
-
 /// Empty the insert buffer, wiping its bytes first when it held a password.
 ///
 /// `String::clear` only sets the length to zero; the bytes stay in the

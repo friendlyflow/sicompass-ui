@@ -97,7 +97,6 @@ impl Default for AppConfig {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -1996,7 +1995,6 @@ pub struct AppState {
     // ---- Accessibility -----------------------------------------------------
     pub accesskit_adapter: Option<crate::accesskit_sdl::AccessKitAdapter>,
 
-
     // ---- Startup guard -----------------------------------------------------
     /// Set to `true` once the initial `pending_maximized` has been applied.
     /// Window Maximized/Restored events are ignored until then to prevent the
@@ -2093,7 +2091,6 @@ impl AppState {
     pub fn run(&mut self) {
         view::main_loop(self);
     }
-
 }
 
 impl Drop for AppState {

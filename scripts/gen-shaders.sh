@@ -3,7 +3,7 @@
 # Compile shaders/*.{vert,frag} to SPIR-V and refresh the drift checksums.
 #
 # Run this after editing any GLSL source, then commit the regenerated .spv
-# files along with your change. `cargo test -p sicompass` fails if you forget.
+# files along with your change. `cargo test` fails if you forget.
 #
 # The .spv files are committed rather than built by build.rs on purpose:
 #
@@ -32,7 +32,7 @@ if ! command -v glslangValidator >/dev/null 2>&1; then
     exit 1
 fi
 
-# (source, output). The output names are what src/sicompass/src/shaders.rs
+# (source, output). The output names are what src/shaders.rs
 # expects.
 targets=(
     "text.vert:text_vert.spv"
@@ -53,7 +53,7 @@ for t in "${targets[@]}"; do
     echo "  $src -> $out"
 done
 
-# Checksums of the GLSL *sources*. The test in src/sicompass/src/shaders.rs
+# Checksums of the GLSL *sources*. The test in src/shaders.rs
 # recomputes these and fails if a source was edited without rerunning this
 # script. Checksumming the sources rather than the .spv output is deliberate:
 # it catches the mistake we actually care about (stale .spv) without depending

@@ -1,4 +1,4 @@
-//! SPIR-V shader binaries, embedded from `<workspace>/shaders/*.spv`.
+//! SPIR-V shader binaries, embedded from this crate's `shaders/*.spv`.
 //!
 //! These used to be read from `shaders/*.spv` relative to the process working
 //! directory. That made the binary non-relocatable: it only started if it
@@ -11,15 +11,12 @@
 //! [`tests::glsl_sources_match_committed_spirv`] fails if a GLSL source is
 //! edited without rerunning it.
 //!
-//! [`scripts/gen-shaders.sh`]: ../../../../scripts/gen-shaders.sh
+//! [`scripts/gen-shaders.sh`]: ../../scripts/gen-shaders.sh
 
 macro_rules! shader {
     ($name:ident, $file:literal) => {
-        pub const $name: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../shaders/",
-            $file
-        ));
+        pub const $name: &[u8] =
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/shaders/", $file));
     };
 }
 
@@ -86,7 +83,7 @@ mod tests {
     /// glslang producing byte-identical output across versions.
     #[test]
     fn glsl_sources_match_committed_spirv() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shaders");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
         let manifest = std::fs::read_to_string(root.join("CHECKSUMS"))
             .expect("shaders/CHECKSUMS is missing, run scripts/gen-shaders.sh");
 

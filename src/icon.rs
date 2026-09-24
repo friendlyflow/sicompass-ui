@@ -44,8 +44,9 @@ use sdl3::surface::Surface;
 
 /// The identifier the desktop matches against `<name>.desktop`.
 ///
-/// Must stay equal to the basename of `assets/sicompass.desktop` and to the
-/// `Icon=` name inside it. Not the reverse-DNS
+/// Must stay equal to the basename of sicompass's `assets/sicompass.desktop`
+/// and to the `Icon=` name inside it. sicompass's `tests/packaging.rs` checks
+/// that, since the entry is part of its packages, not of this crate. Not the reverse-DNS
 /// `com.friendlyflow.sicompass` used for the macOS bundle and the MSI:
 /// Wayland compositors look for `<app_id>.desktop`, and ours is
 /// `sicompass.desktop`.
@@ -58,14 +59,18 @@ pub const APP_NAME: &str = "Sicompass";
 ///
 /// 256x256 is the size worth embedding: large enough for a HiDPI dock, small
 /// enough (about 8 KB) not to matter, and SDL hands the desktop whatever it
-/// gets and lets the compositor scale. Generated from
-/// `assets/icons/sicompass.svg` by `scripts/gen-icons.sh`.
+/// gets and lets the compositor scale.
 ///
-/// Embedded rather than read from `assets/`, because the whole point is to
-/// have an icon on installs that ship nothing but the executable.
-const ICON_PNG: &[u8] = include_bytes!(concat!(
+/// A copy of sicompass's `assets/icons/256x256.png`, which its
+/// `scripts/gen-icons.sh` generates from `assets/icons/sicompass.svg`.
+/// sicompass's `tests/packaging.rs` fails when the two differ, so a
+/// regenerated icon cannot silently leave the window icon behind.
+///
+/// Embedded rather than read at runtime, because the whole point is to have an
+/// icon on installs that ship nothing but the executable.
+pub const ICON_PNG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/icons/256x256.png"
+    "/assets/icon-256x256.png"
 ));
 
 /// Tell SDL who we are, so the Wayland `app_id` and the X11 `WM_CLASS` are
@@ -141,32 +146,6 @@ mod tests {
         );
     }
 
-    /// `APP_ID` is what the compositor turns into `<APP_ID>.desktop`. If it
-    /// stops matching the shipped entry, the window silently loses its icon
-    /// again on every packaged install.
-    #[test]
-    fn app_id_matches_the_shipped_desktop_entry() {
-        let entry = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/sicompass.desktop"
-        ))
-        .expect("reading assets/sicompass.desktop");
-
-        assert_eq!(
-            entry.lines().find_map(|l| l.strip_prefix("Icon=")),
-            Some(APP_ID),
-            "Icon= must equal APP_ID"
-        );
-        assert_eq!(
-            entry
-                .lines()
-                .find_map(|l| l.strip_prefix("StartupWMClass=")),
-            Some(APP_ID),
-            "StartupWMClass= is what X11 desktops match WM_CLASS against"
-        );
-        assert_eq!(
-            entry.lines().find_map(|l| l.strip_prefix("Name=")),
-            Some(APP_NAME)
-        );
-    }
+    // `app_id_matches_the_shipped_desktop_entry` lives in sicompass's
+    // `tests/packaging.rs`: the entry it reads is part of sicompass's packages.
 }
