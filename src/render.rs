@@ -380,6 +380,15 @@ pub unsafe fn load_vulkan_entry() -> Result<ash::Entry, String> {
 /// buffered output with it.
 pub const CHECK_FILE_ENV: &str = "SICOMPASS_CHECK_FILE";
 
+/// First line of the `--check` report: `<program> <version> (<os> <arch>)`.
+fn check_report_header(program: &str, version: &str) -> String {
+    format!(
+        "{program} {version} ({} {})\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
+}
+
 /// Report what the binary found on this machine: which provider assets resolve,
 /// and whether Vulkan is usable.
 ///
@@ -399,8 +408,13 @@ pub const CHECK_FILE_ENV: &str = "SICOMPASS_CHECK_FILE";
 ///     disk. Buffering the whole report until the end loses exactly the
 ///     information you need when something crashes.
 ///
+/// `program` and `version` head the report. They are the embedder's, passed in
+/// because this crate cannot know them: `env!("CARGO_PKG_VERSION")` here would
+/// be the renderer's own version, which since the split into its own repo is
+/// not the application's.
+///
 /// Returns `EXIT_SUCCESS` (0) or `EXIT_FAILURE` (1).
-pub fn check_runtime_files() -> i32 {
+pub fn check_runtime_files(program: &str, version: &str) -> i32 {
     let out = std::env::var_os(CHECK_FILE_ENV).map(std::path::PathBuf::from);
     // Start clean: a stale file from a previous run would otherwise be read as
     // this run's result.
@@ -416,12 +430,7 @@ pub fn check_runtime_files() -> i32 {
     let mut report = String::new();
     let mut problems = 0;
 
-    report.push_str(&format!(
-        "sicompass {} ({} {})\n",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    ));
+    report.push_str(&check_report_header(program, version));
 
     // ---- Provider assets ----
     //
@@ -1744,6 +1753,19 @@ unsafe extern "system" fn vulkan_debug_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The header names the embedder's program and version, never this
+    /// crate's. Reporting the renderer's version as the app's is exactly what
+    /// happened right after the split into its own repo.
+    #[test]
+    fn check_report_header_names_the_embedders_version() {
+        let header = check_report_header("sicompass", "9.8.7");
+        assert!(
+            header.starts_with("sicompass 9.8.7 ("),
+            "unexpected header: {header:?}"
+        );
+        assert!(header.ends_with(")\n"));
+    }
 
     #[test]
     fn out_of_date_rebuilds_the_swapchain() {
