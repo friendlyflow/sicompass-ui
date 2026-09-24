@@ -7,8 +7,8 @@
 //!
 //! This is deliberately the same shape as
 //! [`sicompass_sdk::url_fetcher`], which solves the same problem one layer up
-//! (there it is `lib_webbrowser` that registers the implementation). What
-//! stays here is the interesting half — deciding whether the body is a
+//! (there a browser plugin renders the page, and answers later). What stays
+//! here is the interesting half — deciding whether the body is a
 //! server-hosted FFON document or an HTML page — because that is a rendering
 //! decision, not a networking one.
 //!

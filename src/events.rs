@@ -403,6 +403,10 @@ pub fn run_provider_ticks(
             dashboard_requests.push((i, req));
         }
     }
+    // Pages a browser plugin rendered for links, answered through its tick.
+    // Already rebuilt in place, so not reported as a tick update: a refresh
+    // of the provider's level would throw the page away again.
+    handlers::apply_rendered_pages(r);
     (active_tick_update, dashboard_requests)
 }
 

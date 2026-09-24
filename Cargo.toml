@@ -115,3 +115,14 @@ tempfile = "3"
 #
 # [patch.crates-io]
 # sicompass-sdk = { path = "../sicompass-plugin-sdk" }
+#
+# Until the 0.2.0 release train publishes sicompass-sdk 0.9.0, the SDK is taken
+# from its git repo at a fixed commit (the page render queue in `url_fetcher`
+# is not on crates.io yet). This one is a *git* patch, which builds anywhere
+# (CI, nix, a fresh checkout), unlike the path patch above that must stay
+# commented. It must be the commit sicompass pins too, so the graph has one
+# SDK. The SDK keeps a 0.8.x version while unreleased, so it still satisfies
+# the `0.8.0` requirement. Remove this block when the pin moves to the
+# published 0.9.0.
+[patch.crates-io]
+sicompass-sdk = { git = "https://github.com/friendlyflow/sicompass-plugin-sdk", rev = "faed1702fbc26c4a4c7ae062e567997916d83cef" }

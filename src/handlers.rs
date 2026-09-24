@@ -495,10 +495,94 @@ pub fn navigate_right_raw(r: &mut AppRenderer) -> bool {
     true
 }
 
-/// Fetch URL content and parse into FFON elements.
-/// Mirrors C's `fetchUrlToElements`.
-fn fetch_url_to_elements(url: &str) -> Vec<FfonElement> {
-    sicompass_sdk::fetch_url_to_ffon(url)
+/// What a followed link shows while a renderer plugin works on its page.
+/// [`apply_rendered_pages`] recognises it to know the link is still waiting.
+pub const LINK_LOADING: &str = "Loading…";
+
+/// Put the pages renderer plugins finished under the links that asked for
+/// them (see [`sicompass_sdk::url_fetcher`]). Returns `true` when the level the
+/// cursor is on changed, after rebuilding its list.
+///
+/// A link is only filled while it still shows [`LINK_LOADING`]: if the user
+/// followed it again, or the tree was rebuilt, the answer has nowhere to go
+/// and is dropped.
+pub fn apply_rendered_pages(r: &mut AppRenderer) -> bool {
+    // Only the pages a link here waits for: another renderer in the process
+    // (a second window, a parallel test) may be waiting for the rest.
+    let mut waiting = Vec::new();
+    collect_waiting_links(&r.ffon, &mut waiting);
+    if waiting.is_empty() {
+        return false;
+    }
+    let pages =
+        sicompass_sdk::url_fetcher::take_rendered_where(|url| waiting.iter().any(|w| w == url));
+    if pages.is_empty() {
+        return false;
+    }
+    let mut filled = Vec::new();
+    for (url, page) in pages {
+        let page = if page.is_empty() {
+            vec![FfonElement::new_str(format!("{url} has no content"))]
+        } else {
+            page
+        };
+        let mut id = IdArray::new();
+        fill_waiting_links(&mut r.ffon, &url, &page, &mut id, &mut filled);
+    }
+    // The cursor stands on a placeholder that was just replaced when its
+    // parent is one of the filled links.
+    let cursor_parent = {
+        let mut p = r.current_id.clone();
+        p.pop();
+        p
+    };
+    if filled.contains(&cursor_parent) {
+        r.current_id.set_last(0);
+        list::create_list_current_layer(r);
+        r.list_index = 0;
+        r.needs_redraw = true;
+        return true;
+    }
+    false
+}
+
+/// The URLs of every `<link>` still showing [`LINK_LOADING`].
+fn collect_waiting_links(elems: &[FfonElement], out: &mut Vec<String>) {
+    for e in elems {
+        let FfonElement::Obj(o) = e else {
+            continue;
+        };
+        let waiting = matches!(o.children.as_slice(), [FfonElement::Str(s)] if s == LINK_LOADING);
+        match tags::extract_link(&o.key) {
+            Some(url) if waiting => out.push(url),
+            _ => collect_waiting_links(&o.children, out),
+        }
+    }
+}
+
+/// Replace the children of every `<link>` to `url` still showing
+/// [`LINK_LOADING`], recording each filled link's id.
+fn fill_waiting_links(
+    elems: &mut [FfonElement],
+    url: &str,
+    page: &[FfonElement],
+    id: &mut IdArray,
+    filled: &mut Vec<IdArray>,
+) {
+    for (i, e) in elems.iter_mut().enumerate() {
+        let FfonElement::Obj(o) = e else {
+            continue;
+        };
+        id.push(i);
+        let waiting = matches!(o.children.as_slice(), [FfonElement::Str(s)] if s == LINK_LOADING);
+        if waiting && tags::extract_link(&o.key).as_deref() == Some(url) {
+            o.children = page.to_vec();
+            filled.push(id.clone());
+        } else {
+            fill_waiting_links(&mut o.children, url, page, id, filled);
+        }
+        id.pop();
+    }
 }
 
 /// Resolve a link URL (provider asset, local file, or HTTP) into FFON elements.
@@ -563,8 +647,23 @@ fn resolve_http_link(url: &str) -> Vec<FfonElement> {
             }
         }
     }
-    // Not FFON — an HTML page. Render it through the Chromium fetcher.
-    fetch_url_to_elements(url)
+    // Not FFON: an HTML page. A browser plugin renders it with Chrome and
+    // answers later (see `apply_rendered_pages`). A renderer compiled into the
+    // app answers at once. Without either, the page's plain HTML is what there
+    // is: no script runs, so a page built by JavaScript shows little.
+    if sicompass_sdk::url_fetcher::request_render(url) {
+        return vec![FfonElement::new_str(LINK_LOADING.to_owned())];
+    }
+    let rendered = sicompass_sdk::fetch_url_to_ffon(url);
+    if !rendered.is_empty() {
+        return rendered;
+    }
+    let page = sicompass_sdk::ffon::html_to_ffon(&body, url);
+    if page.is_empty() {
+        vec![FfonElement::new_str(format!("{url} has no content"))]
+    } else {
+        page
+    }
 }
 
 /// The raw key of the element the cursor is on, when it is an `Obj`.
@@ -8272,6 +8371,63 @@ mod tests {
         // Same outcome as a missing file: `handle_right` sees no children and stays
         // where it is.
         assert!(resolve_link_to_elements("asset:__link_missing/nope.json").is_empty());
+    }
+
+    /// A page a browser plugin rendered lands under the link still waiting
+    /// for it, and the cursor standing on "Loading…" lands on its first row.
+    /// A link that is no longer waiting keeps what it has. One test, because
+    /// the rendered-page queue is global.
+    #[test]
+    fn a_rendered_page_replaces_the_loading_row_under_its_link() {
+        let url = "https://render.example/page";
+        let waiting = |key: &str| {
+            let mut o = FfonElement::new_obj(key);
+            o.as_obj_mut()
+                .unwrap()
+                .push(FfonElement::new_str(LINK_LOADING.to_owned()));
+            o
+        };
+        let mut root = FfonElement::new_obj("notes");
+        root.as_obj_mut()
+            .unwrap()
+            .push(waiting(&format!("<link>{url}</link>the page")));
+        let mut done = FfonElement::new_obj(format!("<link>{url}</link>read already"));
+        done.as_obj_mut()
+            .unwrap()
+            .push(FfonElement::new_str("old text".to_owned()));
+        root.as_obj_mut().unwrap().push(done);
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        r.current_id = {
+            let mut id = IdArray::new();
+            id.push(0);
+            id.push(0);
+            id.push(0);
+            id
+        };
+
+        sicompass_sdk::url_fetcher::deliver_render(
+            url,
+            vec![
+                FfonElement::new_str("Heading".to_owned()),
+                FfonElement::new_str("Body".to_owned()),
+            ],
+        );
+        assert!(apply_rendered_pages(&mut r), "the cursor's level changed");
+
+        let children = |i: usize| -> Vec<String> {
+            r.ffon[0].as_obj().unwrap().children[i]
+                .as_obj()
+                .unwrap()
+                .children
+                .iter()
+                .filter_map(|e| e.as_str().map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(children(0), ["Heading", "Body"]);
+        assert_eq!(children(1), ["old text"], "not waiting, not touched");
+        assert_eq!(r.current_id.last(), Some(0));
+        assert!(!apply_rendered_pages(&mut r), "nothing more arrived");
     }
 
     #[test]
