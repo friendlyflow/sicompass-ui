@@ -4912,6 +4912,11 @@ pub fn handle_save_provider_config(r: &mut AppRenderer) {
 /// to the original provider.
 ///
 /// Mirrors C `handleSaveAsProviderConfig` → `handleFileBrowserSaveAs`.
+/// Save-as and open pick a place through the file browser, which is a
+/// program from the store: said plainly when it is not installed.
+pub const NO_FILE_BROWSER: &str =
+    "Saving and opening a file need the file browser. Install it from the store, under programs.";
+
 pub fn handle_save_as_provider_config(r: &mut AppRenderer) {
     // Record which provider we're saving from, and where to return
     let src_idx = match r.current_id.get(0) {
@@ -4923,7 +4928,7 @@ pub fn handle_save_as_provider_config(r: &mut AppRenderer) {
 
     // Find the filebrowser provider index
     let Some(fb_idx) = r.providers.iter().position(|p| p.name() == "filebrowser") else {
-        r.error_message = "File browser not available".to_owned();
+        r.error_message = NO_FILE_BROWSER.to_owned();
         r.needs_redraw = true;
         return;
     };
@@ -4983,7 +4988,7 @@ pub fn handle_file_browser_open(r: &mut AppRenderer) {
 
     // Find the filebrowser provider index
     let Some(fb_idx) = r.providers.iter().position(|p| p.name() == "filebrowser") else {
-        r.error_message = "File browser not available".to_owned();
+        r.error_message = NO_FILE_BROWSER.to_owned();
         r.needs_redraw = true;
         return;
     };
@@ -11530,6 +11535,9 @@ mod tests {
         handle_save_as_provider_config(&mut r);
         assert!(!r.error_message.is_empty());
         assert!(!r.pending_file_browser_save_as);
+        // It says where the file browser comes from now.
+        assert_eq!(r.error_message, NO_FILE_BROWSER);
+        assert!(NO_FILE_BROWSER.contains("store"));
     }
 
     // -----------------------------------------------------------------------
