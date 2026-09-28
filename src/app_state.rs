@@ -941,6 +941,10 @@ pub struct AppRenderer {
     /// When true the visual output is suppressed (blank screen). Navigation,
     /// FFON state, and AccessKit/screen-reader output continue to work normally.
     pub privacy_blank: bool,
+    /// What the screen reader calls the window: the embedder's `app_id`
+    /// ("sicompass", or "loginsicompass" at the login screen). Set from
+    /// [`AppConfig`] by `init_stack`.
+    pub a11y_name: String,
 
     // ---- Screen reader hand-over --------------------------------------------
     /// Set when a screen reader has just started (by the embedder, or when the
@@ -1185,6 +1189,7 @@ impl AppRenderer {
             pending_announcement: None,
             announcement_parity: false,
             privacy_blank: false,
+            a11y_name: crate::icon::APP_ID.to_owned(),
             a11y_refocus_on_move: false,
             a11y_refocus_now: false,
             a11y_refocus_anchor: None,
@@ -2116,6 +2121,8 @@ impl AppState {
         }
 
         // Initialise accessibility adapter (no-op if no AT is active)
+        // Before the adapter, whose first tree names the window.
+        state.renderer.a11y_name = cfg.app_id.clone();
         state.accesskit_adapter =
             crate::accesskit_sdl::AccessKitAdapter::new(&state.window, &state.renderer);
 

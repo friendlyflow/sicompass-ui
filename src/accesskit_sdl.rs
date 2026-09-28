@@ -501,6 +501,27 @@ fn detect_language(content: &str) -> Option<String> {
 /// ([`speech_content`]) and is what language detection runs on.
 ///
 /// Both are empty when the list is empty.
+/// Whether the focused row is a password field, or one is being edited.
+///
+/// A screen reader that hears the keyboard (Orca, through a compositor's
+/// `org.freedesktop.a11y.KeyboardMonitor`) echoes typed keys by default, and
+/// the only thing that stops it is the focused object having the password-text
+/// role. Without that, typing a password would speak it aloud, letter by
+/// letter. So the row takes that role whenever the cursor is on a
+/// `<password>` row, not only while it is being edited.
+fn focus_is_password(renderer: &AppRenderer) -> bool {
+    if renderer.input_is_password {
+        return true;
+    }
+    let Some(idx) = renderer.current_id.last() else {
+        return false;
+    };
+    sicompass_sdk::ffon::get_ffon_at_id(&renderer.ffon, &renderer.current_id)
+        .and_then(|arr| arr.get(idx))
+        .and_then(|e| e.as_str())
+        .is_some_and(sicompass_sdk::tags::has_password)
+}
+
 fn current_element(renderer: &AppRenderer) -> (String, String) {
     if renderer.total_list.is_empty() {
         return (String::new(), String::new());
@@ -555,7 +576,14 @@ fn build_tree(renderer: &AppRenderer) -> TreeUpdate {
 
     // ---- Single focused element node (mirrors C's ELEMENT_ID) --------------
     let (element_label, element_content) = current_element(renderer);
-    let mut elem = Node::new(Role::ListItem);
+    // A password row is a password field to the screen reader, so that it does
+    // not echo the keys typed into it. See `focus_is_password`.
+    let role = if focus_is_password(renderer) {
+        Role::PasswordInput
+    } else {
+        Role::ListItem
+    };
+    let mut elem = Node::new(role);
     elem.set_label(Box::<str>::from(element_label.as_str()));
     // Speak each item in its own language: auto-detect from the content, fall
     // back to the UI locale when detection isn't reliable. The screen reader
@@ -578,7 +606,7 @@ fn build_tree(renderer: &AppRenderer) -> TreeUpdate {
 
     // ---- Root window node --------------------------------------------------
     let mut root_builder = Node::new(Role::Window);
-    root_builder.set_label(Box::<str>::from("sicompass"));
+    root_builder.set_label(Box::<str>::from(renderer.a11y_name.as_str()));
     root_builder.set_language(ui_locale.clone());
     root_builder.set_children(vec![ELEMENT_ID, ANNOUNCEMENT_ID]);
     nodes.insert(0, (ROOT_ID, root_builder));
@@ -634,7 +662,7 @@ fn build_tree_macos(renderer: &AppRenderer, spoken: &str, spoken_lang: &str) -> 
 
     // ---- Root window node --------------------------------------------------
     let mut root = Node::new(Role::Window);
-    root.set_label(Box::<str>::from("sicompass"));
+    root.set_label(Box::<str>::from(renderer.a11y_name.as_str()));
     root.set_language(ui_locale.clone());
     root.set_children(vec![ELEMENT_ID, ANNOUNCEMENT_ID]);
     nodes.push((ROOT_ID, root));
@@ -979,6 +1007,16 @@ mod tests {
         assert_eq!(ann.1.language(), Some(ui.as_str()));
     }
 
+    /// The login screen is not sicompass, and the screen reader must not call
+    /// it that.
+    #[test]
+    fn build_tree_root_name_is_the_embedders() {
+        let mut r = AppRenderer::new();
+        r.a11y_name = "loginsicompass".to_owned();
+        let tree = build_tree(&r);
+        assert_eq!(tree.nodes[0].1.label(), Some("loginsicompass"));
+    }
+
     #[test]
     fn build_tree_root_name_is_sicompass() {
         let r = AppRenderer::new();
@@ -1042,6 +1080,53 @@ mod tests {
             announced_text(&r).as_deref(),
             Some("insert mode - filename.txt")
         );
+    }
+
+    fn element_role(tree: &TreeUpdate) -> Role {
+        tree.nodes
+            .iter()
+            .find(|(id, _)| *id == ELEMENT_ID)
+            .map(|(_, n)| n.role())
+            .expect("element node")
+    }
+
+    /// Orca echoes typed keys unless the focused object is password text, so a
+    /// password row must be one, even before it is being edited.
+    #[test]
+    fn a_password_row_is_a_password_field_to_the_screen_reader() {
+        use sicompass_sdk::ffon::FfonElement;
+        use sicompass_sdk::tags;
+
+        let mut r = make_renderer_with_list(&["+R User", "-i Password:", "-b Suspend"]);
+        let mut root = FfonElement::new_obj("login".to_owned());
+        let o = root.as_obj_mut().unwrap();
+        o.push(FfonElement::Str("User".to_owned()));
+        o.push(FfonElement::Str(format!(
+            "Password: {}",
+            tags::format_password("")
+        )));
+        o.push(FfonElement::Str(
+            "<button>suspend</button>Suspend".to_owned(),
+        ));
+        r.ffon = vec![root];
+        r.current_id = IdArray::new();
+        r.current_id.push(0);
+
+        r.current_id.push(1);
+        r.list_index = 1;
+        assert_eq!(element_role(&build_tree(&r)), Role::PasswordInput);
+
+        r.current_id.set_last(2);
+        r.list_index = 2;
+        assert_eq!(element_role(&build_tree(&r)), Role::ListItem);
+    }
+
+    #[test]
+    fn a_password_being_edited_is_a_password_field_wherever_the_cursor_is() {
+        let mut r = make_renderer_with_list(&["-i Password:"]);
+        assert_eq!(element_role(&build_tree(&r)), Role::ListItem);
+        r.input_is_password = true;
+        assert_eq!(element_role(&build_tree(&r)), Role::PasswordInput);
     }
 
     #[test]
