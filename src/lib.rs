@@ -26,6 +26,7 @@ pub mod app_state;
 pub mod render;
 pub mod view;
 
+pub mod accessibility;
 pub mod accesskit_sdl;
 pub mod caret;
 pub mod checkmark;

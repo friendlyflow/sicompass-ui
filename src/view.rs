@@ -103,7 +103,7 @@ pub fn main_loop(app: &mut AppState) {
             // accessibility tree is already registered on D-Bus) before making
             // the window visible.  The 400 ms timeout covers the case where no
             // screen reader is running.
-            if let Some(adapter) = app.accesskit_adapter.as_ref() {
+            if let Some(adapter) = app.accesskit_adapter.as_mut() {
                 adapter.wait_for_registration(std::time::Duration::from_millis(400));
             }
             app.window.show();
@@ -513,6 +513,15 @@ pub fn main_loop(app: &mut AppState) {
         // ---- Update accessibility tree (no-op when no AT is active) ---------
         if let Some(adapter) = app.accesskit_adapter.as_mut() {
             adapter.update_if_active(&app.renderer);
+
+            // A screen reader that arrived after the window was shown (the
+            // greeter starts Orca itself, and Orca takes longer to come up than
+            // the registration wait above) has the tree but no focus event, so
+            // it stays silent until the first key press. Give it one.
+            if adapter.take_late_registration() {
+                adapter.update_window_focus(false);
+                adapter.update_window_focus(true);
+            }
 
             // A blocking provider op (e.g. a webbrowser page load) can freeze
             // this loop long enough that a screen reader stops tracking focus on

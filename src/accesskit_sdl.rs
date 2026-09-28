@@ -47,6 +47,11 @@ pub struct AccessKitAdapter {
     /// background thread calls `request_initial_tree` (tree is registered).
     #[cfg(target_os = "linux")]
     registered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// True when the window was shown before any screen reader had asked for
+    /// the tree: the one that arrives later needs a focus event to start
+    /// speaking. See [`take_late_registration`](Self::take_late_registration).
+    #[cfg(target_os = "linux")]
+    awaiting_late_registration: bool,
     #[cfg(target_os = "windows")]
     adapter: accesskit_windows::SubclassingAdapter,
     #[cfg(target_os = "macos")]
@@ -189,6 +194,7 @@ impl AccessKitAdapter {
             return Some(AccessKitAdapter {
                 adapter,
                 registered,
+                awaiting_late_registration: false,
             });
         }
 
@@ -342,17 +348,36 @@ impl AccessKitAdapter {
     /// On non-Linux platforms this is a no-op (Windows/macOS adapters register
     /// synchronously via window subclassing).
     #[allow(unused_variables)]
-    pub fn wait_for_registration(&self, timeout: std::time::Duration) {
+    pub fn wait_for_registration(&mut self, timeout: std::time::Duration) {
         #[cfg(target_os = "linux")]
         {
             let deadline = std::time::Instant::now() + timeout;
             while !self.registered.load(std::sync::atomic::Ordering::Acquire) {
                 if std::time::Instant::now() >= deadline {
+                    self.awaiting_late_registration = true;
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
+    }
+
+    /// True exactly once: the first time a screen reader asks for the tree
+    /// after [`wait_for_registration`](Self::wait_for_registration) gave up.
+    ///
+    /// That happens when the screen reader starts after the window does, the
+    /// way the greeter starts Orca, or a user starts one by hand. It attaches
+    /// to the tree but has seen no focus change, so it says nothing until the
+    /// first key press. The caller re-asserts window focus when this fires.
+    pub fn take_late_registration(&mut self) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.awaiting_late_registration
+            && self.registered.load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.awaiting_late_registration = false;
+            return true;
+        }
+        false
     }
 }
 
