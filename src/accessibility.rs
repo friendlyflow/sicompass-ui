@@ -222,6 +222,65 @@ pub struct ScreenReader {
     /// How long [`stop`](Self::stop) lets it take before killing it. Orca gives
     /// itself five seconds to shut down (a `SIGALRM` in `orca.shutdown`).
     grace: std::time::Duration,
+    /// Whether the one started last is listening yet. See
+    /// [`take_ready`](Self::take_ready).
+    watch: Option<std::sync::Arc<ReadyWatch>>,
+}
+
+/// Shared with the thread that waits for a started screen reader to listen.
+#[derive(Default)]
+struct ReadyWatch {
+    ready: std::sync::atomic::AtomicBool,
+    /// Set when it is stopped or replaced, so a watcher for a screen reader
+    /// that is gone gives up.
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+/// The D-Bus name Orca takes once it has started, just before it starts
+/// listening for accessibility events (`dbus_service` in `orca.main`).
+#[cfg(target_os = "linux")]
+const ORCA_SERVICE: &str = "org.gnome.Orca.Service";
+
+/// How long after that name appears Orca is certainly listening. Measured at
+/// about 70 ms (from the name to the last event listener in Orca's debug log);
+/// this leaves a wide margin and is still too short for a person to notice.
+#[cfg(target_os = "linux")]
+const LISTEN_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Wait for the process `pid` to own [`ORCA_SERVICE`], then set `ready`.
+///
+/// Gives up quietly if there is no session bus, if the watch is cancelled, or
+/// after a minute (a screen reader that is not Orca never takes the name).
+#[cfg(target_os = "linux")]
+fn wait_for_orca(pid: u32, watch: &ReadyWatch) {
+    use std::sync::atomic::Ordering;
+    use zbus::blocking::{Connection, fdo::DBusProxy};
+
+    let Ok(conn) = Connection::session() else {
+        return;
+    };
+    let Ok(proxy) = DBusProxy::new(&conn) else {
+        return;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(ORCA_SERVICE) else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        if watch.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        // An error means the name has no owner yet.
+        if proxy.get_connection_unix_process_id(name.clone()).ok() == Some(pid) {
+            std::thread::sleep(LISTEN_GRACE);
+            if !watch.cancelled.load(Ordering::Acquire) {
+                tracing::info!("the screen reader (pid {pid}) is listening");
+                watch.ready.store(true, Ordering::Release);
+            }
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 impl ScreenReader {
@@ -237,7 +296,50 @@ impl ScreenReader {
             args,
             child: None,
             grace: std::time::Duration::from_secs(6),
+            watch: None,
         }
+    }
+
+    /// True exactly once: when the screen reader started last has begun
+    /// listening for accessibility events.
+    ///
+    /// Orca looks for the focused window once, while it starts. At the login
+    /// screen the window is not registered yet, so it finds nothing, and the
+    /// focus event the window sends on registering arrives before Orca listens.
+    /// It then says nothing until a key is pressed. The embedder answers this
+    /// with a window focus toggle (`AppRenderer::a11y_refocus_now`), which
+    /// Orca, listening by then, answers by reading the focused row.
+    ///
+    /// Recognises Orca only, by its D-Bus name owned by the very process this
+    /// started, so an Orca still shutting down does not count. Linux only, like
+    /// the D-Bus it asks.
+    pub fn take_ready(&mut self) -> bool {
+        self.watch
+            .as_ref()
+            .is_some_and(|w| w.ready.swap(false, std::sync::atomic::Ordering::AcqRel))
+    }
+
+    /// Stop waiting for the previous one, if any.
+    fn cancel_watch(&mut self) {
+        if let Some(old) = self.watch.take() {
+            old.cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Wait, on a thread, for the screen reader with this pid to listen.
+    fn watch_for_listening(&mut self, pid: u32) {
+        self.cancel_watch();
+        let watch = std::sync::Arc::new(ReadyWatch::default());
+        self.watch = Some(std::sync::Arc::clone(&watch));
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::thread::Builder::new()
+                .name("screen-reader-ready".into())
+                .spawn(move || wait_for_orca(pid, &watch));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (pid, watch);
     }
 
     /// Change how long [`stop`](Self::stop) waits before killing it.
@@ -302,6 +404,7 @@ impl ScreenReader {
             self.command,
             child.id()
         );
+        self.watch_for_listening(child.id());
         self.child = Some(child);
         Ok(())
     }
@@ -314,6 +417,7 @@ impl ScreenReader {
     /// waits for it to exit (so it leaves no zombie) and kills it if it is still
     /// there after the grace period. Elsewhere than Unix it is killed at once.
     pub fn stop(&mut self) {
+        self.cancel_watch();
         let Some(mut child) = self.child.take() else {
             return;
         };
@@ -353,6 +457,7 @@ impl ScreenReader {
 
     /// Stop it at once, without letting it speak. For shutting down.
     pub fn stop_now(&mut self) {
+        self.cancel_watch();
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -610,6 +715,46 @@ mod tests {
             gone_within(pid, std::time::Duration::from_secs(5)),
             "it must be killed once the grace runs out"
         );
+    }
+
+    /// Only Orca's D-Bus name, owned by the started process, counts as ready.
+    #[test]
+    fn a_screen_reader_that_never_takes_orcas_name_is_never_ready() {
+        let mut sr = sleeper();
+        sr.start().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert!(!sr.take_ready());
+        sr.stop_now();
+    }
+
+    #[test]
+    fn readiness_is_reported_once_and_forgotten_on_stop() {
+        let mut sr = sleeper();
+        sr.start().unwrap();
+        let watch = sr.watch.clone().expect("start watches");
+        watch
+            .ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(sr.take_ready());
+        assert!(!sr.take_ready(), "once");
+
+        watch
+            .ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        sr.stop_now();
+        assert!(watch.cancelled.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!sr.take_ready(), "a stopped screen reader is not ready");
+    }
+
+    #[test]
+    fn a_restart_stops_waiting_for_the_previous_one() {
+        let mut sr = sleeper();
+        sr.start().unwrap();
+        let first = sr.watch.clone().unwrap();
+        sr.stop();
+        sr.start().unwrap();
+        assert!(first.cancelled.load(std::sync::atomic::Ordering::Acquire));
+        sr.stop_now();
     }
 
     #[test]

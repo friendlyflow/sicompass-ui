@@ -952,6 +952,12 @@ pub struct AppRenderer {
     /// set with a window focus toggle, which Orca, listening by then, takes as
     /// "this is the focused object", and every move after that is spoken.
     pub a11y_refocus_on_move: bool,
+    /// Set by the embedder when the screen reader it started is listening
+    /// (`accessibility::ScreenReader::take_ready`). The render loop answers it
+    /// with a window focus toggle at once, so the focused row is read without
+    /// a key press, and disarms `a11y_refocus_on_move`, which is then not
+    /// needed.
+    pub a11y_refocus_now: bool,
     /// Where the cursor was when `a11y_refocus_on_move` was armed, so the loop
     /// can tell when it moves. Maintained by
     /// [`take_refocus_after_move`](Self::take_refocus_after_move) only.
@@ -1180,6 +1186,7 @@ impl AppRenderer {
             announcement_parity: false,
             privacy_blank: false,
             a11y_refocus_on_move: false,
+            a11y_refocus_now: false,
             a11y_refocus_anchor: None,
             tabs: vec![TabSnapshot::nav_only(current_id_clone, String::new())],
             active_tab: 0,
@@ -1751,6 +1758,12 @@ impl AppRenderer {
     /// render loop answers with a window focus toggle. The first call after
     /// arming only records where the cursor is.
     pub fn take_refocus_after_move(&mut self) -> bool {
+        if std::mem::take(&mut self.a11y_refocus_now) {
+            // The screen reader is known to be listening: now, not on a move.
+            self.a11y_refocus_on_move = false;
+            self.a11y_refocus_anchor = None;
+            return true;
+        }
         if !self.a11y_refocus_on_move {
             self.a11y_refocus_anchor = None;
             return false;
@@ -2627,6 +2640,25 @@ mod tests {
 
         r.current_id.set_last(4);
         assert!(!r.take_refocus_after_move(), "only once");
+    }
+
+    #[test]
+    fn a_listening_screen_reader_is_refocused_at_once_and_not_again_on_a_move() {
+        let mut r = AppRenderer::new();
+        r.current_id.push(0);
+        r.current_id.push(2);
+        r.a11y_refocus_on_move = true;
+        assert!(!r.take_refocus_after_move());
+
+        r.a11y_refocus_now = true;
+        assert!(r.take_refocus_after_move(), "without waiting for a move");
+        assert!(!r.a11y_refocus_now);
+
+        r.current_id.set_last(3);
+        assert!(
+            !r.take_refocus_after_move(),
+            "the move-triggered toggle is no longer needed"
+        );
     }
 
     #[test]
