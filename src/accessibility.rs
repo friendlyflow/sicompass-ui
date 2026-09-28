@@ -236,50 +236,60 @@ struct ReadyWatch {
     cancelled: std::sync::atomic::AtomicBool,
 }
 
-/// The D-Bus name Orca takes once it has started, just before it starts
-/// listening for accessibility events (`dbus_service` in `orca.main`).
-#[cfg(target_os = "linux")]
-const ORCA_SERVICE: &str = "org.gnome.Orca.Service";
-
-/// How long after that name appears Orca is certainly listening. Measured at
-/// about 70 ms (from the name to the last event listener in Orca's debug log);
-/// this leaves a wide margin and is still too short for a person to notice.
-#[cfg(target_os = "linux")]
-const LISTEN_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
-
-/// Wait for the process `pid` to own [`ORCA_SERVICE`], then set `ready`.
+/// A socket the screen reader reports "ready" on, in the `sd_notify` protocol.
 ///
-/// Gives up quietly if there is no session bus, if the watch is cancelled, or
-/// after a minute (a screen reader that is not Orca never takes the name).
+/// Orca speaks that protocol to systemd when `NOTIFY_SOCKET` is set: it sends
+/// `READY=1` at the very end of its startup, once it listens for events and has
+/// looked for the focused window. Handing it a socket of ours gets exactly that
+/// moment. (An earlier version guessed from Orca's D-Bus name plus a margin;
+/// at a cold boot Orca was still loading its scripts when the margin ran out.)
+///
+/// Abstract (Linux), so there is no file to clean up. A screen reader other
+/// than Orca ignores the variable, and then simply never reports ready.
 #[cfg(target_os = "linux")]
-fn wait_for_orca(pid: u32, watch: &ReadyWatch) {
-    use std::sync::atomic::Ordering;
-    use zbus::blocking::{Connection, fdo::DBusProxy};
+fn notify_socket() -> std::io::Result<(std::os::unix::net::UnixDatagram, String)> {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixDatagram};
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    let Ok(conn) = Connection::session() else {
-        return;
-    };
-    let Ok(proxy) = DBusProxy::new(&conn) else {
-        return;
-    };
-    let Ok(name) = zbus::names::BusName::try_from(ORCA_SERVICE) else {
-        return;
-    };
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let name = format!(
+        "sicompass-screen-reader-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let socket = UnixDatagram::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes())?)?;
+    // So the thread can notice a cancellation while waiting.
+    socket.set_read_timeout(Some(std::time::Duration::from_millis(250)))?;
+    Ok((socket, format!("@{name}")))
+}
+
+/// Wait on `socket` for `READY=1`, then set `ready`. Gives up when the watch is
+/// cancelled, or after a minute.
+#[cfg(target_os = "linux")]
+fn wait_for_ready(socket: &std::os::unix::net::UnixDatagram, pid: u32, watch: &ReadyWatch) {
+    use std::sync::atomic::Ordering;
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut buf = [0u8; 4096];
     while std::time::Instant::now() < deadline {
         if watch.cancelled.load(Ordering::Acquire) {
             return;
         }
-        // An error means the name has no owner yet.
-        if proxy.get_connection_unix_process_id(name.clone()).ok() == Some(pid) {
-            std::thread::sleep(LISTEN_GRACE);
+        let Ok(n) = socket.recv(&mut buf) else {
+            continue; // the read timeout, most likely
+        };
+        // One datagram may carry several newline-separated assignments.
+        if buf[..n]
+            .split(|b| *b == b'\n')
+            .any(|line| line == b"READY=1")
+        {
             if !watch.cancelled.load(Ordering::Acquire) {
-                tracing::info!("the screen reader (pid {pid}) is listening");
+                tracing::info!("the screen reader (pid {pid}) is ready");
                 watch.ready.store(true, Ordering::Release);
             }
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -304,15 +314,14 @@ impl ScreenReader {
     /// listening for accessibility events.
     ///
     /// Orca looks for the focused window once, while it starts. At the login
-    /// screen the window is not registered yet, so it finds nothing, and the
-    /// focus event the window sends on registering arrives before Orca listens.
-    /// It then says nothing until a key is pressed. The embedder answers this
-    /// with a window focus toggle (`AppRenderer::a11y_refocus_now`), which
-    /// Orca, listening by then, answers by reading the focused row.
+    /// screen the window is often not registered yet, so it finds nothing, and
+    /// the focus event the window sends on registering arrives before Orca
+    /// listens. It then says nothing until a key is pressed. The embedder
+    /// answers this with a window focus toggle (`AppRenderer::a11y_refocus_now`),
+    /// which Orca, ready by then, answers by reading the focused row.
     ///
-    /// Recognises Orca only, by its D-Bus name owned by the very process this
-    /// started, so an Orca still shutting down does not count. Linux only, like
-    /// the D-Bus it asks.
+    /// Orca reports ready over the socket named in `NOTIFY_SOCKET` (see
+    /// [`notify_socket`]). Linux only.
     pub fn take_ready(&mut self) -> bool {
         self.watch
             .as_ref()
@@ -327,19 +336,16 @@ impl ScreenReader {
         }
     }
 
-    /// Wait, on a thread, for the screen reader with this pid to listen.
-    fn watch_for_listening(&mut self, pid: u32) {
+    /// Wait, on a thread, for the screen reader with this pid to report ready
+    /// on `socket`.
+    #[cfg(target_os = "linux")]
+    fn watch_for_ready(&mut self, pid: u32, socket: std::os::unix::net::UnixDatagram) {
         self.cancel_watch();
         let watch = std::sync::Arc::new(ReadyWatch::default());
         self.watch = Some(std::sync::Arc::clone(&watch));
-        #[cfg(target_os = "linux")]
-        {
-            let _ = std::thread::Builder::new()
-                .name("screen-reader-ready".into())
-                .spawn(move || wait_for_orca(pid, &watch));
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = (pid, watch);
+        let _ = std::thread::Builder::new()
+            .name("screen-reader-ready".into())
+            .spawn(move || wait_for_ready(&socket, pid, &watch));
     }
 
     /// Change how long [`stop`](Self::stop) waits before killing it.
@@ -398,13 +404,28 @@ impl ScreenReader {
                 });
             }
         }
+        #[cfg(target_os = "linux")]
+        let notify = match notify_socket() {
+            Ok((socket, name)) => {
+                cmd.env("NOTIFY_SOCKET", name);
+                Some(socket)
+            }
+            Err(e) => {
+                tracing::warn!("no ready socket for the screen reader: {e}");
+                None
+            }
+        };
         let child = cmd.spawn()?;
         tracing::info!(
             "started screen reader {:?} (pid {})",
             self.command,
             child.id()
         );
-        self.watch_for_listening(child.id());
+        self.cancel_watch();
+        #[cfg(target_os = "linux")]
+        if let Some(socket) = notify {
+            self.watch_for_ready(child.id(), socket);
+        }
         self.child = Some(child);
         Ok(())
     }
@@ -717,13 +738,62 @@ mod tests {
         );
     }
 
-    /// Only Orca's D-Bus name, owned by the started process, counts as ready.
+    /// A screen reader that never says it is ready is never ready.
     #[test]
-    fn a_screen_reader_that_never_takes_orcas_name_is_never_ready() {
+    fn a_screen_reader_that_never_reports_is_never_ready() {
         let mut sr = sleeper();
         sr.start().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(600));
         assert!(!sr.take_ready());
+        sr.stop_now();
+    }
+
+    /// The whole path: the socket named in `NOTIFY_SOCKET` reaches the screen
+    /// reader, and `READY=1` sent there is reported once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ready_sent_on_the_notify_socket_is_reported() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr, UnixDatagram};
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("notify-socket");
+        let mut sr = ScreenReader::with_args(
+            "sh",
+            vec![
+                "-c".to_owned(),
+                format!(
+                    "printf %s \"$NOTIFY_SOCKET\" > {}; exec sleep 30",
+                    out.display()
+                ),
+            ],
+        );
+        sr.start().unwrap();
+
+        let mut name = String::new();
+        for _ in 0..200 {
+            name = std::fs::read_to_string(&out).unwrap_or_default();
+            if !name.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let abstract_name = name.strip_prefix('@').expect("an abstract socket name");
+        let tx = UnixDatagram::unbound().unwrap();
+        let addr = SocketAddr::from_abstract_name(abstract_name.as_bytes()).unwrap();
+        // Several assignments in one datagram, as sd_notify allows.
+        tx.send_to_addr(b"STATUS=starting\nREADY=1", &addr).unwrap();
+
+        let mut ready = false;
+        for _ in 0..200 {
+            if sr.take_ready() {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready, "READY=1 must be reported");
+        assert!(!sr.take_ready(), "once");
         sr.stop_now();
     }
 

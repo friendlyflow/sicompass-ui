@@ -2439,7 +2439,6 @@ dependencies = [
  "unicode-normalization",
  "whatlang",
  "windows",
- "zbus",
  "zeroize",
 ]
 
