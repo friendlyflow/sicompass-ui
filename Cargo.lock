@@ -2426,6 +2426,7 @@ dependencies = [
  "freetype",
  "glam",
  "image",
+ "libc",
  "nucleo-matcher",
  "sdl3",
  "sdl3-sys",

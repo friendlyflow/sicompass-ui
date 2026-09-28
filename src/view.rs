@@ -366,7 +366,9 @@ pub fn main_loop(app: &mut AppState) {
             app._video.text_input().stop(&app.window);
         }
         if active_tick_update {
-            crate::events::drain_provider_errors(&mut app.renderer);
+            // Errors are drained after the rebuild below, not here:
+            // `create_list_current_layer` clears the header, so an error
+            // drained first never reached the screen or the screen reader.
             // Detect whether the cursor is parked on a terminal/chat-style
             // `<input></input>` slot. Streaming output (e.g. `ls` results) shifts
             // the trailing input slot's index in the rebuilt FFON; without this
@@ -420,6 +422,7 @@ pub fn main_loop(app: &mut AppState) {
             // what handlers.rs does after notify_button_pressed.
             crate::list::create_list_current_layer(&mut app.renderer);
             app.renderer.sync_list_index_from_current_id();
+            crate::events::drain_provider_errors(&mut app.renderer);
             app.renderer.needs_redraw = true;
         }
 
@@ -455,9 +458,10 @@ pub fn main_loop(app: &mut AppState) {
                     p.clear_needs_refresh();
                 }
             }
-            crate::events::drain_provider_errors(&mut app.renderer);
             crate::provider::refresh_current_directory(&mut app.renderer);
             crate::list::create_list_current_layer(&mut app.renderer);
+            // After the rebuild, which clears the header (see the tick path).
+            crate::events::drain_provider_errors(&mut app.renderer);
 
             // Restore cursor to the same labelled item when possible.
             if let Some(label) = saved_label {
@@ -519,6 +523,14 @@ pub fn main_loop(app: &mut AppState) {
             // the registration wait above) has the tree but no focus event, so
             // it stays silent until the first key press. Give it one.
             if adapter.take_late_registration() {
+                adapter.update_window_focus(false);
+                adapter.update_window_focus(true);
+                // That toggle can land before the screen reader listens for
+                // events (see `a11y_refocus_on_move`); try again on the first
+                // cursor move, when it certainly does.
+                app.renderer.a11y_refocus_on_move = true;
+            }
+            if app.renderer.take_refocus_after_move() {
                 adapter.update_window_focus(false);
                 adapter.update_window_focus(true);
             }

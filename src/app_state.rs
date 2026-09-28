@@ -942,6 +942,21 @@ pub struct AppRenderer {
     /// FFON state, and AccessKit/screen-reader output continue to work normally.
     pub privacy_blank: bool,
 
+    // ---- Screen reader hand-over --------------------------------------------
+    /// Set when a screen reader has just started (by the embedder, or when the
+    /// AccessKit adapter registers late). Orca enables the accessibility bus
+    /// early in its startup and only later starts listening for events, so a
+    /// focus event sent while it comes up is lost, and it is left not knowing
+    /// which object has focus: it then ignores the label changes every cursor
+    /// move makes. The render loop answers the first cursor move after this is
+    /// set with a window focus toggle, which Orca, listening by then, takes as
+    /// "this is the focused object", and every move after that is spoken.
+    pub a11y_refocus_on_move: bool,
+    /// Where the cursor was when `a11y_refocus_on_move` was armed, so the loop
+    /// can tell when it moves. Maintained by
+    /// [`take_refocus_after_move`](Self::take_refocus_after_move) only.
+    pub a11y_refocus_anchor: Option<(IdArray, Coordinate)>,
+
     // ---- Tabs --------------------------------------------------------------
     /// Saved navigation snapshots, one per tab. `tabs[active_tab]` mirrors
     /// the live `current_id` + active provider's path between tab switches.
@@ -1164,6 +1179,8 @@ impl AppRenderer {
             pending_announcement: None,
             announcement_parity: false,
             privacy_blank: false,
+            a11y_refocus_on_move: false,
+            a11y_refocus_anchor: None,
             tabs: vec![TabSnapshot::nav_only(current_id_clone, String::new())],
             active_tab: 0,
             tab_timelines: vec![Timeline::new()],
@@ -1727,6 +1744,30 @@ impl AppRenderer {
             ""
         };
         self.pending_announcement = Some(format!("{text}{sentinel}"));
+    }
+
+    /// True exactly once: on the first cursor move (or mode change) after
+    /// [`a11y_refocus_on_move`](Self::a11y_refocus_on_move) was set, which the
+    /// render loop answers with a window focus toggle. The first call after
+    /// arming only records where the cursor is.
+    pub fn take_refocus_after_move(&mut self) -> bool {
+        if !self.a11y_refocus_on_move {
+            self.a11y_refocus_anchor = None;
+            return false;
+        }
+        let here = (self.current_id.clone(), self.coordinate);
+        match &self.a11y_refocus_anchor {
+            None => {
+                self.a11y_refocus_anchor = Some(here);
+                false
+            }
+            Some(anchor) if *anchor == here => false,
+            Some(_) => {
+                self.a11y_refocus_on_move = false;
+                self.a11y_refocus_anchor = None;
+                true
+            }
+        }
     }
 
     /// If `error_message` holds a new error, announce it via the live region.
@@ -2565,6 +2606,36 @@ mod tests {
     #[test]
     fn task_as_str_paste() {
         assert_eq!(Task::Paste.as_str(), "paste");
+    }
+
+    // --- a11y_refocus_on_move ---
+
+    #[test]
+    fn refocus_fires_once_on_the_first_move_after_arming() {
+        let mut r = AppRenderer::new();
+        r.current_id.push(0);
+        r.current_id.push(2);
+        assert!(!r.take_refocus_after_move(), "not armed");
+
+        r.a11y_refocus_on_move = true;
+        assert!(!r.take_refocus_after_move(), "the first call only records");
+        assert!(!r.take_refocus_after_move(), "no move yet");
+
+        r.current_id.set_last(3);
+        assert!(r.take_refocus_after_move(), "the move fires it");
+        assert!(!r.a11y_refocus_on_move, "and disarms it");
+
+        r.current_id.set_last(4);
+        assert!(!r.take_refocus_after_move(), "only once");
+    }
+
+    #[test]
+    fn a_mode_change_counts_as_a_move() {
+        let mut r = AppRenderer::new();
+        r.a11y_refocus_on_move = true;
+        assert!(!r.take_refocus_after_move());
+        r.coordinate = Coordinate::Insert;
+        assert!(r.take_refocus_after_move());
     }
 
     // --- AppRenderer.error_message ---

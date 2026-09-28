@@ -211,13 +211,17 @@ pub fn apply_display(renderer: &mut AppRenderer, key: &str, value: &str) -> bool
 
 /// A screen reader this process started, and stops again.
 ///
-/// Dropping it stops the screen reader. That matters for the greeter: Orca has
-/// to be gone before greetd hands the display to the user's session, which may
-/// start its own.
+/// [`stop`](Self::stop) asks it to quit, so Orca can say "screen reader off"
+/// first. Dropping it stops the screen reader at once and quietly. That matters
+/// for the greeter: Orca has to be gone before greetd hands the display to the
+/// user's session, which may start its own.
 pub struct ScreenReader {
     command: PathBuf,
     args: Vec<String>,
     child: Option<Child>,
+    /// How long [`stop`](Self::stop) lets it take before killing it. Orca gives
+    /// itself five seconds to shut down (a `SIGALRM` in `orca.shutdown`).
+    grace: std::time::Duration,
 }
 
 impl ScreenReader {
@@ -232,7 +236,14 @@ impl ScreenReader {
             command: command.into(),
             args,
             child: None,
+            grace: std::time::Duration::from_secs(6),
         }
+    }
+
+    /// Change how long [`stop`](Self::stop) waits before killing it.
+    pub fn with_grace(mut self, grace: std::time::Duration) -> Self {
+        self.grace = grace;
+        self
     }
 
     /// True while the process this started is still running.
@@ -266,8 +277,53 @@ impl ScreenReader {
         Ok(())
     }
 
-    /// Stop it, if this started it. Waits for the process so it leaves no zombie.
+    /// Ask it to quit, if this started it, and return at once.
+    ///
+    /// `SIGTERM`, not `SIGKILL`: Orca answers it by saying "screen reader off"
+    /// and shutting down, and killing it outright left a user who had just
+    /// unticked the box in silence, not knowing whether it had worked. A thread
+    /// waits for it to exit (so it leaves no zombie) and kills it if it is still
+    /// there after the grace period. Elsewhere than Unix it is killed at once.
     pub fn stop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let command = self.command.clone();
+        #[cfg(unix)]
+        {
+            // SAFETY: `kill` takes a pid and a signal number and touches no
+            // memory of ours. The pid is our own unreaped child, so it cannot
+            // have been reused for another process.
+            let pid = child.id() as libc::pid_t;
+            if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+                let grace = self.grace;
+                // If the thread cannot be spawned the child goes with it,
+                // already told to quit, and is only left unreaped.
+                let _ = std::thread::Builder::new()
+                    .name("screen-reader-stop".into())
+                    .spawn(move || {
+                        let deadline = std::time::Instant::now() + grace;
+                        while std::time::Instant::now() < deadline {
+                            if let Ok(Some(_)) = child.try_wait() {
+                                tracing::info!("stopped screen reader {command:?}");
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                        tracing::warn!("screen reader {command:?} ignored SIGTERM; killing it");
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    });
+                return;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        tracing::info!("stopped screen reader {command:?}");
+    }
+
+    /// Stop it at once, without letting it speak. For shutting down.
+    pub fn stop_now(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -285,7 +341,7 @@ impl Default for ScreenReader {
 
 impl Drop for ScreenReader {
     fn drop(&mut self) {
-        self.stop();
+        self.stop_now();
     }
 }
 
@@ -473,6 +529,58 @@ mod tests {
         drop(sr);
         // Killed and reaped by `stop`, so the process is gone entirely.
         assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    fn gone_within(pid: u32, limit: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            if !Path::new(&format!("/proc/{pid}")).exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// `stop` asks rather than kills, so Orca can say "screen reader off".
+    /// `sleep` quits on SIGTERM, and the reaper thread then collects it.
+    #[test]
+    fn stop_asks_it_to_quit_and_it_is_reaped() {
+        let mut sr = sleeper().with_grace(std::time::Duration::from_secs(10));
+        sr.start().unwrap();
+        let pid = sr.child.as_ref().unwrap().id();
+        let before = std::time::Instant::now();
+        sr.stop();
+        assert!(
+            before.elapsed() < std::time::Duration::from_millis(500),
+            "stop must not block the render loop"
+        );
+        assert!(!sr.is_running());
+        assert!(
+            gone_within(pid, std::time::Duration::from_secs(3)),
+            "SIGTERM must end it well inside the grace period"
+        );
+    }
+
+    /// A screen reader that hangs on the way out is killed after the grace.
+    #[test]
+    fn one_that_ignores_sigterm_is_killed_after_the_grace() {
+        // An ignored signal stays ignored across exec, so `sleep` itself (same
+        // pid) ignores SIGTERM.
+        let mut sr = ScreenReader::with_args(
+            "sh",
+            vec!["-c".to_owned(), "trap '' TERM; exec sleep 30".to_owned()],
+        )
+        .with_grace(std::time::Duration::from_millis(300));
+        sr.start().unwrap();
+        let pid = sr.child.as_ref().unwrap().id();
+        // Let the shell reach the exec, so the trap is in place.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sr.stop();
+        assert!(
+            gone_within(pid, std::time::Duration::from_secs(5)),
+            "it must be killed once the grace runs out"
+        );
     }
 
     #[test]
