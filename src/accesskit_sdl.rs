@@ -501,25 +501,23 @@ fn detect_language(content: &str) -> Option<String> {
 /// ([`speech_content`]) and is what language detection runs on.
 ///
 /// Both are empty when the list is empty.
-/// Whether the focused row is a password field, or one is being edited.
+/// Whether a password is being typed.
 ///
 /// A screen reader that hears the keyboard (Orca, through a compositor's
 /// `org.freedesktop.a11y.KeyboardMonitor`) echoes typed keys by default, and
 /// the only thing that stops it is the focused object having the password-text
 /// role. Without that, typing a password would speak it aloud, letter by
-/// letter. So the row takes that role whenever the cursor is on a
-/// `<password>` row, not only while it is being edited.
+/// letter.
+///
+/// Only while editing, not while the cursor merely rests on a `<password>`
+/// row: Orca says the role's name ("password text") after the row, which the
+/// row's own "dash i Password:" already makes redundant. Nothing can be typed
+/// into the field outside Insert mode (it is entered with `i`/`a`, through
+/// `populate_input_buffer`, which sets `input_is_password`), and the role
+/// change reaches Orca as `object:property-change:accessible-role` a frame
+/// later, well before a first character can follow.
 fn focus_is_password(renderer: &AppRenderer) -> bool {
-    if renderer.input_is_password {
-        return true;
-    }
-    let Some(idx) = renderer.current_id.last() else {
-        return false;
-    };
-    sicompass_sdk::ffon::get_ffon_at_id(&renderer.ffon, &renderer.current_id)
-        .and_then(|arr| arr.get(idx))
-        .and_then(|e| e.as_str())
-        .is_some_and(sicompass_sdk::tags::has_password)
+    renderer.input_is_password
 }
 
 fn current_element(renderer: &AppRenderer) -> (String, String) {
@@ -1091,9 +1089,10 @@ mod tests {
     }
 
     /// Orca echoes typed keys unless the focused object is password text, so a
-    /// password row must be one, even before it is being edited.
+    /// password being typed must be one. Resting on the row it is a plain row:
+    /// otherwise Orca adds "password text" to what the row already says.
     #[test]
-    fn a_password_row_is_a_password_field_to_the_screen_reader() {
+    fn a_password_row_is_a_password_field_only_while_typed_into() {
         use sicompass_sdk::ffon::FfonElement;
         use sicompass_sdk::tags;
 
@@ -1114,8 +1113,17 @@ mod tests {
 
         r.current_id.push(1);
         r.list_index = 1;
+        assert_eq!(
+            element_role(&build_tree(&r)),
+            Role::ListItem,
+            "resting on the password row, no role name to speak"
+        );
+
+        // Insert mode on it, as `populate_input_buffer` sets up.
+        r.input_is_password = true;
         assert_eq!(element_role(&build_tree(&r)), Role::PasswordInput);
 
+        r.input_is_password = false;
         r.current_id.set_last(2);
         r.list_index = 2;
         assert_eq!(element_role(&build_tree(&r)), Role::ListItem);
