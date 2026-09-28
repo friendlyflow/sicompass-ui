@@ -259,15 +259,44 @@ impl ScreenReader {
         }
     }
 
+    /// How it ended, if it has exited without being stopped. Returned once;
+    /// after that it counts as not running, so `start` can run it again.
+    ///
+    /// For the embedder to log: a screen reader that quits by itself leaves a
+    /// blind user with nothing, and the exit status (a signal, or a code) is
+    /// the only trace of why.
+    pub fn take_unexpected_exit(&mut self) -> Option<std::process::ExitStatus> {
+        let status = self.child.as_mut()?.try_wait().ok()??;
+        self.child = None;
+        Some(status)
+    }
+
     /// Start it, unless it is already running.
     pub fn start(&mut self) -> std::io::Result<()> {
         if self.is_running() {
             return Ok(());
         }
-        let child = Command::new(&self.command)
-            .args(&self.args)
-            .stdin(Stdio::null())
-            .spawn()?;
+        let mut cmd = Command::new(&self.command);
+        cmd.args(&self.args).stdin(Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Its own session, so it has no controlling terminal and is in no
+            // process group but its own. At the login screen everything else
+            // shares the console greetd opened, and a signal meant for that
+            // console or group (SIGINT, SIGTERM) makes Orca shut down, saying
+            // "screen reader off".
+            // SAFETY: `setsid` runs between fork and exec, is async-signal-safe
+            // and touches no memory of ours. It can only fail for a process
+            // group leader, which a freshly forked child never is.
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+        }
+        let child = cmd.spawn()?;
         tracing::info!(
             "started screen reader {:?} (pid {})",
             self.command,
@@ -580,6 +609,58 @@ mod tests {
         assert!(
             gone_within(pid, std::time::Duration::from_secs(5)),
             "it must be killed once the grace runs out"
+        );
+    }
+
+    #[test]
+    fn an_exit_nobody_asked_for_is_reported_once_with_its_status() {
+        let mut sr = ScreenReader::with_args("sh", vec!["-c".to_owned(), "exit 3".to_owned()]);
+        sr.start().unwrap();
+        let mut status = None;
+        for _ in 0..200 {
+            status = sr.take_unexpected_exit();
+            if status.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(status.and_then(|s| s.code()), Some(3));
+        assert_eq!(sr.take_unexpected_exit(), None, "reported once");
+        assert!(!sr.is_running());
+    }
+
+    #[test]
+    fn a_running_screen_reader_has_no_exit_to_report() {
+        let mut sr = sleeper();
+        sr.start().unwrap();
+        assert_eq!(sr.take_unexpected_exit(), None);
+        sr.stop_now();
+    }
+
+    /// Orca must not share the greeter's console or process group.
+    #[test]
+    fn it_runs_in_a_session_of_its_own() {
+        let mut sr = sleeper();
+        sr.start().unwrap();
+        let pid = sr.child.as_ref().unwrap().id();
+        // Field 6 of /proc/<pid>/stat is the session id; after `setsid` it is
+        // the process's own pid.
+        let mut sid = String::new();
+        for _ in 0..100 {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+            // The command name is in parentheses and may hold spaces.
+            let after = &stat[stat.rfind(')').unwrap() + 2..];
+            sid = after.split(' ').nth(3).unwrap().to_owned();
+            if sid == pid.to_string() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        sr.stop_now();
+        assert_eq!(
+            sid,
+            pid.to_string(),
+            "the screen reader leads its own session"
         );
     }
 
