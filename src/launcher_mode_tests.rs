@@ -30,6 +30,19 @@ fn controls() -> Vec<FfonElement> {
     vec![button("power:reboot", "Reboot")]
 }
 
+fn settings() -> Vec<FfonElement> {
+    let mut scheme = FfonElement::new_obj("<radio>color scheme");
+    let o = scheme.as_obj_mut().unwrap();
+    o.push(FfonElement::Str(sicompass_sdk::tags::format_checked(
+        "dark",
+    )));
+    o.push(FfonElement::Str("light".to_owned()));
+    vec![
+        FfonElement::Str(sicompass_sdk::tags::format_checkbox("screen reader")),
+        scheme,
+    ]
+}
+
 impl Provider for Launcher {
     fn name(&self) -> &str {
         "launcher"
@@ -38,6 +51,8 @@ impl Provider for Launcher {
         match self.path.as_str() {
             "/Windows" => windows(),
             "/Controls" => controls(),
+            "/Settings" => settings(),
+            "/Settings/color scheme" => settings()[1].as_obj().unwrap().children.clone(),
             _ => {
                 let mut w = FfonElement::new_obj("Windows");
                 for c in windows() {
@@ -47,15 +62,33 @@ impl Provider for Launcher {
                 for e in controls() {
                     c.as_obj_mut().unwrap().push(e);
                 }
-                vec![w, c, button("app:foot", "Foot"), button("app:bash", "Bash")]
+                let mut st = FfonElement::new_obj("Settings");
+                for e in settings() {
+                    st.as_obj_mut().unwrap().push(e);
+                }
+                vec![
+                    w,
+                    c,
+                    st,
+                    button("app:foot", "Foot"),
+                    button("app:bash", "Bash"),
+                ]
             }
         }
     }
     fn push_path(&mut self, seg: &str) {
-        self.path = format!("/{seg}");
+        let seg = sicompass_sdk::tags::strip_display(seg);
+        self.path = if self.path == "/" {
+            format!("/{seg}")
+        } else {
+            format!("{}/{seg}", self.path)
+        };
     }
     fn pop_path(&mut self) {
-        self.path = "/".to_owned();
+        match self.path.rfind('/') {
+            Some(0) | None => self.path = "/".to_owned(),
+            Some(i) => self.path.truncate(i),
+        }
     }
     fn set_current_path(&mut self, path: &str) {
         self.path = path.to_owned();
@@ -65,6 +98,20 @@ impl Provider for Launcher {
     }
     fn on_button_press(&mut self, function_name: &str) {
         self.pressed.lock().unwrap().push(function_name.to_owned());
+    }
+    fn on_checkbox_change(&mut self, label: &str, checked: bool) {
+        let label = sicompass_sdk::tags::strip_display(label);
+        self.pressed
+            .lock()
+            .unwrap()
+            .push(format!("checkbox:{label}:{checked}"));
+    }
+    fn on_radio_change(&mut self, group: &str, value: &str) {
+        let group = sicompass_sdk::tags::strip_display(group);
+        self.pressed
+            .lock()
+            .unwrap()
+            .push(format!("radio:{group}:{value}"));
     }
 }
 
@@ -126,7 +173,13 @@ fn opening_lands_in_simple_search_at_the_root() {
     assert_eq!(path(&r), "/");
     assert_eq!(
         visible_labels(&r),
-        ["+ Windows", "+ Controls", "-b Foot", "-b Bash"]
+        [
+            "+ Windows",
+            "+ Controls",
+            "+ Settings",
+            "-b Foot",
+            "-b Bash"
+        ]
     );
 }
 
@@ -178,7 +231,7 @@ fn enter_on_a_button_presses_it_at_once() {
     assert_eq!(*pressed.lock().unwrap(), ["app:bash"]);
     assert_eq!(r.coordinate, Coordinate::SimpleSearch);
     assert!(r.search_string.is_empty(), "the query is cleared");
-    assert_eq!(r.current_id, id(&[0, 3]), "the cursor stays on the button");
+    assert_eq!(r.current_id, id(&[0, 4]), "the cursor stays on the button");
 }
 
 #[test]
@@ -258,4 +311,45 @@ fn outside_launcher_mode_escape_still_leaves_search() {
     key(&mut r, Keycode::Escape);
     assert!(!r.dismiss_requested);
     assert_ne!(r.coordinate, Coordinate::SimpleSearch);
+}
+
+#[test]
+fn enter_on_a_checkbox_toggles_it_and_keeps_searching() {
+    let (mut r, pressed) = launcher();
+    handlers::open_in_search(&mut r, &id(&[0, 2, 0]));
+    handlers::handle_input(&mut r, "screen");
+    key(&mut r, Keycode::Return);
+    assert_eq!(*pressed.lock().unwrap(), ["checkbox:screen reader:true"]);
+    assert_eq!(r.coordinate, Coordinate::SimpleSearch);
+    assert!(r.search_string.is_empty());
+    assert_eq!(
+        r.current_id,
+        id(&[0, 2, 0]),
+        "the cursor stays on the checkbox"
+    );
+}
+
+#[test]
+fn enter_on_a_radio_group_opens_it_and_enter_on_an_option_chooses_it() {
+    let (mut r, pressed) = launcher();
+    handlers::open_in_search(&mut r, &id(&[0, 2, 1]));
+    key(&mut r, Keycode::Return);
+    assert_eq!(visible_labels(&r), ["-rc dark", "-r light"]);
+    handlers::handle_input(&mut r, "light");
+    key(&mut r, Keycode::Return);
+    assert_eq!(*pressed.lock().unwrap(), ["radio:color scheme:light"]);
+    assert_eq!(r.coordinate, Coordinate::SimpleSearch);
+    assert!(r.search_string.is_empty());
+}
+
+#[test]
+fn a_plain_row_is_still_not_an_action() {
+    let (mut r, pressed) = launcher();
+    r.ffon[0]
+        .as_obj_mut()
+        .unwrap()
+        .push(FfonElement::Str("just text".into()));
+    handlers::handle_input(&mut r, "just");
+    key(&mut r, Keycode::Return);
+    assert!(pressed.lock().unwrap().is_empty());
 }

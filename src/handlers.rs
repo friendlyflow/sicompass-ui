@@ -7575,11 +7575,14 @@ pub fn open_in_search(r: &mut AppRenderer, id: &IdArray) {
 
 /// Enter in launcher mode: do what the row under the cursor is for.
 ///
-/// An object is entered, and search goes on inside it. A button is pressed,
-/// and search goes on at the same level with the query cleared, the cursor on
-/// the button (a settings toggle stays where it was toggled). Anything else is
-/// not an action and Enter does nothing. Unlike [`handle_enter_search`], the
-/// row is never just "gone to": a launcher has no General mode to press it from.
+/// An object is entered, and search goes on inside it (a radio group opens on
+/// its options). A button is pressed, a checkbox toggled, a radio option
+/// chosen, by the same code Enter runs in General mode, so a provider hears
+/// about it exactly as the app's own settings page does. Then search goes on
+/// at the same level with the query cleared and the cursor on that row.
+/// Anything else is not an action and Enter does nothing. Unlike
+/// [`handle_enter_search`], the row is never just "gone to": a launcher has no
+/// General mode to press it from.
 pub fn handle_enter_launcher(r: &mut AppRenderer) {
     use sicompass_sdk::ffon::FfonElement;
 
@@ -7591,29 +7594,50 @@ pub fn handle_enter_launcher(r: &mut AppRenderer) {
     };
     let idx = item_id.last().unwrap_or(0);
     let elem = get_ffon_at_id(&r.ffon, &item_id).and_then(|a| a.get(idx).cloned());
+    let actionable = |s: &str| {
+        tags::has_button(s)
+            || tags::has_checkbox(s)
+            || tags::has_checkbox_checked(s)
+            || parent_is_radio(r, &item_id)
+    };
     match elem {
         Some(FfonElement::Obj(_)) => {
             descend_in_simple_search(r);
         }
-        Some(FfonElement::Str(s)) if tags::has_button(&s) => {
+        Some(FfonElement::Str(s)) if actionable(&s) => {
             r.current_id = item_id;
-            crate::provider::notify_button_pressed(r);
+            handle_enter_general(r);
+            r.coordinate = Coordinate::SimpleSearch;
             r.search_string.clear();
             r.cursor_position = 0;
             r.selection_anchor = None;
             r.search_origin_id = r.current_id.clone();
-            // The button may have reported an error, and a rebuild clears the
+            // A button may have reported an error, and a rebuild clears the
             // header, so carry it across (as `handle_enter_general` does).
-            let button_error = std::mem::take(&mut r.error_message);
+            let error = std::mem::take(&mut r.error_message);
             list::create_list_current_layer(r);
             if r.error_message.is_empty() {
-                r.error_message = button_error;
+                r.error_message = error;
             }
             r.sync_list_index_from_current_id();
             r.needs_redraw = true;
         }
         _ => {}
     }
+}
+
+/// Whether the row at `id` is an option of a `<radio>` group.
+fn parent_is_radio(r: &AppRenderer, id: &IdArray) -> bool {
+    if id.depth() < 2 {
+        return false;
+    }
+    let mut parent = id.clone();
+    parent.pop();
+    let pi = parent.last().unwrap_or(0);
+    matches!(
+        get_ffon_at_id(&r.ffon, &parent).and_then(|a| a.get(pi)),
+        Some(sicompass_sdk::ffon::FfonElement::Obj(o)) if tags::has_radio(&o.key)
+    )
 }
 
 /// Up in InputSearch mode — select the previous match, wrapping to the last.

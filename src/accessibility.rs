@@ -3,14 +3,14 @@
 //!
 //! Under everything sits one system-wide file, [`DEFAULTS_PATH`], written by
 //! the desicompass NixOS module or by hand on any other distribution, and never
-//! at runtime. Above it, each embedder keeps the choices made in it:
+//! at runtime. Above it:
 //!
-//! - standalone sicompass, in its own `settings.json`;
-//! - the greeter, in its state file, through a [`SharedAccessibility`];
-//! - a desicompass session, in the user's [`user_path`], through a
-//!   [`SharedAccessibility`] that desicompass-superkey and the app both write and both
-//!   poll, so a change made in one is followed by the other. The greeter's
-//!   choices reach it through [`HANDOFF_PATH`].
+//! - standalone sicompass keeps the choices in its own `settings.json`;
+//! - the login screen and every desicompass session share one writable object,
+//!   [`SHARED_PATH`], through a [`SharedAccessibility`]: loginsicompass,
+//!   desicompass-superkey and sicompass all write it and all poll it, so a
+//!   change made in any of them is followed by the others, and a choice made
+//!   at the login screen is there in the session, and the other way round.
 //!
 //! A value is resolved as: what was saved, else the layers below, else the
 //! embedder's built-in default.
@@ -231,29 +231,20 @@ pub const ALL_KEYS: &[&str] = &[
     KEY_SHOULDER_SURFING,
 ];
 
-/// Where the login screen hands the choices made there to the session that
-/// starts next. Written by loginsicompass just before it starts the session,
-/// read by the session as the layer between the user's own file and
-/// [`DEFAULTS_PATH`]. Under `/run`, so it is gone after a reboot.
-pub const HANDOFF_PATH: &str = "/run/loginsicompass/accessibility.json";
+/// The accessibility object the login screen and every desicompass session
+/// share, read and written by all of them.
+///
+/// Machine-wide rather than per user, so what is chosen at the login screen is
+/// what the session starts with, and what is chosen in a session is what the
+/// login screen shows next time. The greeter runs as its own user, so the
+/// directory is group-writable: the desicompass NixOS module creates it for a
+/// `sicompass-a11y` group holding the greeter and the machine's users
+/// (setgid, so every file in it stays in that group). Writers replace the file
+/// by a rename, which the directory's permission allows for any member.
+pub const SHARED_PATH: &str = "/var/lib/sicompass/accessibility.json";
 
 /// How often [`SharedAccessibility::poll`] looks at the files.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
-
-/// The user's shared accessibility file, `$XDG_CONFIG_HOME/sicompass/accessibility.json`.
-///
-/// Everything in a desicompass session reads and writes this one object
-/// (desicompass-superkey, and sicompass running as the session), so a choice made in one is
-/// followed by the other. The directory is always `sicompass`, never the
-/// `sicompass-dev` a debug build uses for its own settings, so a debug desicompass-superkey
-/// and a release app agree on it. `None` off Linux, where there is no session
-/// to share it with.
-pub fn user_path() -> Option<PathBuf> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
-    sicompass_sdk::platform::config_home().map(|d| d.join("sicompass").join("accessibility.json"))
-}
 
 impl AccessibilitySettings {
     /// The application's own defaults, used when neither the user nor the
@@ -325,10 +316,9 @@ fn stamp(path: &Path) -> Option<Stamp> {
 /// changes a value, and polled by everyone who shows or applies one.
 ///
 /// A value resolves as: the writable file, else each read-only layer in turn,
-/// else the built-in default. For a desicompass session ([`open_session`](Self::open_session))
-/// that is the user's [`user_path`], the greeter's [`HANDOFF_PATH`], the
-/// system's [`DEFAULTS_PATH`], then [`AccessibilitySettings::builtin`]. The
-/// greeter uses the same machinery over its own state file.
+/// else the built-in default. For the login screen and a desicompass session
+/// ([`open_shared`](Self::open_shared)) that is [`SHARED_PATH`], then
+/// [`DEFAULTS_PATH`], then the program's built-ins.
 ///
 /// Only what was chosen is written, so a system default that changes later is
 /// never frozen into the user's file, and keys this code does not know (a newer
@@ -366,15 +356,25 @@ impl SharedAccessibility {
         s
     }
 
-    /// The object a desicompass session shares: the user's file, over the
-    /// greeter's hand-over, over the system defaults, over the app's built-ins.
-    pub fn open_session() -> Self {
-        let lower = if cfg!(target_os = "linux") {
-            vec![PathBuf::from(HANDOFF_PATH), PathBuf::from(DEFAULTS_PATH)]
+    /// The object the login screen and desicompass sessions share,
+    /// [`SHARED_PATH`] over [`DEFAULTS_PATH`], over `builtin`. Off Linux there
+    /// is nothing to share it with, and it is a read-only view of nothing.
+    pub fn open_shared(builtin: AccessibilitySettings) -> Self {
+        if cfg!(target_os = "linux") {
+            Self::new(
+                Some(PathBuf::from(SHARED_PATH)),
+                vec![PathBuf::from(DEFAULTS_PATH)],
+                builtin,
+            )
         } else {
-            Vec::new()
-        };
-        Self::new(user_path(), lower, AccessibilitySettings::builtin())
+            Self::new(None, Vec::new(), builtin)
+        }
+    }
+
+    /// [`open_shared`](Self::open_shared) with the application's built-ins:
+    /// what sicompass and the superkey use in a desicompass session.
+    pub fn open_session() -> Self {
+        Self::open_shared(AccessibilitySettings::builtin())
     }
 
     /// The writable file, if there is one.
@@ -456,6 +456,7 @@ impl SharedAccessibility {
         if let Some(slot) = self.stamps.get_mut(0) {
             *slot = stamp(&path);
         }
+        tracing::info!("accessibility: saved {key}={value} to {}", path.display());
         Ok(())
     }
 
@@ -481,7 +482,11 @@ impl SharedAccessibility {
         }
         let before = self.effective();
         self.reload();
-        changed_keys(&before, &self.effective())
+        let changed = changed_keys(&before, &self.effective());
+        for (key, value) in &changed {
+            tracing::info!("accessibility: {key} is now {value} (changed elsewhere)");
+        }
+        changed
     }
 
     fn all_paths(&self) -> impl Iterator<Item = Option<&Path>> {
@@ -527,11 +532,20 @@ impl FileLock {
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
-            let file = std::fs::OpenOptions::new()
+            // The lock file belongs to whoever created it, and another member
+            // of the group may only be able to read it. flock needs no more.
+            let file = match std::fs::OpenOptions::new()
                 .create(true)
                 .truncate(false)
                 .write(true)
-                .open(path)?;
+                .open(path)
+            {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    std::fs::File::open(path)?
+                }
+                Err(e) => return Err(e),
+            };
             // SAFETY: flock on a descriptor this struct owns; released when the
             // file is closed on drop.
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
@@ -1255,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn layers_resolve_user_then_handoff_then_system_then_builtin() {
+    fn layers_resolve_in_order_then_builtin() {
         let d = tempfile::tempdir().unwrap();
         put(
             &d.path().join("system.json"),
@@ -1468,13 +1482,20 @@ mod tests {
     }
 
     #[test]
-    fn the_user_path_is_never_the_dev_directory() {
-        if let Some(p) = user_path() {
-            assert!(
-                p.ends_with("sicompass/accessibility.json"),
-                "{}",
-                p.display()
-            );
-        }
+    fn the_shared_object_is_machine_wide_over_the_system_defaults() {
+        let s = SharedAccessibility::open_shared(AccessibilitySettings::builtin());
+        assert_eq!(s.path(), Some(Path::new(SHARED_PATH)));
+        assert!(SHARED_PATH.starts_with("/var/lib/"));
+    }
+
+    #[test]
+    fn a_lock_file_someone_else_owns_is_still_usable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let lock = d.path().join("x.lock");
+        std::fs::write(&lock, "").unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Root ignores the mode, so this proves something only as a user.
+        let _held = FileLock::acquire(&lock).unwrap();
     }
 }
