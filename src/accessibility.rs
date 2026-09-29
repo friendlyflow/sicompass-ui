@@ -1,17 +1,26 @@
 //! The accessibility settings both embedders share, and the screen reader they
 //! start.
 //!
-//! The application and the greeter each keep their own saved choices (the
-//! user's `settings.json`, the greeter's state file). Under both sits one
-//! system-wide file, [`DEFAULTS_PATH`], written by the desicompass NixOS module
-//! or by hand on any other distribution. A value is resolved as: what the
-//! embedder saved, else this file, else the embedder's built-in default.
+//! Under everything sits one system-wide file, [`DEFAULTS_PATH`], written by
+//! the desicompass NixOS module or by hand on any other distribution, and never
+//! at runtime. Above it, each embedder keeps the choices made in it:
+//!
+//! - standalone sicompass, in its own `settings.json`;
+//! - the greeter, in its state file, through a [`SharedAccessibility`];
+//! - a desicompass session, in the user's [`user_path`], through a
+//!   [`SharedAccessibility`] that desicompass-superkey and the app both write and both
+//!   poll, so a change made in one is followed by the other. The greeter's
+//!   choices reach it through [`HANDOFF_PATH`].
+//!
+//! A value is resolved as: what was saved, else the layers below, else the
+//! embedder's built-in default.
 //!
 //! The keys are the application's own `settings.json` keys, so the same
-//! spelling means the same thing in all three places.
+//! spelling means the same thing in every one of these files.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 
@@ -206,6 +215,335 @@ pub fn apply_display(renderer: &mut AppRenderer, key: &str, value: &str) -> bool
             true
         }
         _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The shared object
+// ---------------------------------------------------------------------------
+
+/// Every accessibility key, in the order a settings page lists them.
+pub const ALL_KEYS: &[&str] = &[
+    KEY_SCREEN_READER,
+    KEY_FONT_SCALE,
+    KEY_COLOR_SCHEME,
+    KEY_LANGUAGE,
+    KEY_SHOULDER_SURFING,
+];
+
+/// Where the login screen hands the choices made there to the session that
+/// starts next. Written by loginsicompass just before it starts the session,
+/// read by the session as the layer between the user's own file and
+/// [`DEFAULTS_PATH`]. Under `/run`, so it is gone after a reboot.
+pub const HANDOFF_PATH: &str = "/run/loginsicompass/accessibility.json";
+
+/// How often [`SharedAccessibility::poll`] looks at the files.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The user's shared accessibility file, `$XDG_CONFIG_HOME/sicompass/accessibility.json`.
+///
+/// Everything in a desicompass session reads and writes this one object
+/// (desicompass-superkey, and sicompass running as the session), so a choice made in one is
+/// followed by the other. The directory is always `sicompass`, never the
+/// `sicompass-dev` a debug build uses for its own settings, so a debug desicompass-superkey
+/// and a release app agree on it. `None` off Linux, where there is no session
+/// to share it with.
+pub fn user_path() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    sicompass_sdk::platform::config_home().map(|d| d.join("sicompass").join("accessibility.json"))
+}
+
+impl AccessibilitySettings {
+    /// The application's own defaults, used when neither the user nor the
+    /// system has an opinion. The greeter's differ (it starts with the screen
+    /// reader on), so it passes its own to [`SharedAccessibility::new`].
+    pub fn builtin() -> Self {
+        Self {
+            screen_reader: Some(false),
+            font_scale: Some(format!("{:.2}", crate::registry::DEFAULT_FONT_SCALE)),
+            color_scheme: Some("dark".to_owned()),
+            language: Some("en-US".to_owned()),
+            shoulder_surfing_protection: Some(false),
+        }
+    }
+
+    /// One key in its stored string form (`"true"`, `"1.75"`, `"dark"`), as a
+    /// settings row reports it and [`set`](Self::set) takes it.
+    pub fn get(&self, key: &str) -> Option<String> {
+        match key {
+            KEY_SCREEN_READER => self.screen_reader.map(|b| b.to_string()),
+            KEY_FONT_SCALE => self.font_scale.clone(),
+            KEY_COLOR_SCHEME => self.color_scheme.clone(),
+            KEY_LANGUAGE => self.language.clone(),
+            KEY_SHOULDER_SURFING => self.shoulder_surfing_protection.map(|b| b.to_string()),
+            _ => None,
+        }
+    }
+}
+
+/// The keys whose value differs between `old` and `new`, with the new value.
+/// A key `new` has no value for is not reported: there is nothing to apply.
+pub fn changed_keys(
+    old: &AccessibilitySettings,
+    new: &AccessibilitySettings,
+) -> Vec<(&'static str, String)> {
+    ALL_KEYS
+        .iter()
+        .filter_map(|&k| {
+            let v = new.get(k)?;
+            (old.get(k).as_deref() != Some(v.as_str())).then_some((k, v))
+        })
+        .collect()
+}
+
+/// What a file looked like the last time it was read. An atomic rename gives
+/// the path a new inode, which catches a rewrite within the mtime granularity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+    inode: u64,
+}
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let inode = std::os::unix::fs::MetadataExt::ino(&m);
+    #[cfg(not(unix))]
+    let inode = 0;
+    Some(Stamp {
+        modified: m.modified().ok(),
+        len: m.len(),
+        inode,
+    })
+}
+
+/// A readable and writable accessibility object shared between processes, in
+/// the manner of COSMIC's config: small files, written atomically by whoever
+/// changes a value, and polled by everyone who shows or applies one.
+///
+/// A value resolves as: the writable file, else each read-only layer in turn,
+/// else the built-in default. For a desicompass session ([`open_session`](Self::open_session))
+/// that is the user's [`user_path`], the greeter's [`HANDOFF_PATH`], the
+/// system's [`DEFAULTS_PATH`], then [`AccessibilitySettings::builtin`]. The
+/// greeter uses the same machinery over its own state file.
+///
+/// Only what was chosen is written, so a system default that changes later is
+/// never frozen into the user's file, and keys this code does not know (a newer
+/// version's) are kept.
+#[derive(Debug)]
+pub struct SharedAccessibility {
+    path: Option<PathBuf>,
+    lower_paths: Vec<PathBuf>,
+    builtin: AccessibilitySettings,
+    saved: AccessibilitySettings,
+    lower: AccessibilitySettings,
+    stamps: Vec<Option<Stamp>>,
+    last_poll: Option<Instant>,
+}
+
+impl SharedAccessibility {
+    /// Read `path` (the one layer [`set`](Self::set) writes, `None` for a
+    /// read-only view) over `lower_paths`, highest first, over `builtin`.
+    /// None of the files has to exist.
+    pub fn new(
+        path: Option<PathBuf>,
+        lower_paths: Vec<PathBuf>,
+        builtin: AccessibilitySettings,
+    ) -> Self {
+        let mut s = Self {
+            path,
+            lower_paths,
+            builtin,
+            saved: AccessibilitySettings::default(),
+            lower: AccessibilitySettings::default(),
+            stamps: Vec::new(),
+            last_poll: None,
+        };
+        s.reload();
+        s
+    }
+
+    /// The object a desicompass session shares: the user's file, over the
+    /// greeter's hand-over, over the system defaults, over the app's built-ins.
+    pub fn open_session() -> Self {
+        let lower = if cfg!(target_os = "linux") {
+            vec![PathBuf::from(HANDOFF_PATH), PathBuf::from(DEFAULTS_PATH)]
+        } else {
+            Vec::new()
+        };
+        Self::new(user_path(), lower, AccessibilitySettings::builtin())
+    }
+
+    /// The writable file, if there is one.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// Only what was chosen and saved in the writable file.
+    pub fn saved(&self) -> &AccessibilitySettings {
+        &self.saved
+    }
+
+    /// The saved choices over the read-only layers, without the built-ins:
+    /// `None` where nobody has an opinion.
+    pub fn resolved(&self) -> AccessibilitySettings {
+        self.saved.clone().or(self.lower.clone())
+    }
+
+    /// Every key with a value: [`resolved`](Self::resolved) over the built-ins.
+    pub fn effective(&self) -> AccessibilitySettings {
+        self.resolved().or(self.builtin.clone())
+    }
+
+    /// Record a choice in the writable file.
+    ///
+    /// Read, modify and write happen under an exclusive lock on a `.lock` file
+    /// beside it, and the write is a rename, so two processes changing
+    /// different keys at once both keep theirs and a reader never sees a torn
+    /// file. A file that is not a JSON object is moved aside to `.corrupt`
+    /// rather than silently overwritten. Fails with `InvalidInput` for an
+    /// unknown key or an invalid value, and `NotFound` when there is no
+    /// writable file.
+    pub fn set(&mut self, key: &str, value: &str) -> std::io::Result<()> {
+        use std::io::{Error, ErrorKind};
+        if !self.saved.clone().set(key, value) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("not an accessibility setting: {key}={value}"),
+            ));
+        }
+        let Some(path) = self.path.clone() else {
+            return Err(Error::new(ErrorKind::NotFound, "no writable settings file"));
+        };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let _lock = FileLock::acquire(&lock_path(&path))?;
+
+        let mut obj = match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Value>(&text) {
+                Ok(Value::Object(m)) => m,
+                _ => {
+                    let aside = path.with_extension("json.corrupt");
+                    tracing::warn!(
+                        "{} is not a JSON object; moved to {}",
+                        path.display(),
+                        aside.display()
+                    );
+                    let _ = std::fs::rename(&path, &aside);
+                    Map::new()
+                }
+            },
+            Err(e) if e.kind() == ErrorKind::NotFound => Map::new(),
+            Err(e) => return Err(e),
+        };
+        // Everything another process saved since this one last read survives:
+        // only `key` is replaced, in the file's own current contents.
+        let mut one = AccessibilitySettings::default();
+        one.set(key, value);
+        obj.extend(one.to_object());
+        let body = serde_json::to_string_pretty(&Value::Object(obj.clone()))
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        if !sicompass_sdk::platform::atomic_write(&path, &body) {
+            return Err(Error::other(format!("could not write {}", path.display())));
+        }
+        // Still under the lock, so this stamp is this write's: the next poll
+        // does not report it back as somebody else's change.
+        self.saved = AccessibilitySettings::from_object(&obj);
+        if let Some(slot) = self.stamps.get_mut(0) {
+            *slot = stamp(&path);
+        }
+        Ok(())
+    }
+
+    /// Look at the files, at most every [`POLL_INTERVAL`], and return the keys
+    /// whose effective value changed since the last look, with the new value.
+    /// Meant to be called every frame.
+    pub fn poll(&mut self) -> Vec<(&'static str, String)> {
+        let now = Instant::now();
+        if self
+            .last_poll
+            .is_some_and(|t| now.duration_since(t) < POLL_INTERVAL)
+        {
+            return Vec::new();
+        }
+        self.last_poll = Some(now);
+        self.poll_now()
+    }
+
+    /// [`poll`](Self::poll) without the throttle.
+    pub fn poll_now(&mut self) -> Vec<(&'static str, String)> {
+        if self.current_stamps() == self.stamps {
+            return Vec::new();
+        }
+        let before = self.effective();
+        self.reload();
+        changed_keys(&before, &self.effective())
+    }
+
+    fn all_paths(&self) -> impl Iterator<Item = Option<&Path>> {
+        std::iter::once(self.path.as_deref())
+            .chain(self.lower_paths.iter().map(|p| Some(p.as_path())))
+    }
+
+    fn current_stamps(&self) -> Vec<Option<Stamp>> {
+        self.all_paths().map(|p| p.and_then(stamp)).collect()
+    }
+
+    fn reload(&mut self) {
+        self.stamps = self.current_stamps();
+        self.saved = self
+            .path
+            .as_deref()
+            .map(AccessibilitySettings::load)
+            .unwrap_or_default();
+        self.lower = self
+            .lower_paths
+            .iter()
+            .fold(AccessibilitySettings::default(), |acc, p| {
+                acc.or(AccessibilitySettings::load(p))
+            });
+    }
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    path.with_file_name(name)
+}
+
+/// An exclusive `flock` held until drop. A no-op off Unix, where nothing else
+/// shares the file.
+struct FileLock {
+    #[cfg(unix)]
+    _file: std::fs::File,
+}
+
+impl FileLock {
+    fn acquire(path: &Path) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(path)?;
+            // SAFETY: flock on a descriptor this struct owns; released when the
+            // file is closed on drop.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Self { _file: file })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Ok(Self {})
+        }
     }
 }
 
@@ -899,5 +1237,244 @@ mod tests {
         let mut sr = ScreenReader::new("/nonexistent/orca");
         assert!(sr.start().is_err());
         assert!(!sr.is_running());
+    }
+
+    // ---- SharedAccessibility ------------------------------------------------
+
+    fn put(p: &Path, json: &str) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, json).unwrap();
+    }
+
+    fn shared(dir: &Path) -> SharedAccessibility {
+        SharedAccessibility::new(
+            Some(dir.join("user/accessibility.json")),
+            vec![dir.join("handoff.json"), dir.join("system.json")],
+            AccessibilitySettings::builtin(),
+        )
+    }
+
+    #[test]
+    fn layers_resolve_user_then_handoff_then_system_then_builtin() {
+        let d = tempfile::tempdir().unwrap();
+        put(
+            &d.path().join("system.json"),
+            r#"{"colorScheme":"light","fontScale":"2.00","language":"nl-BE"}"#,
+        );
+        put(
+            &d.path().join("handoff.json"),
+            r#"{"screenReader":true,"fontScale":"2.50"}"#,
+        );
+        put(
+            &d.path().join("user/accessibility.json"),
+            r#"{"fontScale":"1.25"}"#,
+        );
+        let s = shared(d.path());
+        let e = s.effective();
+        assert_eq!(e.font_scale.as_deref(), Some("1.25"), "user wins");
+        assert_eq!(
+            e.screen_reader,
+            Some(true),
+            "handoff over system and builtin"
+        );
+        assert_eq!(
+            e.color_scheme.as_deref(),
+            Some("light"),
+            "system over builtin"
+        );
+        assert_eq!(e.language.as_deref(), Some("nl-BE"));
+        assert_eq!(
+            e.shoulder_surfing_protection,
+            Some(false),
+            "builtin fills the rest"
+        );
+        assert_eq!(s.resolved().shoulder_surfing_protection, None);
+        assert_eq!(
+            s.saved().screen_reader,
+            None,
+            "saved is the user's file only"
+        );
+    }
+
+    #[test]
+    fn set_writes_only_the_chosen_key_and_keeps_unknown_ones() {
+        let d = tempfile::tempdir().unwrap();
+        put(&d.path().join("system.json"), r#"{"colorScheme":"light"}"#);
+        let user = d.path().join("user/accessibility.json");
+        put(&user, r#"{"fontScale":"1.50","fromTheFuture":42}"#);
+        let mut s = shared(d.path());
+        s.set(KEY_SCREEN_READER, "true").unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&user).unwrap()).unwrap();
+        assert_eq!(v["screenReader"], Value::Bool(true));
+        assert_eq!(v["fontScale"], "1.50");
+        assert_eq!(v["fromTheFuture"], 42);
+        assert!(
+            v.get("colorScheme").is_none(),
+            "a system default is never frozen in"
+        );
+        assert_eq!(s.effective().screen_reader, Some(true));
+    }
+
+    #[test]
+    fn set_creates_the_directory_and_rejects_nonsense() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = shared(d.path());
+        assert_eq!(
+            s.set(KEY_FONT_SCALE, "huge").unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            s.set("wallpaper", "cats").unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert!(!d.path().join("user/accessibility.json").exists());
+        s.set(KEY_COLOR_SCHEME, "light").unwrap();
+        assert!(d.path().join("user/accessibility.json").exists());
+    }
+
+    #[test]
+    fn a_read_only_view_cannot_be_written() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = SharedAccessibility::new(
+            None,
+            vec![d.path().join("system.json")],
+            AccessibilitySettings::builtin(),
+        );
+        assert_eq!(
+            s.set(KEY_COLOR_SCHEME, "light").unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn a_corrupt_file_is_moved_aside_not_lost() {
+        let d = tempfile::tempdir().unwrap();
+        let user = d.path().join("user/accessibility.json");
+        put(&user, "{ not json");
+        let mut s = shared(d.path());
+        s.set(KEY_LANGUAGE, "fr-BE").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("user/accessibility.json.corrupt")).unwrap(),
+            "{ not json"
+        );
+        assert_eq!(s.effective().language.as_deref(), Some("fr-BE"));
+    }
+
+    #[test]
+    fn another_process_s_change_is_seen_once_and_its_own_never() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = shared(d.path());
+        let mut b = shared(d.path());
+        a.set(KEY_COLOR_SCHEME, "light").unwrap();
+        assert!(a.poll_now().is_empty(), "a's own write is not news to a");
+        assert_eq!(b.poll_now(), vec![(KEY_COLOR_SCHEME, "light".to_owned())]);
+        assert!(b.poll_now().is_empty(), "and it is reported once");
+    }
+
+    #[test]
+    fn a_change_below_the_user_file_is_seen_too() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = shared(d.path());
+        put(&d.path().join("system.json"), r#"{"fontScale":"2.25"}"#);
+        assert_eq!(s.poll_now(), vec![(KEY_FONT_SCALE, "2.25".to_owned())]);
+        // Shadowed by the user's own choice: the effective value does not move.
+        s.set(KEY_FONT_SCALE, "1.00").unwrap();
+        put(&d.path().join("system.json"), r#"{"fontScale":"1.50"}"#);
+        assert!(s.poll_now().is_empty());
+    }
+
+    #[test]
+    fn poll_is_throttled() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = shared(d.path());
+        let mut b = shared(d.path());
+        assert!(b.poll().is_empty());
+        a.set(KEY_COLOR_SCHEME, "light").unwrap();
+        assert!(
+            b.poll().is_empty(),
+            "within the interval nothing is looked at"
+        );
+        std::thread::sleep(POLL_INTERVAL + Duration::from_millis(20));
+        assert_eq!(b.poll(), vec![(KEY_COLOR_SCHEME, "light".to_owned())]);
+    }
+
+    #[test]
+    fn concurrent_writers_both_keep_their_key() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().to_path_buf();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    let mut s = shared(&dir);
+                    for _ in 0..10 {
+                        if i % 2 == 0 {
+                            s.set(KEY_COLOR_SCHEME, "light").unwrap();
+                        } else {
+                            s.set(KEY_LANGUAGE, "de-BE").unwrap();
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let s = shared(&dir);
+        assert_eq!(s.saved().color_scheme.as_deref(), Some("light"));
+        assert_eq!(s.saved().language.as_deref(), Some("de-BE"));
+    }
+
+    #[test]
+    fn changed_keys_reports_only_what_moved() {
+        let a = AccessibilitySettings::builtin();
+        let mut b = a.clone();
+        b.set(KEY_SHOULDER_SURFING, "true");
+        assert_eq!(
+            changed_keys(&a, &b),
+            vec![(KEY_SHOULDER_SURFING, "true".to_owned())]
+        );
+        assert!(changed_keys(&b, &b).is_empty());
+        assert!(changed_keys(&a, &AccessibilitySettings::default()).is_empty());
+    }
+
+    #[test]
+    fn get_round_trips_through_set() {
+        let mut s = AccessibilitySettings::default();
+        for (k, v) in [
+            (KEY_SCREEN_READER, "true"),
+            (KEY_FONT_SCALE, "2.00"),
+            (KEY_COLOR_SCHEME, "light"),
+            (KEY_LANGUAGE, "nl-BE"),
+            (KEY_SHOULDER_SURFING, "false"),
+        ] {
+            assert!(s.set(k, v));
+            assert_eq!(s.get(k).as_deref(), Some(v));
+        }
+    }
+
+    #[test]
+    fn builtin_matches_the_renderer_defaults() {
+        let b = AccessibilitySettings::builtin();
+        assert_eq!(
+            font_scale_value(b.font_scale.as_deref()),
+            crate::registry::DEFAULT_FONT_SCALE
+        );
+        assert_eq!(b.screen_reader, Some(false));
+        assert_eq!(b.color_scheme.as_deref(), Some("dark"));
+        for k in ALL_KEYS {
+            assert!(b.get(k).is_some(), "builtin has every key: {k}");
+        }
+    }
+
+    #[test]
+    fn the_user_path_is_never_the_dev_directory() {
+        if let Some(p) = user_path() {
+            assert!(
+                p.ends_with("sicompass/accessibility.json"),
+                "{}",
+                p.display()
+            );
+        }
     }
 }

@@ -2392,6 +2392,12 @@ pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) 
     let shift = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
     let alt = keymod.intersects(Mod::LALTMOD | Mod::RALTMOD);
 
+    // A launcher has its own, much smaller keymap. See `launcher_dispatch`.
+    if r.launcher_mode {
+        launcher_dispatch(r, k, ctrl, shift, alt);
+        return false;
+    }
+
     // Interactive-dashboard fast-path: forward every key to the active
     // provider verbatim — including Escape (vim's normal mode etc.) and
     // Ctrl+C (the SIGINT byte that lets `btop`/`htop`/etc. terminate). The
@@ -2549,6 +2555,49 @@ pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) 
 
     dispatch_table(r, k, ctrl, shift);
     false
+}
+
+/// The keymap of launcher mode (`AppRenderer::launcher_mode`).
+///
+/// A launcher lives in simple search: typed text filters, Enter does what the
+/// row is for (`handlers::handle_enter_launcher`), and Escape asks the embedder
+/// to dismiss the window. Moving through the list, stepping out with Left and
+/// editing the query go through the ordinary table. Everything else is left
+/// out on purpose: tabs, the `:` palette, Ctrl+F, undo, insert mode. None of
+/// them means anything in a list of things to launch, and each would strand the
+/// user in a mode the launcher never explains.
+fn launcher_dispatch(r: &mut AppRenderer, k: Keycode, ctrl: bool, shift: bool, alt: bool) {
+    if alt {
+        return;
+    }
+    match k {
+        Keycode::Escape if !ctrl && !shift => r.dismiss_requested = true,
+        Keycode::Return | Keycode::KpEnter if !ctrl && !shift => {
+            handlers::handle_enter_launcher(r);
+        }
+        _ if launcher_key_allowed(k, ctrl) => {
+            dispatch_table(r, k, ctrl, shift);
+        }
+        _ => {}
+    }
+}
+
+/// The keys launcher mode hands to the ordinary table (see `launcher_dispatch`).
+fn launcher_key_allowed(k: Keycode, ctrl: bool) -> bool {
+    use Keycode::*;
+    if ctrl {
+        // Whereami, the ends of the list, and the query's clipboard and word
+        // editing.
+        matches!(
+            k,
+            W | Home | End | A | C | V | X | Backspace | Delete | Left | Right
+        )
+    } else {
+        matches!(
+            k,
+            Up | Down | PageUp | PageDown | Home | End | Left | Right | Backspace | Delete
+        )
+    }
 }
 
 /// Run the first `SHORTCUTS` row matching the key, modifiers and current mode.

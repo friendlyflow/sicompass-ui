@@ -941,6 +941,24 @@ pub struct AppRenderer {
     /// When true the visual output is suppressed (blank screen). Navigation,
     /// FFON state, and AccessKit/screen-reader output continue to work normally.
     pub privacy_blank: bool,
+
+    // ---- Launcher ----------------------------------------------------------
+    /// The embedder is a launcher (desicompass-superkey): the list lives in
+    /// simple search, Enter activates the row it lands on (a button is
+    /// pressed, an object is entered, and search goes on inside it), Escape
+    /// asks the embedder to dismiss the window through `HostHooks::dismiss`,
+    /// and the provider list above the root is out of reach. Off for the
+    /// application and the greeter, which keep today's keymap exactly.
+    pub launcher_mode: bool,
+    /// The window is not on screen (a launcher the compositor has unmapped):
+    /// the loop keeps polling events and running the hooks, but draws
+    /// nothing. Presenting to a surface nobody displays would block on the
+    /// swapchain, so the loop must not even try.
+    pub suspended: bool,
+    /// Set by Escape in launcher mode, taken by the loop, which then calls
+    /// `HostHooks::dismiss`. A flag rather than a direct call because key
+    /// handlers only hold the renderer, and the hooks are the embedder's.
+    pub dismiss_requested: bool,
     /// What the screen reader calls the window: the embedder's `app_id`
     /// ("sicompass", or "loginsicompass" at the login screen). Set from
     /// [`AppConfig`] by `init_stack`.
@@ -1189,6 +1207,9 @@ impl AppRenderer {
             pending_announcement: None,
             announcement_parity: false,
             privacy_blank: false,
+            launcher_mode: false,
+            suspended: false,
+            dismiss_requested: false,
             a11y_name: crate::icon::APP_ID.to_owned(),
             a11y_refocus_on_move: false,
             a11y_refocus_now: false,

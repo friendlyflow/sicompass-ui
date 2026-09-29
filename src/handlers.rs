@@ -846,7 +846,10 @@ pub fn handle_right(r: &mut AppRenderer) {
 /// Navigate out to the parent level without rebuilding the list.
 /// Returns `true` if navigation happened.
 pub fn navigate_left_raw(r: &mut AppRenderer) -> bool {
-    if r.current_id.depth() <= 1 {
+    // A launcher's world is its one provider: the list of providers above it
+    // is not something its user can do anything with.
+    let floor = if r.launcher_mode { 2 } else { 1 };
+    if r.current_id.depth() <= floor {
         return false; // already at root
     }
 
@@ -7477,34 +7480,139 @@ pub fn handle_search_right(r: &mut AppRenderer) {
         }
     } else {
         // SimpleSearch at cursor end — navigate into selected item.
-        let search_from_id = r.search_origin_id.clone();
-        let path_before = if active_provider_is_filebrowser(r) && search_from_id.depth() >= 2 {
-            Some(crate::provider::current_path(r).to_owned())
-        } else {
-            None
-        };
-        r.search_string.clear();
-        r.cursor_position = 0;
-        if let Some(item_id) = r.current_list_item_id() {
-            r.current_id = item_id;
+        descend_in_simple_search(r);
+    }
+}
+
+/// SimpleSearch: enter the selected row and go on searching inside it, with an
+/// empty query. Returns whether the cursor moved in (the row was an object).
+///
+/// Shared by Right at the end of the query and by Enter in launcher mode.
+fn descend_in_simple_search(r: &mut AppRenderer) -> bool {
+    let search_from_id = r.search_origin_id.clone();
+    let path_before = if active_provider_is_filebrowser(r) && search_from_id.depth() >= 2 {
+        Some(crate::provider::current_path(r).to_owned())
+    } else {
+        None
+    };
+    r.search_string.clear();
+    r.cursor_position = 0;
+    if let Some(item_id) = r.current_list_item_id() {
+        r.current_id = item_id;
+    }
+    if !navigate_right_raw(r) {
+        return false;
+    }
+    record_search_exit_navigation(
+        r,
+        search_from_id,
+        path_before,
+        sicompass_sdk::timeline::NavKind::ArrowRight,
+    );
+    r.search_origin_id = r.current_id.clone();
+    list::create_list_current_layer(r);
+    r.list_index = r
+        .current_id
+        .last()
+        .unwrap_or(0)
+        .min(r.active_list_len().saturating_sub(1));
+    r.scroll_offset = r.list_index as i32;
+    r.needs_redraw = true;
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Launcher mode (`AppRenderer::launcher_mode`)
+// ---------------------------------------------------------------------------
+
+/// Open a launcher on `id` and start searching there.
+///
+/// `id` names the row the cursor should land on: `[provider, i]` is row `i` of
+/// the provider's own list, `[provider, i, j]` is row `j` inside row `i`, and
+/// so on. Whatever the renderer was doing before (a query, a deeper level, an
+/// error) is dropped, and the provider is re-fetched from its root, so what the
+/// user sees is current: a launcher stays resident between showings.
+///
+/// Levels that do not exist (a section with nothing in it) stop the descent
+/// where it is, and an out-of-range row is clamped, so a stale `id` still opens
+/// somewhere sensible.
+pub fn open_in_search(r: &mut AppRenderer, id: &IdArray) {
+    let Some(provider) = id.get(0) else {
+        return;
+    };
+    r.search_string.clear();
+    r.input_buffer.clear();
+    r.cursor_position = 0;
+    r.selection_anchor = None;
+    r.scroll_offset = 0;
+    r.error_message.clear();
+    r.coordinate = Coordinate::General;
+    r.previous_coordinate = Coordinate::General;
+
+    let mut at = IdArray::new();
+    at.push(provider);
+    at.push(0);
+    r.current_id = at;
+    crate::provider::set_provider_path(r, "/");
+    crate::provider::refresh_current_directory(r);
+
+    for level in 1..id.depth().saturating_sub(1) {
+        r.current_id.set_last(id.get(level).unwrap_or(0));
+        if !navigate_right_raw(r) {
+            break;
         }
-        if navigate_right_raw(r) {
-            record_search_exit_navigation(
-                r,
-                search_from_id,
-                path_before,
-                sicompass_sdk::timeline::NavKind::ArrowRight,
-            );
+    }
+    let len = get_ffon_at_id(&r.ffon, &r.current_id)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    r.current_id
+        .set_last(id.last().unwrap_or(0).min(len.saturating_sub(1)));
+
+    // From General, Tab enters SimpleSearch, builds the list and tells the
+    // screen reader where it landed.
+    handle_tab(r);
+}
+
+/// Enter in launcher mode: do what the row under the cursor is for.
+///
+/// An object is entered, and search goes on inside it. A button is pressed,
+/// and search goes on at the same level with the query cleared, the cursor on
+/// the button (a settings toggle stays where it was toggled). Anything else is
+/// not an action and Enter does nothing. Unlike [`handle_enter_search`], the
+/// row is never just "gone to": a launcher has no General mode to press it from.
+pub fn handle_enter_launcher(r: &mut AppRenderer) {
+    use sicompass_sdk::ffon::FfonElement;
+
+    if r.coordinate != Coordinate::SimpleSearch {
+        return;
+    }
+    let Some(item_id) = r.current_list_item_id() else {
+        return; // nothing matches the query
+    };
+    let idx = item_id.last().unwrap_or(0);
+    let elem = get_ffon_at_id(&r.ffon, &item_id).and_then(|a| a.get(idx).cloned());
+    match elem {
+        Some(FfonElement::Obj(_)) => {
+            descend_in_simple_search(r);
+        }
+        Some(FfonElement::Str(s)) if tags::has_button(&s) => {
+            r.current_id = item_id;
+            crate::provider::notify_button_pressed(r);
+            r.search_string.clear();
+            r.cursor_position = 0;
+            r.selection_anchor = None;
             r.search_origin_id = r.current_id.clone();
+            // The button may have reported an error, and a rebuild clears the
+            // header, so carry it across (as `handle_enter_general` does).
+            let button_error = std::mem::take(&mut r.error_message);
             list::create_list_current_layer(r);
-            r.list_index = r
-                .current_id
-                .last()
-                .unwrap_or(0)
-                .min(r.active_list_len().saturating_sub(1));
-            r.scroll_offset = r.list_index as i32;
+            if r.error_message.is_empty() {
+                r.error_message = button_error;
+            }
+            r.sync_list_index_from_current_id();
             r.needs_redraw = true;
         }
+        _ => {}
     }
 }
 

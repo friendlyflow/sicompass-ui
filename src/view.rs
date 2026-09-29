@@ -46,6 +46,7 @@ pub(crate) fn is_insert_mode(c: Coordinate) -> bool {
 /// Run the application until the user quits.
 pub fn main_loop(app: &mut AppState) {
     update_window_title(app);
+    let mut was_suspended = false;
 
     while app.running {
         // Timestamp the start of the iteration. A provider operation (notably a
@@ -291,6 +292,16 @@ pub fn main_loop(app: &mut AppState) {
             app.renderer.hooks = hooks;
         }
 
+        // ---- Launcher: Escape asked for the window to go away ---------------
+        // Escape only raises the flag (a key handler holds the renderer, not
+        // the embedder's hooks); what dismissing means is the embedder's call.
+        if std::mem::take(&mut app.renderer.dismiss_requested) {
+            let hooks =
+                std::mem::replace(&mut app.renderer.hooks, Box::new(crate::registry::NoHooks));
+            hooks.dismiss(&mut app.renderer);
+            app.renderer.hooks = hooks;
+        }
+
         // ---- Drain updater events + refresh "update available" banner ------
         // Hot-reload events run between frames so no provider call is in
         // flight when we drop the old library and load the new one.
@@ -481,6 +492,23 @@ pub fn main_loop(app: &mut AppState) {
             } else {
                 app.renderer.sync_list_index_from_current_id();
             }
+            app.renderer.needs_redraw = true;
+        }
+
+        // ---- Suspended: off screen, so draw nothing -------------------------
+        // A launcher the compositor has unmapped keeps its loop (events, hooks,
+        // provider ticks all ran above) but must not present: nothing shows
+        // the surface, so an acquire or a FIFO present could wait forever.
+        // Coming back, the swapchain is rebuilt, since the window may have been
+        // resized while it was away.
+        if app.renderer.suspended {
+            was_suspended = true;
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            continue;
+        }
+        if was_suspended {
+            was_suspended = false;
+            app.framebuffer_resized = true;
             app.renderer.needs_redraw = true;
         }
 

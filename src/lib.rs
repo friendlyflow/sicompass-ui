@@ -9,8 +9,9 @@
 //! can be loaded — those belong to whoever embeds it, and are reached through
 //! [`HostHooks`].
 //!
-//! Two embedders today: the `sicompass` application and the `loginsicompass`
-//! greeter.
+//! Three embedders today: the `sicompass` application, the `loginsicompass`
+//! greeter, and desicompass-superkey, which turns on
+//! [`AppRenderer::launcher_mode`].
 //!
 //! # The boundary, as a rule
 //!
@@ -46,6 +47,9 @@ pub mod shortcuts;
 pub mod state;
 pub mod text;
 pub mod unicode_search;
+
+#[cfg(test)]
+mod launcher_mode_tests;
 
 pub use app_state::{AppConfig, AppRenderer, AppState, SiError};
 pub use registry::{HostHooks, NoHooks, SettingsQueue, register_provider};

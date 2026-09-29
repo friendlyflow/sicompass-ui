@@ -71,8 +71,9 @@ types stop lining up at the boundary.
 
 ## Architecture: the boundary (hard rule)
 
-This crate is the renderer shared by two binaries: the `sicompass` application
-and the `loginsicompass` greetd greeter. It holds the SDL3 window, the Vulkan
+This crate is the renderer shared by three binaries: the `sicompass`
+application, the `loginsicompass` greetd greeter, and desicompass's
+`desicompass-superkey` (which turns on `AppRenderer::launcher_mode`). It holds the SDL3 window, the Vulkan
 device, font rasterisation, the list layout, the key handlers, the insert-mode
 text field and the AccessKit bridge. What only an *application* has (the
 provider catalogue, `settings.json`, the WASM plugin host, the self-updater,
@@ -87,10 +88,10 @@ and an SMTP client, none of which a login screen ever calls. The Stop hook
 
 Where the renderer needs something only the embedder can answer, it asks:
 
-- `registry::HostHooks`: six methods, every one defaulting to a no-op, stored
-  on `AppRenderer`. The app installs its own; the greeter takes the defaults,
-  which are all correct for something with no settings file, no updater and no
-  tabs.
+- `registry::HostHooks`: eight methods, every one defaulting to a no-op,
+  stored on `AppRenderer`. The app installs its own; the greeter takes the
+  defaults, which are all correct for something with no settings file, no
+  updater and no tabs. `dismiss` is only ever called for a launcher.
 - `http::register_body_fetcher`: an HTTP client for following `<link>` and for
   `<image>` values that are URLs. Same shape as
   `sicompass_sdk::register_url_fetcher`. Unregistered, an HTTP link reports that

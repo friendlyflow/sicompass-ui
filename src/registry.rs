@@ -77,6 +77,15 @@ pub trait HostHooks: Send {
     fn should_quit(&self) -> bool {
         false
     }
+
+    /// The user pressed Escape in launcher mode (`AppRenderer::launcher_mode`)
+    /// and wants the window gone.
+    ///
+    /// Only a launcher ever gets this call, and what "gone" means is its
+    /// business: desicompass-superkey asks the compositor to unmap it and sets
+    /// `renderer.suspended`. The default does nothing, which is right for an
+    /// embedder that never turns launcher mode on.
+    fn dismiss(&self, _renderer: &mut AppRenderer) {}
 }
 
 /// The defaults, for an embedder that has no opinions.

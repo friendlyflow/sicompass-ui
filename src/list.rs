@@ -411,14 +411,25 @@ pub fn populate_list_current_layer(renderer: &mut AppRenderer, search: &str) {
     let mut char_buf: Vec<char> = Vec::new();
     let mut indices_buf: Vec<u32> = Vec::new();
 
+    // A launcher is a list of buttons: with the `-b ` prefix in the haystack,
+    // typing "b" matched every row. There, only the text after the prefix is
+    // searched, and the highlights are moved back to where they sit in the
+    // full label.
+    let strip_prefix = renderer.launcher_mode;
+
     for (i, item) in renderer.total_list.iter().enumerate() {
         char_buf.clear();
+        let (text, offset) = if strip_prefix {
+            split_row_prefix(&item.label)
+        } else {
+            (item.label.as_str(), 0)
+        };
         // NOTE: with `nucleo`'s `unicode-segmentation` feature these positions
         // index graphemes, not codepoints, for a non-ASCII label, while `view`
         // consumes them as codepoint indices. That mismatch predates this code;
         // scanning in the same space below at least keeps every position in one
         // convention rather than mixing two in a single `Vec`.
-        let haystack = Utf32Str::new(&item.label, &mut char_buf);
+        let haystack = Utf32Str::new(text, &mut char_buf);
         indices_buf.clear();
         if let Some(score) = pattern.indices(haystack, &mut matcher, &mut indices_buf) {
             // Union rather than replacement: an atom that only matched
@@ -433,6 +444,11 @@ pub fn populate_list_current_layer(renderer: &mut AppRenderer, search: &str) {
             // produce duplicates, and `render_with_highlights` binary-searches
             // these positions, so sorted-and-unique is a precondition.
             indices_buf.dedup();
+            if offset > 0 {
+                for p in indices_buf.iter_mut() {
+                    *p += offset;
+                }
+            }
             scored.push((i, score, indices_buf.clone()));
         }
     }
@@ -447,6 +463,21 @@ pub fn populate_list_current_layer(renderer: &mut AppRenderer, search: &str) {
     let active_len = renderer.filtered_list_indices.len();
     if renderer.list_index >= active_len {
         renderer.list_index = active_len.saturating_sub(1);
+    }
+}
+
+/// Split a row label into its text and the length of the kind prefix in front
+/// of it (`-b `, `+ `, `-rc `...), counted in characters.
+///
+/// Every prefix `build_str_label` and `build_obj_label` emit is ASCII, so the
+/// character count is also its length in `nucleo`'s index space. A label with
+/// no such prefix (the bare `i` placeholder) comes back whole.
+fn split_row_prefix(label: &str) -> (&str, u32) {
+    match label.split_once(' ') {
+        Some((prefix, rest)) if prefix.starts_with(['-', '+']) && prefix.is_ascii() => {
+            (rest, prefix.len() as u32 + 1)
+        }
+        _ => (label, 0),
     }
 }
 
