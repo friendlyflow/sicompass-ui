@@ -73,7 +73,8 @@ types stop lining up at the boundary.
 
 This crate is the renderer shared by three binaries: the `sicompass`
 application, the `loginsicompass` greetd greeter, and desicompass's
-`desicompass-superkey` (which turns on `AppRenderer::launcher_mode`). It holds the SDL3 window, the Vulkan
+`desicompass-superkey` (which turns on `AppRenderer::launcher_mode` and
+`launcher_window`). It holds the SDL3 window, the Vulkan
 device, font rasterisation, the list layout, the key handlers, the insert-mode
 text field and the AccessKit bridge. What only an *application* has (the
 provider catalogue, `settings.json`, the WASM plugin host, the self-updater,

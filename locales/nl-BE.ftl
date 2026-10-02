@@ -1,6 +1,7 @@
 # Keyboard-hint labels — Belgian Dutch (Flemish).
 
 hint-esc-back = Esc    Terug
+hint-esc-close = Esc    Sluiten
 hint-esc-folders = Esc    Mappen
 
 hint-up-previous = Up     Vorige

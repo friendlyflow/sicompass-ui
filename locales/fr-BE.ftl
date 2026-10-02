@@ -1,6 +1,7 @@
 # Keyboard-hint labels — Belgian French.
 
 hint-esc-back = Esc    Retour
+hint-esc-close = Esc    Fermer
 hint-esc-folders = Esc    Dossiers
 
 hint-up-previous = Up     Précédent

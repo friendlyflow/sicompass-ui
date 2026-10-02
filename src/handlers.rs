@@ -7573,6 +7573,12 @@ pub fn open_in_search(r: &mut AppRenderer, id: &IdArray) {
     handle_tab(r);
 }
 
+/// Ask the embedder to dismiss the window (`HostHooks::dismiss`): Escape in
+/// General in a launcher's window (`AppRenderer::launcher_window`).
+pub fn handle_dismiss(r: &mut AppRenderer) {
+    r.dismiss_requested = true;
+}
+
 /// Enter in launcher mode: do what the row under the cursor is for.
 ///
 /// An object is entered, and search goes on inside it (a radio group opens on

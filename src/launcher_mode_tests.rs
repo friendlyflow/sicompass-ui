@@ -161,6 +161,7 @@ fn path(r: &AppRenderer) -> String {
 fn off_by_default() {
     let r = AppRenderer::new();
     assert!(!r.launcher_mode);
+    assert!(!r.launcher_window);
     assert!(!r.suspended);
     assert!(!r.dismiss_requested);
 }
@@ -352,4 +353,100 @@ fn a_plain_row_is_still_not_an_action() {
     handlers::handle_input(&mut r, "just");
     key(&mut r, Keycode::Return);
     assert!(pressed.lock().unwrap().is_empty());
+}
+
+/// The superkey inside its tutorial: a launcher's window, in General mode with
+/// the app's keymap.
+fn launcher_window_in_general() -> AppRenderer {
+    let (mut r, _) = launcher();
+    r.launcher_window = true;
+    r.launcher_mode = false;
+    key(&mut r, Keycode::Escape); // out of search, the app's way
+    assert_eq!(r.coordinate, Coordinate::General);
+    assert!(!r.dismiss_requested, "Escape in search only leaves search");
+    r
+}
+
+fn ctrl(r: &mut AppRenderer, k: Keycode, shift: bool) {
+    let m = if shift {
+        Mod::LCTRLMOD | Mod::LSHIFTMOD
+    } else {
+        Mod::LCTRLMOD
+    };
+    shortcuts::dispatch_key(r, Some(k), m);
+}
+
+#[test]
+fn escape_in_general_closes_a_launchers_window() {
+    let mut r = launcher_window_in_general();
+    key(&mut r, Keycode::Escape);
+    assert!(r.dismiss_requested);
+}
+
+#[test]
+fn escape_in_general_does_not_close_the_app() {
+    let mut r = launcher_window_in_general();
+    r.launcher_window = false;
+    key(&mut r, Keycode::Escape);
+    assert!(!r.dismiss_requested);
+}
+
+#[test]
+fn a_launchers_window_has_no_tabs() {
+    let mut r = launcher_window_in_general();
+    ctrl(&mut r, Keycode::T, false);
+    assert_eq!(r.tabs.len(), 1, "Ctrl+T");
+    key(&mut r, Keycode::T);
+    assert_eq!(r.coordinate, Coordinate::General, "t opens no switcher");
+
+    // Even with a second tab somehow there, nothing reaches it.
+    r.launcher_window = false;
+    ctrl(&mut r, Keycode::T, false);
+    assert_eq!(r.tabs.len(), 2, "the app has tabs");
+    r.launcher_window = true;
+    let active = r.active_tab;
+    ctrl(&mut r, Keycode::T, true);
+    assert_eq!(r.tabs.len(), 2, "Ctrl+Shift+T");
+    ctrl(&mut r, Keycode::Tab, false);
+    assert_eq!(r.coordinate, Coordinate::General, "Ctrl+Tab");
+    for k in [Keycode::_1, Keycode::_2, Keycode::_9] {
+        ctrl(&mut r, k, false);
+        assert_eq!(r.active_tab, active, "Ctrl+{k:?}");
+    }
+}
+
+#[test]
+fn a_launchers_window_hints_escape_as_close_and_no_tab_keys() {
+    let r = launcher_window_in_general();
+    let hints = shortcuts::hints_for(&r);
+    let has = |h: &str| hints.iter().any(|x| x.starts_with(h));
+    assert!(has("Esc    Close"), "{hints:?}");
+    assert!(!has("Esc    Back"), "{hints:?}");
+    assert!(!has("Ctrl+T"), "{hints:?}");
+    assert!(!has("t      "), "{hints:?}");
+}
+
+#[test]
+fn a_launchers_window_has_no_undo_redo_or_timeline() {
+    let mut r = launcher_window_in_general();
+    let before = r.ffon.clone();
+    ctrl(&mut r, Keycode::Z, false);
+    ctrl(&mut r, Keycode::Z, true);
+    assert_eq!(r.ffon, before);
+    assert_eq!(r.coordinate, Coordinate::General);
+    key(&mut r, Keycode::Z);
+    assert_eq!(r.coordinate, Coordinate::General, "z opens no timeline");
+
+    let hints = shortcuts::hints_for(&r);
+    for h in ["Ctrl+Z", "Ctrl+Shift+Z", "Z      "] {
+        assert!(!hints.iter().any(|x| x.starts_with(h)), "{h}: {hints:?}");
+    }
+}
+
+#[test]
+fn the_app_keeps_its_timeline() {
+    let mut r = launcher_window_in_general();
+    r.launcher_window = false;
+    key(&mut r, Keycode::Z);
+    assert_eq!(r.coordinate, Coordinate::TimelineView);
 }

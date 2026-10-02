@@ -1,6 +1,7 @@
 # Keyboard-hint labels — Belgian German (Eastern Cantons).
 
 hint-esc-back = Esc    Zurück
+hint-esc-close = Esc    Schließen
 hint-esc-folders = Esc    Ordner
 
 hint-up-previous = Up     Vorherige

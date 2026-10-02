@@ -168,7 +168,29 @@ fn always(_: &AppRenderer) -> bool {
 }
 
 fn more_than_one_tab(r: &AppRenderer) -> bool {
-    r.tabs.len() > 1
+    app_keys(r) && r.tabs.len() > 1
+}
+
+/// Keys only the application has: tabs, undo/redo and the timeline. A
+/// launcher's window (`AppRenderer::launcher_window`) is one list that edits
+/// nothing it keeps, so none of them mean anything there.
+fn app_keys(r: &AppRenderer) -> bool {
+    !r.launcher_window
+}
+
+fn not_at_root_and_app_keys(r: &AppRenderer) -> bool {
+    not_at_root(r) && app_keys(r)
+}
+
+/// Escape in General closes a launcher's window (`AppRenderer::launcher_window`)
+/// instead of doing what it does in the app. Exactly General: the
+/// colon-command views relabelled as General still step back out of the view.
+fn escape_dismisses(r: &AppRenderer) -> bool {
+    r.launcher_window && r.coordinate == Coordinate::General
+}
+
+fn not_at_root_unless_escape_dismisses(r: &AppRenderer) -> bool {
+    not_at_root(r) && !escape_dismisses(r)
 }
 
 /// True when the background updater has staged an app update ready for
@@ -592,6 +614,18 @@ pub static SHORTCUTS: &[Shortcut] = &[
         is_available: in_insert_palette,
         handle: handlers::handle_escape_insert_palette,
     },
+    // Escape in General in a launcher's window: close it, the way Escape in
+    // launcher mode does. First, so nothing below takes the key.
+    Shortcut {
+        key: Keycode::Escape,
+        key2: None,
+        ctrl: false,
+        shift: false,
+        modes: &[Coordinate::General],
+        label: "Esc    Close",
+        is_available: escape_dismisses,
+        handle: handlers::handle_dismiss,
+    },
     Shortcut {
         key: Keycode::Escape,
         key2: None,
@@ -636,7 +670,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::TabSwitcher,
         ],
         label: "Esc    Back",
-        is_available: not_at_root,
+        is_available: not_at_root_unless_escape_dismisses,
         handle: handlers::handle_escape,
     },
     Shortcut {
@@ -1752,7 +1786,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: &[Coordinate::General],
         label: "Z      Timeline",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_z,
     },
     // ---- b (toggle bookmark) ---------------------------------------------
@@ -2073,7 +2107,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: &[Coordinate::General],
         label: "Ctrl+Z Undo",
-        is_available: not_at_root,
+        is_available: not_at_root_and_app_keys,
         handle: handlers::handle_undo,
     },
     Shortcut {
@@ -2083,7 +2117,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: UNDO_MODES_ALL,
         label: "Ctrl+Z Undo",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_undo,
     },
     Shortcut {
@@ -2093,7 +2127,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: true,
         modes: &[Coordinate::General],
         label: "Ctrl+Shift+Z Redo",
-        is_available: not_at_root,
+        is_available: not_at_root_and_app_keys,
         handle: handlers::handle_redo,
     },
     Shortcut {
@@ -2103,7 +2137,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: true,
         modes: UNDO_MODES_ALL,
         label: "Ctrl+Shift+Z Redo",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_redo,
     },
     // ---- Ctrl+U (apply staged self-update) -------------------------------
@@ -2148,7 +2182,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "Ctrl+T New tab",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_new,
     },
     Shortcut {
@@ -2205,7 +2239,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: &[Coordinate::General, Coordinate::Dashboard],
         label: "t      Switch tab",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_t_tab_switcher,
     },
     // c (general mode) — open the window-controls palette (minimize/maximize/close).
@@ -2227,7 +2261,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_1,
     },
     Shortcut {
@@ -2237,7 +2271,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_2,
     },
     Shortcut {
@@ -2247,7 +2281,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_3,
     },
     Shortcut {
@@ -2257,7 +2291,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_4,
     },
     Shortcut {
@@ -2267,7 +2301,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_5,
     },
     Shortcut {
@@ -2277,7 +2311,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_6,
     },
     Shortcut {
@@ -2287,7 +2321,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_7,
     },
     Shortcut {
@@ -2297,7 +2331,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_8,
     },
     Shortcut {
@@ -2307,7 +2341,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: TAB_MODES,
         label: "",
-        is_available: always,
+        is_available: app_keys,
         handle: handlers::handle_tab_select_9,
     },
     // ---- Ctrl+S / Ctrl+Shift+S / Ctrl+O (config file ops) ---------------

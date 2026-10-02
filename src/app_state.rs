@@ -957,12 +957,22 @@ pub struct AppRenderer {
     /// and the provider list above the root is out of reach. Off for the
     /// application and the greeter, which keep today's keymap exactly.
     pub launcher_mode: bool,
+    /// The window is a launcher's, even where the embedder has turned
+    /// `launcher_mode` off for part of its list that works like the app (the
+    /// superkey's tutorial, in General mode with the whole keymap). Escape in
+    /// General then dismisses the window as Escape in launcher mode does, and
+    /// the keys only the application has do nothing: a launcher is one list
+    /// that keeps nothing, so there are no tabs (`t`, Ctrl+T, Ctrl+Shift+T,
+    /// Ctrl+Tab, Ctrl+1..9) and no undo, redo or timeline (Ctrl+Z,
+    /// Ctrl+Shift+Z, `z`). Off for the application and the greeter.
+    pub launcher_window: bool,
     /// The window is not on screen (a launcher the compositor has unmapped):
     /// the loop keeps polling events and running the hooks, but draws
     /// nothing. Presenting to a surface nobody displays would block on the
     /// swapchain, so the loop must not even try.
     pub suspended: bool,
-    /// Set by Escape in launcher mode, taken by the loop, which then calls
+    /// Set by Escape in launcher mode (or in General, in a `launcher_window`),
+    /// taken by the loop, which then calls
     /// `HostHooks::dismiss`. A flag rather than a direct call because key
     /// handlers only hold the renderer, and the hooks are the embedder's.
     pub dismiss_requested: bool,
@@ -1216,6 +1226,7 @@ impl AppRenderer {
             announcement_parity: false,
             privacy_blank: false,
             launcher_mode: false,
+            launcher_window: false,
             suspended: false,
             dismiss_requested: false,
             a11y_name: crate::icon::APP_ID.to_owned(),

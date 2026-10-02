@@ -3,6 +3,7 @@
 # keep the chord literal (keys names don't translate) and only swap the verb.
 
 hint-esc-back = Esc    Back
+hint-esc-close = Esc    Close
 hint-esc-folders = Esc    Folders
 
 hint-up-previous = Up     Previous
