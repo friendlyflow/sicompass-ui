@@ -5686,7 +5686,7 @@ pub(crate) fn announce_char(r: &mut AppRenderer, ch: char) {
     // While editing a password field, echo every character (typed or
     // cursored-over) as a masking `*` so the screen reader never speaks the
     // secret. Newlines pass through (passwords are single-line anyway).
-    let ch = if r.input_is_password && ch != '\n' {
+    let ch = if r.masks_input() && ch != '\n' {
         '*'
     } else {
         ch
@@ -5723,7 +5723,7 @@ pub(crate) fn announce_typed_text(r: &mut AppRenderer, text: &str) {
         announce_char(r, first);
         return;
     }
-    let spoken = if r.input_is_password {
+    let spoken = if r.masks_input() {
         "*".repeat(text.chars().count())
     } else {
         text.to_owned()
@@ -6841,7 +6841,7 @@ pub fn handle_ctrl_f(r: &mut AppRenderer) {
         Coordinate::Insert => {
             // Never search a masked field: the query and its highlights would
             // leak the secret that `input_is_password` exists to hide.
-            if r.input_is_password {
+            if r.masks_input() {
                 return;
             }
             r.previous_coordinate = r.coordinate;
@@ -11966,6 +11966,45 @@ mod tests {
         r.input_is_password = true;
         handle_input(&mut r, "s");
         assert_eq!(announced_text(&r).as_deref(), Some("*"));
+    }
+
+    /// The greeter's "show password" box: what is typed is echoed, but the
+    /// field is still a password, so the buffer is still zeroized and the
+    /// element still carries `<password>`.
+    #[test]
+    fn a_revealed_password_is_echoed_but_stays_a_password() {
+        use sicompass_sdk::ffon::{FfonElement, IdArray, get_ffon_at_id};
+
+        let mut root = FfonElement::new_obj("login".to_owned());
+        root.as_obj_mut().unwrap().push(FfonElement::Str(format!(
+            "Password: {}",
+            tags::format_password("")
+        )));
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        r.current_id = IdArray::new();
+        r.current_id.push(0);
+        r.current_id.push(0);
+        r.password_revealed = true;
+        populate_input_buffer(&mut r);
+        begin_insert_session(&mut r);
+        r.coordinate = Coordinate::Insert;
+
+        assert!(r.input_is_password, "still a password field");
+        assert!(!r.masks_input());
+        handle_input(&mut r, "s");
+        assert_eq!(announced_text(&r).as_deref(), Some("s"));
+        handle_input(&mut r, "ab");
+        assert_eq!(announced_text(&r).as_deref(), Some("ab"));
+        let live = get_ffon_at_id(&r.ffon, &r.current_id).unwrap()[0]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(live, "Password: <password>sab</password>");
+
+        r.password_revealed = false;
+        handle_input(&mut r, "x");
+        assert_eq!(announced_text(&r).as_deref(), Some("*"), "masked again");
     }
 
     #[test]

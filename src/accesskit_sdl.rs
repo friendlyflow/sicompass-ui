@@ -516,8 +516,11 @@ fn detect_language(content: &str) -> Option<String> {
 /// `populate_input_buffer`, which sets `input_is_password`), and the role
 /// change reaches Orca as `object:property-change:accessible-role` a frame
 /// later, well before a first character can follow.
+///
+/// Not while the embedder has revealed the password (`password_revealed`):
+/// then it is shown, so it is echoed like any other field being typed into.
 fn focus_is_password(renderer: &AppRenderer) -> bool {
-    renderer.input_is_password
+    renderer.masks_input()
 }
 
 fn current_element(renderer: &AppRenderer) -> (String, String) {
@@ -1135,6 +1138,29 @@ mod tests {
         assert_eq!(element_role(&build_tree(&r)), Role::ListItem);
         r.input_is_password = true;
         assert_eq!(element_role(&build_tree(&r)), Role::PasswordInput);
+    }
+
+    /// Revealed by the embedder, the password is shown, so the screen reader
+    /// may echo it like any other field being typed into.
+    #[test]
+    fn a_revealed_password_being_edited_is_not_a_password_field() {
+        let mut r = make_renderer_with_list(&["-i Password:"]);
+        r.input_is_password = true;
+        r.password_revealed = true;
+        assert_eq!(element_role(&build_tree(&r)), Role::ListItem);
+        r.password_revealed = false;
+        assert_eq!(element_role(&build_tree(&r)), Role::PasswordInput);
+    }
+
+    #[test]
+    fn speak_mode_change_speaks_a_revealed_password() {
+        let _g = crate::app_state::locale_test_lock();
+        let mut r = AppRenderer::new();
+        r.coordinate = crate::app_state::Coordinate::Insert;
+        r.input_is_password = true;
+        r.password_revealed = true;
+        r.speak_mode_change(Some("s3cr3t".to_string()));
+        assert_eq!(announced_text(&r).as_deref(), Some("insert mode - s3cr3t"));
     }
 
     #[test]

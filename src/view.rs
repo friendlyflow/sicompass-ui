@@ -1272,7 +1272,7 @@ fn update_view(app: &mut AppState) {
     // mask char is one byte) so the caret and highlight stay aligned. Done
     // once here so every downstream use (glyphs, caret, selection, line
     // counting) sees the same masked text.
-    let mask_password = renders_insert_buffer && app.renderer.input_is_password;
+    let mask_password = renders_insert_buffer && app.renderer.masks_input();
     let (insert_buf, insert_cursor, insert_sel) = if mask_password {
         let raw = &app.renderer.input_buffer;
         let masked: String = raw
@@ -2554,7 +2554,7 @@ fn update_view(app: &mut AppState) {
     // matches the caret/selection blocks below: the buffer's first line trails
     // the non-editable prefix at `captured_elem_x`, continuation lines start at
     // `captured_elem_base_x`.
-    if in_input_search && !app.renderer.input_is_password {
+    if in_input_search && !app.renderer.masks_input() {
         let matches = handlers::input_search_matches(&app.renderer);
         let current = app.renderer.input_search_current_match;
         let buf = insert_buf.clone();

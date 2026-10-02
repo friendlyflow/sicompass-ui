@@ -734,6 +734,13 @@ pub struct AppRenderer {
     /// the committed FFON element are masked (one asterisk per character).
     /// Set by `populate_input_buffer`, reset on insert-mode exit.
     pub input_is_password: bool,
+    /// Show the password being typed instead of masking it. Set by the
+    /// embedder (the greeter's "show password" box), never by the renderer.
+    /// Only the *masking* follows it ([`masks_input`](Self::masks_input)): the
+    /// drawn buffer, the spoken echo and the password role. The buffer is
+    /// still zeroized and still committed as `<password>`, because those
+    /// follow `input_is_password`.
+    pub password_revealed: bool,
     /// Visual lines of the field being edited, as the last frame wrapped them,
     /// and the buffer they were laid out for. Written by the view, read by
     /// Up/Down so they follow the wrapping on screen.
@@ -1146,6 +1153,7 @@ impl AppRenderer {
             input_prefix: String::new(),
             input_suffix: String::new(),
             input_is_password: false,
+            password_revealed: false,
             insert_lines: Vec::new(),
             insert_lines_text: String::new(),
             insert_goal: None,
@@ -1698,6 +1706,14 @@ impl AppRenderer {
         self.pending_announcement = Some(format!("{text}{sentinel}"));
     }
 
+    /// True while the text being edited must be hidden: a password field the
+    /// embedder has not revealed. Everything that draws or speaks the buffer
+    /// asks this; what keeps the secret safe (zeroizing, the `<password>`
+    /// re-wrap) asks `input_is_password` instead.
+    pub fn masks_input(&self) -> bool {
+        self.input_is_password && !self.password_revealed
+    }
+
     /// Set the screen-reader announcement to the current coordinate's spoken
     /// name, optionally suffixed with a context string.
     ///
@@ -1714,7 +1730,7 @@ impl AppRenderer {
         // Never speak a password field's value: mask the spoken context so the
         // screen reader announces asterisks, not the secret.
         let context = match context {
-            Some(ctx) if self.input_is_password => Some(sicompass_sdk::tags::mask_password(&ctx)),
+            Some(ctx) if self.masks_input() => Some(sicompass_sdk::tags::mask_password(&ctx)),
             other => other,
         };
         let text = match context {
