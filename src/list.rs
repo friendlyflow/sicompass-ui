@@ -1007,7 +1007,7 @@ pub struct TimelineProviderInfo {
 
 /// Render a non-filesystem provider path as a breadcrumb. Strips the leading
 /// `/` and replaces remaining slashes with ` > ` so the user reads
-/// "Available programs: > Email" instead of "/Available programs:/Email".
+/// "email client > Server" instead of "/email client/Server".
 /// Filesystem paths are passed through verbatim. ASCII `>` matches the
 /// ExtendedSearch (Ctrl+F) breadcrumb.
 fn render_nav_path(path: &str, is_fs: bool, fallback: &str) -> String {

@@ -39,8 +39,8 @@ pub type SettingsQueue = Arc<Mutex<Vec<(String, String)>>>;
 /// provider graph with it) the calls are inverted.
 pub trait HostHooks: Send {
     /// Drain the settings queue and apply what is in it. `initial` is true for
-    /// the one call made during startup, where `enable_*` keys are skipped
-    /// because providers were loaded already.
+    /// the one call made during startup, where the Store's install and removal
+    /// events are skipped because providers were loaded already.
     fn apply_pending_settings(&self, _renderer: &mut AppRenderer, _initial: bool) {}
 
     /// Move the background updater's progress into the renderer's state.

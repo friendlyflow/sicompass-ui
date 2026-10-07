@@ -57,7 +57,7 @@ ignore = true
 [sicompass-sdk]
 accepted = ["GPL-3.0-only"]
 
-[sicompass-payments]
+[sicompass-sync]
 accepted = ["GPL-3.0-only"]
 
 # miniz_oxide ships two MIT license files (`LICENSE` and `LICENSE-MIT.md`)
