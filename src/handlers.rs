@@ -2042,6 +2042,14 @@ fn apply_view_command_on(r: &mut AppRenderer, cmd: &str, element_key: &str, elem
         }
     }
 
+    land_in_swapped_view(r);
+    speak_view_swap(r);
+    r.needs_redraw = true;
+}
+
+/// Rebuild the current level after a view swap that keeps its depth, and put
+/// the cursor where the new view starts.
+fn land_in_swapped_view(r: &mut AppRenderer) {
     crate::provider::refresh_current_directory(r);
     // The two views have unrelated lengths, so a carried-over index could point
     // past the end of the new list. Entering the shell lands on the live input
@@ -2052,8 +2060,6 @@ fn apply_view_command_on(r: &mut AppRenderer, cmd: &str, element_key: &str, elem
     }
     list::create_list_current_layer(r);
     r.list_index = r.current_id.last().unwrap_or(0);
-    speak_view_swap(r);
-    r.needs_redraw = true;
 }
 
 /// Announce a browse-then-session view swap the way every other mode entry is
@@ -2355,10 +2361,9 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
     };
 
     // Enter on a `<button>` row of a session list, routed through
-    // `handle_command` rather than `on_button_press`. `on_button_press` returns
-    // `()`, so it cannot hand back the row the `new session` button has to open
-    // for the first prompt. One command covers every button the list has, which
-    // keeps the button vocabulary entirely inside the provider.
+    // `handle_command` rather than `on_button_press`, which returns `()` and so
+    // could not hand back a row. One command covers every button the list has,
+    // which keeps the button vocabulary entirely inside the provider.
     if in_session_list(r) {
         let key = match &elem_clone {
             FfonElement::Str(s) => s.clone(),
@@ -2367,6 +2372,17 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
         if tags::has_button(&key) {
             match crate::provider::handle_command(r, VIEW_CMD_ACTIVATE_ROW, &key, 0) {
                 Some(row) => insert_returned_element(r, row),
+                // The button opened a session (claude's `new session`): land on
+                // its prompt row, typing, the way `insert_returned_element`
+                // lands in a returned row. The session's own row is where Ctrl+:
+                // offers the provider's insert palette, which a row in the list
+                // never could. It has no name yet; the first prompt gives it one.
+                None if in_session_view(r) && !in_session_list(r) => {
+                    r.session_view_parent_label = None;
+                    r.session_view_row_id = None;
+                    land_in_swapped_view(r);
+                    handle_i(r);
+                }
                 None => {
                     // A confirmation answered: the list changed length under the
                     // cursor, so refresh and clamp rather than leaving it past
@@ -3755,10 +3771,10 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
         None
     };
 
-    // Read before the commit: a successful one swaps the session list for the
-    // transcript, and afterwards there is no way to tell this was the
-    // new-session row.
-    let starting_a_session = in_session_list(r);
+    // Read before the commit, which adds the prompt to the transcript: a
+    // session with no name yet is one the `new session` button just opened.
+    let starting_a_session =
+        in_session_view(r) && !in_session_list(r) && r.session_view_parent_label.is_none();
 
     // Try provider commit first
     let committed = crate::provider::commit_edit(r, &old_content, &new_content);
@@ -13424,6 +13440,166 @@ mod tests {
         r.providers.push(Box::new(prov));
         list::create_list_current_layer(&mut r);
         r
+    }
+
+    /// claude's three views, with the session list's `new session` button
+    /// opening an empty session (a view swap, no row handed back).
+    #[derive(Default)]
+    struct SessionListStub {
+        view: u8, // 0 folders, 1 session list, 2 session
+        sent: Vec<String>,
+    }
+    impl sicompass_sdk::provider::Provider for SessionListStub {
+        fn name(&self) -> &str {
+            "claude"
+        }
+        fn fetch(&mut self) -> Vec<FfonElement> {
+            match self.view {
+                0 => vec![FfonElement::new_obj("workspace")],
+                1 => vec![
+                    FfonElement::new_str("<button>new-session</button>new session"),
+                    FfonElement::new_obj("an earlier session"),
+                ],
+                _ => {
+                    let mut out: Vec<FfonElement> =
+                        self.sent.iter().map(|s| FfonElement::new_str(s)).collect();
+                    out.push(FfonElement::new_str("send to claude: <input></input>"));
+                    out
+                }
+            }
+        }
+        fn commands(&self) -> Vec<String> {
+            match self.view {
+                0 => vec![VIEW_CMD_SESSION_LIST.to_owned()],
+                1 => vec![VIEW_CMD_BROWSE.to_owned(), VIEW_CMD_SESSION_LIST.to_owned()],
+                _ => vec![
+                    VIEW_CMD_BROWSE.to_owned(),
+                    VIEW_CMD_SESSION_LIST.to_owned(),
+                    "skills".to_owned(),
+                ],
+            }
+        }
+        fn command_list_items(&self, cmd: &str) -> Vec<sicompass_sdk::provider::ListItem> {
+            if cmd != "skills" {
+                return Vec::new();
+            }
+            vec![sicompass_sdk::provider::ListItem {
+                label: "greet - say hello".to_owned(),
+                data: "/greet".to_owned(),
+            }]
+        }
+        fn handle_command(
+            &mut self,
+            cmd: &str,
+            _k: &str,
+            _t: i32,
+            _e: &mut String,
+        ) -> Option<FfonElement> {
+            match cmd {
+                VIEW_CMD_SESSION_LIST => self.view = 1,
+                VIEW_CMD_BROWSE => self.view = 0,
+                VIEW_CMD_ACTIVATE_ROW => {
+                    self.view = 2;
+                    self.sent.clear();
+                }
+                _ => {}
+            }
+            None
+        }
+        fn commit_edit(&mut self, old: &str, new: &str) -> bool {
+            if self.view != 2 || !old.is_empty() || new.trim().is_empty() {
+                return false;
+            }
+            self.sent.push(new.trim().to_owned());
+            true
+        }
+    }
+
+    /// In the session list, on the `new session` button.
+    fn make_renderer_on_the_new_session_button() -> AppRenderer {
+        use sicompass_sdk::provider::Provider as _;
+        let mut r = AppRenderer::new();
+        let mut prov = SessionListStub::default();
+        let mut root = FfonElement::new_obj("claude");
+        for child in prov.fetch() {
+            root.as_obj_mut().unwrap().push(child);
+        }
+        r.ffon = vec![root];
+        r.current_id = {
+            let mut id = IdArray::new();
+            id.push(0);
+            id.push(0);
+            id
+        };
+        r.providers.push(Box::new(prov));
+        list::create_list_current_layer(&mut r);
+        r.coordinate = Coordinate::General;
+        handle_colon(&mut r);
+        assert!(in_session_list(&r));
+        r.current_id.set_last(0);
+        list::create_list_current_layer(&mut r);
+        r
+    }
+
+    #[test]
+    fn the_new_session_button_lands_typing_on_the_sessions_prompt() {
+        let mut r = make_renderer_on_the_new_session_button();
+        handle_enter_general(&mut r);
+
+        assert!(in_session_view(&r) && !in_session_list(&r));
+        assert_eq!(r.coordinate, Coordinate::Insert);
+        assert_eq!(
+            r.previous_coordinate,
+            Coordinate::SessionFirstCommand,
+            "Escape lands in the session, not back in the list"
+        );
+        assert_eq!(
+            r.current_id.last(),
+            trailing_input_slot_index(&r),
+            "on the prompt row"
+        );
+        assert!(
+            r.session_view_parent_label.is_none(),
+            "no name until the first prompt"
+        );
+        assert!(
+            insert_palette_available(&r),
+            "Ctrl+: offers the skills while the first prompt is typed"
+        );
+
+        handle_insert_palette(&mut r);
+        assert_eq!(r.coordinate, Coordinate::SecondCommand);
+        assert!(
+            r.total_list.iter().any(|i| i.label.contains("greet")),
+            "labels: {:?}",
+            r.total_list.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_new_session_is_named_after_its_first_prompt_only() {
+        let mut r = make_renderer_on_the_new_session_button();
+        handle_enter_general(&mut r);
+
+        r.input_buffer = "what does this crate do?".to_owned();
+        r.cursor_position = r.input_buffer.len();
+        handle_enter_insert(&mut r);
+        assert_eq!(
+            r.session_view_parent_label.as_deref(),
+            Some("what does this crate do?")
+        );
+
+        assert!(snap_to_trailing_input(&mut r));
+        list::create_list_current_layer(&mut r);
+        handle_i(&mut r);
+        r.input_buffer = "and the tests?".to_owned();
+        r.cursor_position = r.input_buffer.len();
+        handle_enter_insert(&mut r);
+        assert_eq!(
+            r.session_view_parent_label.as_deref(),
+            Some("what does this crate do?"),
+            "the second prompt does not rename the session"
+        );
     }
 
     #[test]
