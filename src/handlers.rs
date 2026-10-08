@@ -1148,6 +1148,9 @@ pub fn handle_i(r: &mut AppRenderer) {
     if !r.coordinate.is_general() {
         return;
     }
+    if on_add_placeholder(r) && refuse_new_row(r) {
+        return;
+    }
     // Stashed rather than assumed to be General: inside a terminal shell or a
     // claude session the at-rest coordinate is one of the colon-command
     // relabellings, and Escape has to land back on the one we came from.
@@ -1171,6 +1174,9 @@ pub fn handle_i(r: &mut AppRenderer) {
 /// Enter append mode (cursor at end) on the current item.
 pub fn handle_a(r: &mut AppRenderer) {
     if !r.coordinate.is_general() {
+        return;
+    }
+    if on_add_placeholder(r) && refuse_new_row(r) {
         return;
     }
     // Stashed rather than assumed to be General: inside a terminal shell or a
@@ -3114,6 +3120,27 @@ fn try_handle_live_input_search_enter(
 /// the provider with old/new content, then updates the FFON element and exits
 /// insert mode. Falls back to a direct FFON update for providers without
 /// `commit_edit` support.
+/// Whether the provider refused a placeholder commit and said why, as the file
+/// browser does in a folder that needs sudo. The edit is then left as it was
+/// before Enter, still in Insert with the typed name, so the error is heard
+/// over it and Escape cancels it as usual. A refusal with no reason is a
+/// provider without a commit of its own, which the caller handles.
+fn refused(
+    r: &mut AppRenderer,
+    committed: bool,
+    session: Option<crate::app_state::InsertSession>,
+    cancel: Option<crate::app_state::PlaceholderCancel>,
+) -> bool {
+    if committed || r.error_message.is_empty() {
+        return false;
+    }
+    r.placeholder_insert_mode = true;
+    r.placeholder_cancel = cancel;
+    r.insert_session = session;
+    r.needs_redraw = true;
+    true
+}
+
 pub fn handle_enter_insert(r: &mut AppRenderer) {
     use sicompass_sdk::ffon::{FfonElement, get_ffon_at_id};
     use sicompass_sdk::tags;
@@ -3193,10 +3220,13 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
             }
             PlaceholderKind::Str(name) => {
                 r.placeholder_insert_mode = false;
-                r.placeholder_cancel = None;
+                let cancel = r.placeholder_cancel.take();
                 let undo_id = r.current_id.clone();
                 let tl_before = r.active_timeline().entries.len();
                 let committed = crate::provider::commit_edit(r, &old_content, &name);
+                if refused(r, committed, session, cancel) {
+                    return;
+                }
                 // A provider that owns its tree hears about the new row here,
                 // before the refresh below re-fetches from it and would
                 // otherwise render away what the user just typed. The
@@ -3314,11 +3344,14 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
             }
             PlaceholderKind::Obj(key) => {
                 r.placeholder_insert_mode = false;
-                r.placeholder_cancel = None;
+                let cancel = r.placeholder_cancel.take();
                 // Passes `key:` — the trailing colon signals Obj creation to `update_body_leaf`.
                 let undo_id = r.current_id.clone();
                 let tl_before = r.active_timeline().entries.len();
                 let committed = crate::provider::commit_edit(r, &old_content, &format!("{key}:"));
+                if refused(r, committed, session, cancel) {
+                    return;
+                }
                 // A provider that owns its tree hears about the new row here,
                 // before the refresh below re-fetches from it and would
                 // otherwise render away what the user just typed. The
@@ -3582,6 +3615,7 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
             r.list_index = r.current_id.last().unwrap_or(0);
             r.needs_redraw = true;
         } else if !r.error_message.is_empty() {
+            r.insert_session = session;
             r.needs_redraw = true;
         }
         return;
@@ -3665,6 +3699,7 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
             handle_escape(r);
             return;
         } else {
+            r.insert_session = session;
             r.needs_redraw = true;
             return;
         }
@@ -4647,6 +4682,11 @@ pub fn handle_file_delete(r: &mut AppRenderer) {
             r.current_id.set_last(new_len - 1);
         }
         list::create_list_current_layer(r);
+        r.needs_redraw = true;
+    } else {
+        if r.error_message.is_empty() {
+            r.error_message = "cannot delete this element".to_owned();
+        }
         r.needs_redraw = true;
     }
 }
@@ -7127,11 +7167,41 @@ pub fn handle_ctrl_shift_a_placeholder(r: &mut AppRenderer) {
     insert_placeholder_typed(r, insert_idx);
 }
 
+/// Whether the active provider refuses a new row where the cursor is (the
+/// file browser in a folder that needs sudo), putting its reason in the
+/// header. Asked before a key opens a row to type into, so the user hears it
+/// at once rather than after typing a name.
+fn refuse_new_row(r: &mut AppRenderer) -> bool {
+    if r.current_id.depth() < 2 {
+        return false;
+    }
+    let Some(why) = crate::provider::get_active_provider(r).and_then(|p| p.cannot_add_here())
+    else {
+        return false;
+    };
+    r.error_message = why;
+    r.needs_redraw = true;
+    true
+}
+
+/// Whether the cursor is on the `i` row an empty level offers for adding.
+fn on_add_placeholder(r: &AppRenderer) -> bool {
+    let idx = r.current_id.last().unwrap_or(0);
+    matches!(
+        sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &r.current_id).and_then(|a| a.get(idx)),
+        Some(sicompass_sdk::ffon::FfonElement::Str(s)) if s == I_PLACEHOLDER
+    )
+}
+
 /// Insert an `<input></input>` placeholder at `insert_idx`, set `placeholder_insert_mode`,
 /// and enter the appropriate insert mode via `handle_i`. This is the `*`-placeholder variant of `insert_general_placeholder`.
 fn insert_placeholder_typed(r: &mut AppRenderer, insert_idx: usize) {
     use crate::app_state::PlaceholderCancel;
     use sicompass_sdk::ffon::FfonElement;
+
+    if refuse_new_row(r) {
+        return;
+    }
 
     let depth = r.current_id.depth();
     // Use I_PLACEHOLDER so build_str_label renders it as the "i" placeholder label.
@@ -7182,6 +7252,10 @@ fn insert_placeholder_typed(r: &mut AppRenderer, insert_idx: usize) {
 /// Mirrors C `insertOperatorPlaceholder`.
 fn insert_general_placeholder(r: &mut AppRenderer, insert_idx: usize) {
     use sicompass_sdk::ffon::FfonElement;
+
+    if refuse_new_row(r) {
+        return;
+    }
 
     let depth = r.current_id.depth();
 
@@ -12911,6 +12985,146 @@ mod tests {
         assert_eq!(r.coordinate, Coordinate::Insert);
         assert!(!r.error_message.is_empty());
         assert!(r.placeholder_insert_mode);
+    }
+
+    /// The file browser in a folder that needs sudo: every commit is refused,
+    /// with the reason.
+    struct RefusingProvider {
+        error: Option<String>,
+        /// What `cannot_add_here` answers.
+        add: Option<String>,
+    }
+
+    impl sicompass_sdk::provider::Provider for RefusingProvider {
+        fn name(&self) -> &str {
+            "filebrowser"
+        }
+        fn fetch(&mut self) -> Vec<FfonElement> {
+            vec![]
+        }
+        fn current_path(&self) -> &str {
+            "/etc"
+        }
+        fn set_current_path(&mut self, _: &str) {}
+        fn commit_edit(&mut self, _: &str, new: &str) -> bool {
+            let name = new.trim_end_matches(':');
+            self.error = Some(format!("could not create {name}: permission denied"));
+            false
+        }
+        fn take_error(&mut self) -> Option<String> {
+            self.error.take()
+        }
+        fn cannot_add_here(&mut self) -> Option<String> {
+            self.add.clone()
+        }
+    }
+
+    /// A refused create is not shown as created: the edit stays open with what
+    /// was typed and the reason, and Escape cancels it as usual.
+    fn assert_refused_placeholder_commit(typed: &str, error: &str) {
+        let mut r = make_placeholder_renderer();
+        r.providers = vec![Box::new(RefusingProvider {
+            error: None,
+            add: None,
+        })];
+        r.input_buffer = typed.to_owned();
+        handle_enter_insert(&mut r);
+        assert_eq!(r.error_message, error);
+        assert_eq!(r.coordinate, Coordinate::Insert);
+        assert!(r.placeholder_insert_mode);
+        assert_eq!(r.input_buffer, typed);
+        let children = || r.ffon[0].as_obj().unwrap().children.clone();
+        assert_eq!(children(), vec![FfonElement::new_str("<input></input>")]);
+        handle_escape(&mut r);
+        assert_eq!(r.coordinate, Coordinate::General);
+        assert!(
+            r.ffon[0]
+                .as_obj()
+                .unwrap()
+                .children
+                .iter()
+                .all(|c| !matches!(
+                    c,
+                    FfonElement::Str(s) if s.contains("new")
+                ) && !matches!(c, FfonElement::Obj(_))),
+            "nothing was created: {:?}",
+            r.ffon[0]
+        );
+    }
+
+    /// A level the provider says cannot take a new row, holding `children`,
+    /// the cursor on the first.
+    fn renderer_where_nothing_can_be_added(children: Vec<FfonElement>) -> AppRenderer {
+        let mut root = FfonElement::new_obj("file browser");
+        for c in children {
+            root.as_obj_mut().unwrap().push(c);
+        }
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        r.providers = vec![Box::new(RefusingProvider {
+            error: None,
+            add: Some("cannot add to /etc: permission denied".to_owned()),
+        })];
+        r.current_id = {
+            let mut id = IdArray::new();
+            id.push(0);
+            id.push(0);
+            id
+        };
+        list::create_list_current_layer(&mut r);
+        r
+    }
+
+    /// Every key that opens a row to type into is refused at once, with the
+    /// provider's reason, and opens nothing.
+    #[test]
+    fn keys_that_add_a_row_say_at_once_that_nothing_can_be_added_here() {
+        type Press = fn(&mut AppRenderer);
+        let keys: [(&str, Press); 4] = [
+            ("Ctrl+A", handle_ctrl_a_general),
+            ("Ctrl+I", handle_ctrl_i_general),
+            ("Ctrl+Shift+A", handle_ctrl_shift_a_placeholder),
+            ("Ctrl+Shift+I", handle_ctrl_shift_i_placeholder),
+        ];
+        for (key, press) in keys {
+            let kept = FfonElement::new_str("<input>passwd</input>");
+            let mut r = renderer_where_nothing_can_be_added(vec![kept.clone()]);
+            press(&mut r);
+            assert_eq!(
+                r.error_message, "cannot add to /etc: permission denied",
+                "{key}"
+            );
+            assert_eq!(r.coordinate, Coordinate::General, "{key}");
+            assert!(!r.placeholder_insert_mode, "{key}");
+            assert_eq!(r.ffon[0].as_obj().unwrap().children, vec![kept], "{key}");
+        }
+    }
+
+    /// `i` on the `i` row of an empty level is refused the same way, while
+    /// `i` on a name (a rename) is not asked about.
+    #[test]
+    fn i_on_the_add_row_says_at_once_that_nothing_can_be_added_here() {
+        let mut r = renderer_where_nothing_can_be_added(vec![FfonElement::new_str(I_PLACEHOLDER)]);
+        handle_i(&mut r);
+        assert_eq!(r.error_message, "cannot add to /etc: permission denied");
+        assert_eq!(r.coordinate, Coordinate::General);
+
+        let mut r = renderer_where_nothing_can_be_added(vec![FfonElement::new_str(
+            "<input>passwd</input>",
+        )]);
+        handle_i(&mut r);
+        assert!(r.error_message.is_empty());
+        assert_eq!(r.coordinate, Coordinate::Insert);
+    }
+
+    #[test]
+    fn a_refused_file_create_stays_in_insert_with_the_reason() {
+        assert_refused_placeholder_commit("new.txt", "could not create new.txt: permission denied");
+    }
+
+    #[test]
+    fn a_refused_folder_create_stays_in_insert_with_the_reason() {
+        assert_refused_placeholder_commit("new:", "could not create new: permission denied");
     }
 
     // -----------------------------------------------------------------------

@@ -1037,11 +1037,16 @@ pub fn delete_item(renderer: &mut AppRenderer) -> bool {
         Some(i) => i,
         None => return false,
     };
-    let ok = renderer
-        .providers
-        .get_mut(provider_idx)
-        .map(|p| p.delete_item(&name))
-        .unwrap_or(false);
+    let ok = match renderer.providers.get_mut(provider_idx) {
+        Some(p) => {
+            let ok = p.delete_item(&name);
+            if !ok && let Some(err) = p.take_error() {
+                renderer.error_message = err;
+            }
+            ok
+        }
+        None => false,
+    };
 
     if ok {
         drain_provider_entries(renderer, provider_idx, deleted_elem);
@@ -1732,6 +1737,8 @@ mod tests {
         last_execute: Option<(String, String)>,
         last_command: Option<String>,
         fs: bool,
+        /// Why the last call failed, for `take_error`.
+        error: Option<String>,
     }
 
     impl MockProvider {
@@ -1753,6 +1760,7 @@ mod tests {
                 last_execute: None,
                 last_command: None,
                 fs: false,
+                error: None,
             }
         }
     }
@@ -1805,6 +1813,9 @@ mod tests {
         fn delete_item(&mut self, name: &str) -> bool {
             self.last_delete = Some(name.to_owned());
             self.delete_ok
+        }
+        fn take_error(&mut self) -> Option<String> {
+            self.error.take()
         }
         fn commands(&self) -> Vec<String> {
             self.cmds.clone()
@@ -2103,6 +2114,34 @@ mod tests {
             id
         };
         assert!(!delete_item_by_name(&mut r, "f.txt"));
+    }
+
+    /// A file in a folder that needs sudo: the delete is refused, the file
+    /// stays, and the provider's reason reaches the header.
+    #[test]
+    fn a_refused_delete_says_why() {
+        let mut p = MockProvider::new("test", vec![FfonElement::new_str("<input>a</input>")]);
+        p.delete_ok = false;
+        p.error = Some("could not delete a: permission denied".to_owned());
+        let mut r = make_renderer_with_provider(p);
+        r.current_id.push(0);
+        crate::list::create_list_current_layer(&mut r);
+        crate::handlers::handle_file_delete(&mut r);
+        assert_eq!(r.error_message, "could not delete a: permission denied");
+        let root = r.ffon[0].as_obj().unwrap();
+        assert_eq!(root.children.len(), 1, "the file is still listed");
+    }
+
+    /// A provider that refuses without a reason still gets the refusal heard.
+    #[test]
+    fn a_refused_delete_without_a_reason_is_still_told() {
+        let mut p = MockProvider::new("test", vec![FfonElement::new_str("<input>a</input>")]);
+        p.delete_ok = false;
+        let mut r = make_renderer_with_provider(p);
+        r.current_id.push(0);
+        crate::list::create_list_current_layer(&mut r);
+        crate::handlers::handle_file_delete(&mut r);
+        assert_eq!(r.error_message, "cannot delete this element");
     }
 
     // --- get_commands dispatch ---
