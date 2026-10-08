@@ -46,7 +46,7 @@ bundled-sdl3 = ["sdl3/build-from-source-static"]
 # was split out. Keep them in step with sicompass's `[workspace.dependencies]`,
 # or cargo builds two copies of a crate into the app.
 [dependencies]
-sicompass-sdk = "0.9.0"
+sicompass-sdk = "0.9.5"
 async-trait = "0.1"
 
 serde = { version = "1", features = ["derive"] }
