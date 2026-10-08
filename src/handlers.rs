@@ -7032,11 +7032,13 @@ pub fn handle_enter_input_search(r: &mut AppRenderer) {
 // Ctrl+F — find / enter search mode
 // ---------------------------------------------------------------------------
 
+/// The longest gap between the two presses of a double tap, in milliseconds
+/// of [`sdl_ticks`]: Ctrl+A, Ctrl+I and Ctrl+F twice here, and Super+S twice
+/// in the desicompass superkey (mirrors C DELTA_MS).
+pub const DELTA_MS: u64 = 400;
+
 /// Ctrl+F — in Scroll mode enters ScrollSearch; in insert modes enters InputSearch;
 /// otherwise enters SimpleSearch.
-/// Double-tap interval for Ctrl+F extended search reset (mirrors C DELTA_MS).
-const DELTA_MS: u64 = 400;
-
 pub fn handle_ctrl_f(r: &mut AppRenderer) {
     match r.coordinate.base() {
         Coordinate::Scroll => {
