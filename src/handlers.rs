@@ -348,6 +348,29 @@ fn find_id_path(arr: &[FfonElement], base_id: &IdArray, target: &str) -> Option<
     None
 }
 
+/// Whether the active provider's path is a real filesystem path.
+fn active_path_is_filesystem(r: &AppRenderer) -> bool {
+    r.current_id
+        .get(0)
+        .and_then(|i| r.providers.get(i))
+        .map(|p| p.path_is_filesystem())
+        .unwrap_or(false)
+}
+
+/// The path segment the provider is given when the cursor steps into the
+/// `Obj` keyed `key`. For filesystem providers it is the `<input>` content,
+/// not the display-stripped key: with "show properties" on, a directory key is
+/// `drwxr-xr-x … <input>Downloads</input>`, and `strip_display` would keep the
+/// permissions prefix and corrupt the path. Shared by Right and scroll mode's
+/// prefetch so the two can never walk different paths.
+fn nav_segment(key: &str, use_input_name: bool) -> String {
+    if use_input_name {
+        crate::provider::element_nav_name(key)
+    } else {
+        tags::strip_display(key).to_string()
+    }
+}
+
 /// Navigate into the item at `r.current_id` without rebuilding the list.
 /// Returns `true` if navigation happened.
 pub fn navigate_right_raw(r: &mut AppRenderer) -> bool {
@@ -357,18 +380,9 @@ pub fn navigate_right_raw(r: &mut AppRenderer) -> bool {
         return false;
     }
 
-    // Extract segment name + whether the Obj already has children (static vs lazy) + link URL.
-    // For filesystem providers the navigable segment is the `<input>` content,
-    // not the display-stripped key: with "show properties" on, a directory key
-    // is `drwxr-xr-x … <input>Downloads</input>`, and `strip_display` would keep
-    // the permissions prefix and corrupt the path. `element_nav_name` prefers the
-    // input content so navigation stays correct as properties persist.
-    let use_input_name = r
-        .current_id
-        .get(0)
-        .and_then(|i| r.providers.get(i))
-        .map(|p| p.path_is_filesystem())
-        .unwrap_or(false);
+    // Extract segment name (`nav_segment`) + whether the Obj already has
+    // children (static vs lazy) + link URL.
+    let use_input_name = active_path_is_filesystem(r);
     let (segment, has_children, link_url) = {
         let depth = item_id.depth();
         let last_idx = item_id.get(depth.saturating_sub(1)).unwrap_or(0);
@@ -380,12 +394,11 @@ pub fn navigate_right_raw(r: &mut AppRenderer) -> bool {
                 } else {
                     None
                 };
-                let segment = if use_input_name {
-                    crate::provider::element_nav_name(&o.key)
-                } else {
-                    tags::strip_display(&o.key).to_string()
-                };
-                (segment, !o.children.is_empty(), link)
+                (
+                    nav_segment(&o.key, use_input_name),
+                    !o.children.is_empty(),
+                    link,
+                )
             }
             _ => return false,
         }
@@ -1203,6 +1216,7 @@ pub fn handle_s(r: &mut AppRenderer) {
     if !r.coordinate.is_general() {
         return;
     }
+    prefetch_scroll_subtree(r);
     r.previous_coordinate = r.coordinate;
     r.coordinate = Coordinate::Scroll;
     r.speak_mode_change(None);
@@ -1211,6 +1225,129 @@ pub fn handle_s(r: &mut AppRenderer) {
     r.text_scroll_offset = -1; // sentinel: renderer computes initial offset (selected item at top)
     r.text_scroll_total_height = 0;
     r.needs_redraw = true;
+}
+
+/// How far scroll mode's prefetch walks below the current list, in levels.
+const SCROLL_PREFETCH_MAX_DEPTH: usize = 4;
+/// The prefetch stops fetching once the tree under the current list holds
+/// this many elements.
+const SCROLL_PREFETCH_MAX_ELEMENTS: usize = 5000;
+/// Wall-clock budget for the prefetch. Checked before each fetch: the app
+/// waits on every provider call, so one slow call can still overrun it.
+const SCROLL_PREFETCH_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Load the levels under the current list that the user has not opened yet,
+/// so scroll mode can show them flattened.
+///
+/// Most providers hand a folder, room or note over as an `Obj` with no
+/// children and fill it on Right (`navigate_right_raw`). Scroll mode only
+/// flattens what is in the tree, so without this it shows one level for
+/// them. Each empty `Obj` is fetched the way Right does it (`push_path`,
+/// `fetch`, `pop_path`) and the result grafted on, breadth first, so the
+/// levels nearest the cursor fill before the caps above stop the walk.
+///
+/// Skipped where a fetch would not be a plain read of that level: a provider
+/// that opts out (`allows_scroll_prefetch`), one whose `fetch` ignores the path
+/// (`fetch_ignores_path`), a session view (its `fetch` returns the whole
+/// conversation at any depth, and a session row opens a view rather than a
+/// level), `<link>` objects (a web fetch) and `meta`.
+/// An `Obj` that comes back empty stays empty, without Right's `i`
+/// placeholder, so scroll mode does not list it; Right still fetches it.
+fn prefetch_scroll_subtree(r: &mut AppRenderer) {
+    use std::collections::VecDeque;
+
+    let Some(provider_idx) =
+        crate::provider::active_provider_index(r).filter(|&i| i < r.providers.len())
+    else {
+        return;
+    };
+    let provider = r.providers[provider_idx].as_ref();
+    if r.current_id.depth() < 2
+        || !provider.allows_scroll_prefetch()
+        || crate::provider::fetch_ignores_path(provider)
+        || in_session_view(r)
+    {
+        return;
+    }
+    let use_input_name = active_path_is_filesystem(r);
+    let path_before = crate::provider::current_path(r).to_owned();
+    let started = std::time::Instant::now();
+
+    // An `Obj` worth visiting: its id and the segments from the current list
+    // down to it.
+    let visit = |key: &str| !tags::has_link(key) && key != "meta";
+    let mut queue: VecDeque<(IdArray, Vec<String>)> = VecDeque::new();
+    let mut elements = 0;
+    if let Some(list) = get_ffon_at_id(&r.ffon, &r.current_id) {
+        elements += list.len();
+        for (i, elem) in list.iter().enumerate() {
+            if let FfonElement::Obj(o) = elem {
+                if visit(&o.key) {
+                    let mut id = r.current_id.clone();
+                    id.set_last(i);
+                    queue.push_back((id, vec![nav_segment(&o.key, use_input_name)]));
+                }
+            }
+        }
+    }
+
+    while let Some((id, segments)) = queue.pop_front() {
+        let last = id.last().unwrap_or(0);
+        let loaded = matches!(
+            get_ffon_at_id(&r.ffon, &id).and_then(|s| s.get(last)),
+            Some(FfonElement::Obj(o)) if !o.children.is_empty()
+        );
+        if !loaded {
+            if elements >= SCROLL_PREFETCH_MAX_ELEMENTS
+                || started.elapsed() >= SCROLL_PREFETCH_BUDGET
+            {
+                break;
+            }
+            for segment in &segments {
+                crate::provider::push_path(r, segment);
+            }
+            let children = r.providers[provider_idx].fetch();
+            let _ = r.providers[provider_idx].take_error();
+            for _ in &segments {
+                crate::provider::pop_path(r);
+            }
+            if children.is_empty() {
+                continue;
+            }
+            if let Some(siblings) = crate::provider::get_ffon_at_id_mut(&mut r.ffon, &id) {
+                if let Some(FfonElement::Obj(obj)) = siblings.get_mut(last) {
+                    obj.children = children;
+                }
+            }
+        }
+        let Some(FfonElement::Obj(obj)) = get_ffon_at_id(&r.ffon, &id).and_then(|s| s.get(last))
+        else {
+            continue;
+        };
+        if !loaded {
+            elements += obj.children.len();
+        }
+        if segments.len() >= SCROLL_PREFETCH_MAX_DEPTH {
+            continue;
+        }
+        for (i, child) in obj.children.iter().enumerate() {
+            if let FfonElement::Obj(o) = child {
+                if visit(&o.key) {
+                    let mut child_id = id.clone();
+                    child_id.push(i);
+                    let mut child_segments = segments.clone();
+                    child_segments.push(nav_segment(&o.key, use_input_name));
+                    queue.push_back((child_id, child_segments));
+                }
+            }
+        }
+    }
+
+    // Every push above was popped, but a provider whose `pop_path` does not
+    // undo its `push_path` exactly would leave the user somewhere else.
+    if crate::provider::current_path(r) != path_before {
+        crate::provider::set_provider_path(r, &path_before);
+    }
 }
 
 /// Enter in a scroll sub-mode — navigate to the highlighted element in General
@@ -10454,6 +10591,185 @@ mod tests {
         assert_eq!(r.previous_coordinate, Coordinate::General);
         assert_eq!(r.text_scroll_offset, -1); // sentinel: renderer computes initial offset
         assert_eq!(r.text_scroll_total_height, 0);
+    }
+
+    /// A provider that hands every level over as `Obj`s with no children, the
+    /// way the file browser does, and logs each path it is asked to fetch.
+    struct LazyTree {
+        path: String,
+        levels: fn(&str) -> Vec<FfonElement>,
+        allows: bool,
+        fetched: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl sicompass_sdk::provider::Provider for LazyTree {
+        fn name(&self) -> &str {
+            "lazy"
+        }
+        fn fetch(&mut self) -> Vec<FfonElement> {
+            self.fetched.lock().unwrap().push(self.path.clone());
+            (self.levels)(&self.path)
+        }
+        fn push_path(&mut self, segment: &str) {
+            if self.path != "/" {
+                self.path.push('/');
+            } else {
+                self.path.clear();
+                self.path.push('/');
+            }
+            self.path.push_str(segment);
+        }
+        fn pop_path(&mut self) {
+            match self.path.rfind('/') {
+                Some(0) | None => self.path = "/".to_owned(),
+                Some(i) => self.path.truncate(i),
+            }
+        }
+        fn current_path(&self) -> &str {
+            &self.path
+        }
+        fn set_current_path(&mut self, path: &str) {
+            self.path = path.to_owned();
+        }
+        fn allows_scroll_prefetch(&self) -> bool {
+            self.allows
+        }
+    }
+
+    /// A renderer on the root of a `LazyTree`, and the log of its fetches.
+    fn lazy_renderer(
+        levels: fn(&str) -> Vec<FfonElement>,
+        allows: bool,
+    ) -> (AppRenderer, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let fetched = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut root = FfonElement::new_obj("lazy");
+        root.as_obj_mut().unwrap().children = levels("/");
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        r.providers.push(Box::new(LazyTree {
+            path: "/".to_owned(),
+            levels,
+            allows,
+            fetched: fetched.clone(),
+        }));
+        r.current_id = IdArray::new();
+        r.current_id.push(0);
+        r.current_id.push(0);
+        list::create_list_current_layer(&mut r);
+        r.coordinate = Coordinate::General;
+        (r, fetched)
+    }
+
+    fn folders(path: &str) -> Vec<FfonElement> {
+        match path {
+            "/" => vec![
+                FfonElement::new_str("top file"),
+                FfonElement::new_obj("docs"),
+                FfonElement::new_obj("empty"),
+                FfonElement::new_obj("<link>https://example.com</link>site"),
+            ],
+            "/docs" => vec![
+                FfonElement::new_obj("drafts"),
+                FfonElement::new_str("readme"),
+            ],
+            "/docs/drafts" => vec![FfonElement::new_str("draft one")],
+            _ => Vec::new(),
+        }
+    }
+
+    fn labels(r: &AppRenderer) -> Vec<String> {
+        r.total_list.iter().map(|it| it.label.clone()).collect()
+    }
+
+    #[test]
+    fn s_loads_levels_the_user_has_not_opened() {
+        let (mut r, fetched) = lazy_renderer(folders, true);
+        handle_s(&mut r);
+        assert_eq!(r.coordinate, Coordinate::Scroll);
+        let shown = labels(&r);
+        for want in ["top file", "docs", "drafts", "draft one", "readme"] {
+            assert!(
+                shown.iter().any(|l| l.contains(want)),
+                "{want} missing from {shown:?}"
+            );
+        }
+        // Breadth first, and never the link: following one is a web fetch.
+        assert_eq!(
+            *fetched.lock().unwrap(),
+            ["/docs", "/empty", "/docs/drafts"]
+        );
+        // The provider is back where the user is.
+        assert_eq!(crate::provider::current_path(&r), "/");
+    }
+
+    #[test]
+    fn a_level_that_comes_back_empty_stays_empty() {
+        // Right seeds an `i` placeholder there; scroll mode must not list one.
+        let (mut r, _) = lazy_renderer(folders, true);
+        handle_s(&mut r);
+        let empty = r
+            .total_list
+            .iter()
+            .position(|it| it.label.contains("empty"))
+            .unwrap();
+        assert!(!r.total_list[empty + 1].label.contains("draft"));
+        assert!(
+            !labels(&r)
+                .iter()
+                .any(|l| l.trim_start_matches('-').trim() == "i")
+        );
+    }
+
+    #[test]
+    fn s_loads_below_a_level_the_user_already_opened() {
+        let (mut r, fetched) = lazy_renderer(folders, true);
+        // Open "docs" (Right) and come back (Left): "drafts" is still unopened.
+        r.list_index = 1;
+        r.sync_current_id_from_list();
+        handle_right(&mut r);
+        handle_left(&mut r);
+        assert_eq!(*fetched.lock().unwrap(), ["/docs"]);
+        fetched.lock().unwrap().clear();
+        handle_s(&mut r);
+        assert_eq!(*fetched.lock().unwrap(), ["/empty", "/docs/drafts"]);
+        assert!(labels(&r).iter().any(|l| l.contains("draft one")));
+        assert_eq!(crate::provider::current_path(&r), "/");
+    }
+
+    #[test]
+    fn s_fetches_nothing_for_a_provider_that_opts_out() {
+        let (mut r, fetched) = lazy_renderer(folders, false);
+        handle_s(&mut r);
+        assert_eq!(r.coordinate, Coordinate::Scroll);
+        assert!(fetched.lock().unwrap().is_empty());
+        assert_eq!(r.total_list.len(), 4, "only the level already open");
+    }
+
+    #[test]
+    fn s_prefetch_stops_at_the_depth_cap() {
+        // Every level holds one more folder, forever.
+        fn endless(_: &str) -> Vec<FfonElement> {
+            vec![FfonElement::new_obj("deeper")]
+        }
+        let (mut r, fetched) = lazy_renderer(endless, true);
+        handle_s(&mut r);
+        assert_eq!(fetched.lock().unwrap().len(), SCROLL_PREFETCH_MAX_DEPTH);
+        assert_eq!(crate::provider::current_path(&r), "/");
+    }
+
+    #[test]
+    fn s_prefetch_stops_at_the_element_cap() {
+        // Wide levels: the root is just under the cap, and the first fetch
+        // passes it.
+        fn wide(_: &str) -> Vec<FfonElement> {
+            (0..SCROLL_PREFETCH_MAX_ELEMENTS - 1)
+                .map(|i| FfonElement::new_obj(&format!("folder {i}")))
+                .collect()
+        }
+        let (mut r, fetched) = lazy_renderer(wide, true);
+        handle_s(&mut r);
+        assert_eq!(fetched.lock().unwrap().len(), 1);
+        assert_eq!(crate::provider::current_path(&r), "/");
     }
 
     #[test]

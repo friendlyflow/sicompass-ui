@@ -516,12 +516,6 @@ fn avail_ffon_delete(r: &AppRenderer) -> bool {
             || in_email_compose_body(r))
 }
 
-/// Predicates for keys that are general-only after the coordinate collapse —
-/// the editor provider opts out (no scroll-mode / meta hint screen).
-fn avail_scroll_key(r: &AppRenderer) -> bool {
-    not_at_root(r) && !is_editor(r)
-}
-
 /// Structural edit available in email compose body (General).
 fn avail_compose_body_edit(r: &AppRenderer) -> bool {
     not_at_root(r) && in_email_compose_body(r)
@@ -1753,7 +1747,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_dashboard,
     },
     // ---- S (enter scroll mode) -------------------------------------------
-    // Suppressed for editor providers (which manage their own buffer view).
+    // General mode only — including when the active provider is an editor.
     Shortcut {
         key: Keycode::S,
         key2: None,
@@ -1761,7 +1755,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         shift: false,
         modes: &[Coordinate::General],
         label: "S      Scroll",
-        is_available: avail_scroll_key,
+        is_available: not_at_root,
         handle: handlers::handle_s,
     },
     // ---- M (enter meta/hint screen) --------------------------------------
@@ -2927,6 +2921,39 @@ mod tests {
             r.coordinate = c;
             assert_eq!(hints_for(&r), want, "{c:?} hints diverged from General");
         }
+    }
+
+    /// S used to be switched off for an editor, a leftover of the vim-style
+    /// modes that M was already freed from. Nothing else takes plain S there.
+    #[test]
+    fn s_enters_scroll_mode_in_an_editor() {
+        use sicompass_sdk::ffon::FfonElement;
+        use sicompass_sdk::provider::Provider;
+        struct Editor;
+        impl Provider for Editor {
+            fn name(&self) -> &str {
+                "texteditor"
+            }
+            fn fetch(&mut self) -> Vec<FfonElement> {
+                Vec::new()
+            }
+            fn has_editor_semantics(&self) -> bool {
+                true
+            }
+        }
+        let mut root = FfonElement::new_obj("text editor");
+        root.as_obj_mut()
+            .unwrap()
+            .push(FfonElement::new_str("<input>line one</input>"));
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        r.providers.push(Box::new(Editor));
+        r.current_id = sicompass_sdk::ffon::IdArray::new();
+        r.current_id.push(0);
+        r.current_id.push(0);
+        r.coordinate = Coordinate::General;
+        dispatch_key(&mut r, Some(Keycode::S), no_mod());
+        assert_eq!(r.coordinate, Coordinate::Scroll);
     }
 
     #[test]

@@ -162,6 +162,23 @@ fn seed_insert_placeholder(children: &mut Vec<sicompass_sdk::ffon::FfonElement>)
     }
 }
 
+/// Whether the provider's `fetch()` returns its whole navigable tree rather
+/// than the children of the current sub-path. Grafting such a fetch onto a
+/// deep container nests the entire tree inside one of its own descendants and
+/// derails navigation.
+///
+/// - settings: its in-memory tree is canonical and pre-built, so a fetch
+///   grafted onto a section would nest every section inside that one.
+/// - webbrowser: `fetch()` always returns the URL bar (with the loaded page
+///   as its children) plus the recall history, whatever `current_path()`
+///   says. Grafting that into the page — which F5 does, from anywhere the
+///   user is reading — buried a second URL bar and a copy of the history at
+///   depth 3, where neither the history rows nor the "enter the page"
+///   descent work, because both are anchored to the provider's own top level.
+pub(crate) fn fetch_ignores_path(provider: &dyn Provider) -> bool {
+    matches!(provider.name(), "settings" | "webbrowser")
+}
+
 /// Explicitly re-fetch the active provider and graft the result onto the
 /// container Obj currently in view (the level whose children form the visible
 /// list). Used by F5 / `needs_refresh`.
@@ -197,22 +214,10 @@ pub fn refresh_current_directory(renderer: &mut AppRenderer) {
     // Empty container → seed the `i` insert placeholder, matching navigate-right.
     seed_insert_placeholder(&mut children);
 
-    // Some providers' `fetch()` returns their whole navigable tree rather than
-    // the children of the current sub-path. Grafting such a fetch onto a deep
-    // container nests the entire tree inside one of its own descendants and
-    // derails navigation, so these must always rebuild the provider root.
-    // Path-scoped providers (filebrowser, …) fetch only the current level and
-    // graft it in place.
-    //
-    // - settings: its in-memory tree is canonical and pre-built, so a fetch
-    //   grafted onto a section would nest every section inside that one.
-    // - webbrowser: `fetch()` always returns the URL bar (with the loaded page
-    //   as its children) plus the recall history, whatever `current_path()`
-    //   says. Grafting that into the page — which F5 does, from anywhere the
-    //   user is reading — buried a second URL bar and a copy of the history at
-    //   depth 3, where neither the history rows nor the "enter the page"
-    //   descent work, because both are anchored to the provider's own top level.
-    let whole_tree = matches!(renderer.providers[idx].name(), "settings" | "webbrowser");
+    // A whole-tree provider (`fetch_ignores_path`) must always rebuild the
+    // provider root. Path-scoped providers (filebrowser, …) fetch only the
+    // current level and graft it in place.
+    let whole_tree = fetch_ignores_path(renderer.providers[idx].as_ref());
 
     if renderer.current_id.depth() >= 2 && !whole_tree {
         // Replace the children vec backing the current list, in place.
