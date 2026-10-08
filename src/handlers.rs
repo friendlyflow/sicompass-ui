@@ -3779,6 +3779,16 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
         crate::provider::pop_path(r);
     }
 
+    // Refused with a reason (a line of a file that needs sudo): nothing was
+    // saved, so the row must not show it was. The edit stays open as it was
+    // before Enter, the reason in the header, as `refused` does for a new row.
+    // Escape cancels it as usual.
+    if !committed && !r.error_message.is_empty() {
+        r.insert_session = session;
+        r.needs_redraw = true;
+        return;
+    }
+
     // Build replacement element text (re-wrap in tag format). Keep `<password>`
     // for secret fields so the element stays masked until the provider refresh
     // re-emits it (avoids a one-frame plaintext flash).
@@ -6283,6 +6293,9 @@ pub fn handle_editor_provider_i(r: &mut AppRenderer) {
     if !r.coordinate.is_general() {
         return;
     }
+    if on_add_placeholder(r) && refuse_new_row(r) {
+        return;
+    }
     r.previous_coordinate = r.coordinate;
     r.coordinate = Coordinate::Insert;
     populate_input_buffer(r);
@@ -6302,6 +6315,9 @@ pub fn handle_editor_provider_a(r: &mut AppRenderer) {
     if !r.coordinate.is_general() {
         return;
     }
+    if on_add_placeholder(r) && refuse_new_row(r) {
+        return;
+    }
     r.previous_coordinate = r.coordinate;
     r.coordinate = Coordinate::Insert;
     populate_input_buffer(r);
@@ -6318,6 +6334,9 @@ pub fn handle_editor_provider_a(r: &mut AppRenderer) {
 
 /// Ctrl+I in the editor provider — insert before (directory or file view).
 pub fn handle_editor_ctrl_i(r: &mut AppRenderer) {
+    if refuse_new_row(r) {
+        return;
+    }
     let in_file_view = editor_slice_has_src(r);
     let slice_len = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &r.current_id)
         .map(|s| s.len())
@@ -6342,6 +6361,9 @@ pub fn handle_editor_ctrl_i(r: &mut AppRenderer) {
 
 /// Ctrl+A in the editor provider — insert after (directory or file view).
 pub fn handle_editor_ctrl_a(r: &mut AppRenderer) {
+    if refuse_new_row(r) {
+        return;
+    }
     let in_file_view = editor_slice_has_src(r);
     let slice_len = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &r.current_id)
         .map(|s| s.len())
@@ -13080,11 +13102,13 @@ mod tests {
     #[test]
     fn keys_that_add_a_row_say_at_once_that_nothing_can_be_added_here() {
         type Press = fn(&mut AppRenderer);
-        let keys: [(&str, Press); 4] = [
+        let keys: [(&str, Press); 6] = [
             ("Ctrl+A", handle_ctrl_a_general),
             ("Ctrl+I", handle_ctrl_i_general),
             ("Ctrl+Shift+A", handle_ctrl_shift_a_placeholder),
             ("Ctrl+Shift+I", handle_ctrl_shift_i_placeholder),
+            ("text editor Ctrl+A", handle_editor_ctrl_a),
+            ("text editor Ctrl+I", handle_editor_ctrl_i),
         ];
         for (key, press) in keys {
             let kept = FfonElement::new_str("<input>passwd</input>");
@@ -13104,10 +13128,21 @@ mod tests {
     /// `i` on a name (a rename) is not asked about.
     #[test]
     fn i_on_the_add_row_says_at_once_that_nothing_can_be_added_here() {
-        let mut r = renderer_where_nothing_can_be_added(vec![FfonElement::new_str(I_PLACEHOLDER)]);
-        handle_i(&mut r);
-        assert_eq!(r.error_message, "cannot add to /etc: permission denied");
-        assert_eq!(r.coordinate, Coordinate::General);
+        for (key, press) in [
+            ("i", handle_i as fn(&mut AppRenderer)),
+            ("a", handle_a),
+            ("text editor i", handle_editor_provider_i),
+            ("text editor a", handle_editor_provider_a),
+        ] {
+            let mut r =
+                renderer_where_nothing_can_be_added(vec![FfonElement::new_str(I_PLACEHOLDER)]);
+            press(&mut r);
+            assert_eq!(
+                r.error_message, "cannot add to /etc: permission denied",
+                "{key}"
+            );
+            assert_eq!(r.coordinate, Coordinate::General, "{key}");
+        }
 
         let mut r = renderer_where_nothing_can_be_added(vec![FfonElement::new_str(
             "<input>passwd</input>",
@@ -13115,6 +13150,24 @@ mod tests {
         handle_i(&mut r);
         assert!(r.error_message.is_empty());
         assert_eq!(r.coordinate, Coordinate::Insert);
+    }
+
+    /// An edit the provider refuses with a reason (a line of a file that
+    /// needs sudo) is not shown as saved: the edit stays open with the reason,
+    /// and Escape puts the row back.
+    #[test]
+    fn a_refused_edit_stays_in_insert_with_the_reason() {
+        let line = FfonElement::new_str("<input>x</input>");
+        let mut r = renderer_where_nothing_can_be_added(vec![line.clone()]);
+        handle_a(&mut r);
+        handle_input(&mut r, "y");
+        handle_enter_insert(&mut r);
+        assert_eq!(r.error_message, "could not create xy: permission denied");
+        assert_eq!(r.coordinate, Coordinate::Insert);
+        assert_eq!(r.input_buffer, "xy");
+        handle_escape(&mut r);
+        assert_eq!(r.coordinate, Coordinate::General);
+        assert_eq!(r.ffon[0].as_obj().unwrap().children, vec![line]);
     }
 
     #[test]
