@@ -3,7 +3,7 @@
 # (`tag = "vX.Y.Z"`, see the release skill), which is the whole distribution.
 publish = false
 name = "sicompass-ui"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "The Vulkan/SDL3 list renderer shared by sicompass and its login greeter"
@@ -46,7 +46,7 @@ bundled-sdl3 = ["sdl3/build-from-source-static"]
 # was split out. Keep them in step with sicompass's `[workspace.dependencies]`,
 # or cargo builds two copies of a crate into the app.
 [dependencies]
-sicompass-sdk = "0.9.5"
+sicompass-sdk = "0.9.6"
 async-trait = "0.1"
 
 serde = { version = "1", features = ["derive"] }
