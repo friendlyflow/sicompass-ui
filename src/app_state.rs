@@ -1413,6 +1413,40 @@ impl AppRenderer {
         self.rebuild_and_clamp(&provider_path, current_id);
     }
 
+    /// [`Self::rebuild_and_clamp`] for a background tab: walk its provider at
+    /// `current_id[0]` back down to `provider_path` and leave the tab's cursor
+    /// there. For a provider that was replaced while the tab was parked (a
+    /// plugin reloaded after an update), whose new instance starts at its root.
+    /// A switch to a tab does not rebuild anything, so without this the tab
+    /// would come back with a cursor pointing into a tree that is gone.
+    ///
+    /// No-op for the active tab or an index out of range.
+    pub fn rebuild_parked_tab(&mut self, tab: usize, provider_path: &str, current_id: IdArray) {
+        if tab == self.active_tab || tab >= self.tabs.len() {
+            return;
+        }
+        // `rebuild_and_clamp` works on the live set, so lend it the parked one
+        // for the call. It touches nothing but the providers, their trees, the
+        // cursor and the list index, which are all put back below.
+        std::mem::swap(&mut self.providers, &mut self.tabs[tab].providers);
+        std::mem::swap(&mut self.ffon, &mut self.tabs[tab].ffon);
+        let active_id = std::mem::replace(&mut self.current_id, IdArray::new());
+        let active_list_index = self.list_index;
+        self.rebuild_and_clamp(provider_path, current_id);
+        let tab_id = std::mem::replace(&mut self.current_id, active_id);
+        self.list_index = active_list_index;
+        std::mem::swap(&mut self.providers, &mut self.tabs[tab].providers);
+        std::mem::swap(&mut self.ffon, &mut self.tabs[tab].ffon);
+
+        let path = tab_id
+            .get(0)
+            .and_then(|i| self.tabs[tab].providers.get(i))
+            .map(|p| p.current_path().to_owned())
+            .unwrap_or_default();
+        self.tabs[tab].current_id = tab_id;
+        self.tabs[tab].provider_path = path;
+    }
+
     /// Restore a tab by rebuilding the tree from the filesystem root to locate
     /// `path` by name, leaving the cursor inside it.
     ///
@@ -1446,13 +1480,40 @@ impl AppRenderer {
     pub fn rebuild_and_clamp(&mut self, provider_path: &str, current_id: IdArray) {
         // Rebuild the saved provider's FFON tree at full depth so a deep
         // `current_id` still resolves into it (see `deep_rebuild_provider_tree`).
+        let mut current_id = current_id;
         if let Some(provider_idx) = current_id.get(0) {
             if provider_idx < self.providers.len()
                 && provider_idx < self.ffon.len()
                 && !provider_path.is_empty()
                 && self.providers[provider_idx].current_path() != provider_path
             {
-                self.deep_rebuild_provider_tree(provider_idx, provider_path, current_id.depth());
+                let (rows, levels) =
+                    self.deep_rebuild_provider_tree(provider_idx, provider_path, current_id.depth());
+                // Walk down by name, not by the saved row numbers. The descent
+                // found each folder by its name; the saved numbers are where
+                // those rows were when the tab was saved. A folder that gained
+                // an entry before one on the path (a new dot-folder in the home
+                // folder, a new checkout beside the project) shifts every number
+                // below it, and the clamp would then pop the cursor back to that
+                // folder, or all the way to "/".
+                for (k, row) in rows.into_iter().enumerate() {
+                    current_id.set(1 + k, row);
+                }
+                // A cursor saved deeper than its path names levels for, where
+                // path segments are levels. Configs written while a reloaded
+                // plugin restarted at its root under a deep cursor have them.
+                // The levels past the path's are not in the tree, and counting
+                // them as levels the clamp drops would pop that many real
+                // segments off the path below, leaving the provider folders
+                // above the cursor. The path is the truth: keep its levels and
+                // the row the cursor was on in the deepest.
+                if let Some(levels) = levels {
+                    if self.providers[provider_idx].path_is_filesystem() {
+                        while current_id.depth() > levels + 2 {
+                            current_id.pop();
+                        }
+                    }
+                }
             }
         }
 
@@ -1463,7 +1524,6 @@ impl AppRenderer {
         // past the end. Without this clamp, downstream code that propagates
         // `current_id.last()` into `list_index` (see view.rs after a tick)
         // would leave focus on a non-existent row.
-        let mut current_id = current_id;
         let restored_provider = current_id.get(0);
         let restored_depth = current_id.depth();
         // Pop trailing indices while the path no longer resolves through the
@@ -1551,7 +1611,16 @@ impl AppRenderer {
     /// (matched by the stripped display text of the key). If a segment cannot
     /// be matched the descent stops there; the `load_active_tab` clamp then
     /// trims `current_id` to the depth that was rebuilt.
-    fn deep_rebuild_provider_tree(&mut self, provider_idx: usize, path: &str, cursor_depth: usize) {
+    ///
+    /// Returns the row each matched segment was found at, from the root
+    /// down (`current_id[1 + k]` for segment `k`), and how many levels below
+    /// its root the path names, `None` for a whole-tree provider.
+    fn deep_rebuild_provider_tree(
+        &mut self,
+        provider_idx: usize,
+        path: &str,
+        cursor_depth: usize,
+    ) -> (Vec<usize>, Option<usize>) {
         use sicompass_sdk::ffon::FfonElement;
         use sicompass_sdk::tags::strip_display;
         use std::path::PathBuf;
@@ -1576,7 +1645,7 @@ impl AppRenderer {
                 }
             }
             self.ffon[provider_idx] = root;
-            return;
+            return (Vec::new(), None);
         }
 
         // Filesystem providers (filebrowser, texteditor) use native paths —
@@ -1670,6 +1739,7 @@ impl AppRenderer {
         }
 
         // Graft each fetched child level onto its parent Obj, deepest first.
+        let rows = indices.clone();
         for k in (0..indices.len()).rev() {
             let child_level = levels.pop().unwrap();
             if let FfonElement::Obj(o) = &mut levels[k][indices[k]] {
@@ -1688,6 +1758,7 @@ impl AppRenderer {
 
         // Live provider path = the full restored path, matching the deep cursor.
         self.providers[provider_idx].set_current_path(path);
+        (rows, Some(segments.len()))
     }
 
     /// Set the screen-reader announcement to "tab N/M: <label>". Toggles the

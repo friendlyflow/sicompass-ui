@@ -8149,6 +8149,17 @@ pub(crate) fn persist_tabs(r: &mut AppRenderer) {
             let mut obj = serde_json::Map::new();
             obj.insert("id".to_string(), serde_json::Value::Array(ids));
             obj.insert("path".to_string(), serde_json::Value::String(nav.path));
+            // `id[0]` is a position in the program list, which moves between
+            // runs whenever a program before it is added or fails to start.
+            // The name lets the reader find the program wherever it now is.
+            // A parked tab's set has no settings provider, so a cursor on
+            // settings there has no name to save and keeps its position.
+            if let Some(p) = nav.current_id.get(0).and_then(|i| providers.get(i)) {
+                obj.insert(
+                    "program".to_string(),
+                    serde_json::Value::String(p.name().to_owned()),
+                );
+            }
             if nav.on_path {
                 // Absent in configs written by older builds, which is exactly the
                 // `false` default the reader applies.
