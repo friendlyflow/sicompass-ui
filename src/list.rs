@@ -98,10 +98,9 @@ fn collect_items_recursive(
 /// Rebuild `total_list` for `Coordinate::Scroll` (and its search sub-modes).
 ///
 /// Recursively flattens the FFON tree at `current_id` into a single list of the
-/// current list plus every sublist. Each item carries an extended-prefix string
-/// `layer: X list: Y/Z` (X = absolute tree depth, Y = 1-based index in its
-/// containing sublist, Z = that sublist's length) and an image path in `data`
-/// for image elements (so scroll mode can render images).
+/// current list plus every sublist, in reading order. Each item carries an
+/// image path in `data` for image elements (so scroll mode can render images).
+/// How deep an item sits is read from its id, see [`scroll_indent_levels`].
 pub fn create_list_scroll(renderer: &mut AppRenderer) {
     renderer.total_list.clear();
     renderer.filtered_list_indices.clear();
@@ -130,15 +129,26 @@ pub fn create_list_scroll(renderer: &mut AppRenderer) {
     renderer.list_index = new_index;
 }
 
-/// Recursively collect every FFON element from `arr` downward, building the
-/// extended-prefix string and image data for each.
+/// How many levels below the list scroll mode was entered on each item of a
+/// scroll list sits: 0 for that list's own items, 1 for their children, and so
+/// on. Scroll mode indents each level by four spaces. The first item is always
+/// one of the entered list's own, so its depth is the base.
+pub fn scroll_indent_levels(items: &[RenderListItem]) -> Vec<usize> {
+    let base = items.first().map(|it| it.id.depth()).unwrap_or(0);
+    items
+        .iter()
+        .map(|it| it.id.depth().saturating_sub(base))
+        .collect()
+}
+
+/// Recursively collect every FFON element from `arr` downward, with the image
+/// data for each.
 fn collect_scroll_items_recursive(
     arr: &[FfonElement],
     base_id: &IdArray,
     parent_has_radio: bool,
     out: &mut Vec<RenderListItem>,
 ) {
-    let total = arr.len();
     for (i, elem) in arr.iter().enumerate() {
         let mut item_id = base_id.clone();
         item_id.set_last(i);
@@ -148,15 +158,13 @@ fn collect_scroll_items_recursive(
             FfonElement::Str(s) if tags::has_image(s) => tags::extract_image(s),
             _ => None,
         };
-        let layer = item_id.depth().saturating_sub(1);
-        let ext_prefix = Some(format!("layer: {layer} list: {}/{total}", i + 1));
 
         out.push(RenderListItem {
             id: item_id.clone(),
             label,
             data,
             nav_path: None,
-            ext_prefix,
+            ext_prefix: None,
         });
 
         if let FfonElement::Obj(obj) = elem {
@@ -252,7 +260,7 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
             build_tab_switcher_list(renderer);
             return;
         }
-        Coordinate::Scroll | Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch => {
+        Coordinate::Scroll | Coordinate::ScrollSearch => {
             create_list_scroll(renderer);
             return;
         }
@@ -1633,30 +1641,15 @@ mod tests {
     }
 
     #[test]
-    fn create_list_scroll_sets_ext_prefix() {
+    fn create_list_scroll_indents_each_level_below_the_entered_list() {
         let mut r = make_scroll_renderer();
         create_list_scroll(&mut r);
 
-        assert_eq!(
-            r.total_list[0].ext_prefix.as_deref(),
-            Some("layer: 1 list: 1/3")
-        );
-        assert_eq!(
-            r.total_list[1].ext_prefix.as_deref(),
-            Some("layer: 1 list: 2/3")
-        );
-        assert_eq!(
-            r.total_list[2].ext_prefix.as_deref(),
-            Some("layer: 2 list: 1/2")
-        );
-        assert_eq!(
-            r.total_list[3].ext_prefix.as_deref(),
-            Some("layer: 2 list: 2/2")
-        );
-        assert_eq!(
-            r.total_list[4].ext_prefix.as_deref(),
-            Some("layer: 1 list: 3/3")
-        );
+        // alpha, Section and delta are the entered list's own; beta and gamma
+        // are Section's children, one level in.
+        assert_eq!(scroll_indent_levels(&r.total_list), vec![0, 0, 1, 1, 0]);
+        // No `layer: X list: Y/Z` line any more: scroll mode shows only content.
+        assert!(r.total_list.iter().all(|it| it.ext_prefix.is_none()));
     }
 
     #[test]

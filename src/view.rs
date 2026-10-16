@@ -24,7 +24,6 @@ pub(crate) fn is_insert_mode(c: Coordinate) -> bool {
             | Coordinate::ExtendedSearch
             | Coordinate::Command
             | Coordinate::ScrollSearch
-            | Coordinate::ScrollPrefixSearch
             | Coordinate::InputSearch
             // Dashboard's interactive variant takes typed characters too;
             // without this SDL would not fire TextInput events while it owns
@@ -835,10 +834,10 @@ fn update_view(app: &mut AppState) {
     let text_x = content_x + 10.0;
     let max_content_w = content_w.min(win_w - text_x - left_inset);
 
-    // ---- Scroll / ScrollSearch / ScrollPrefixSearch early dispatch -----------
+    // ---- Scroll / ScrollSearch early dispatch ---------------------------------
     if matches!(
         app.renderer.coordinate,
-        Coordinate::Scroll | Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch
+        Coordinate::Scroll | Coordinate::ScrollSearch
     ) {
         // Cache layout metrics for handlers
         app.renderer.window_height = win_h as i32;
@@ -858,15 +857,18 @@ fn update_view(app: &mut AppState) {
         let search_current_match = app.renderer.scroll_search_current_match;
         let search_needs_position = app.renderer.scroll_search_needs_position;
         let search_snap = app.renderer.scroll_search_snap;
-        let search_corpus = match app.renderer.coordinate {
-            Coordinate::ScrollSearch => Some(ScrollSearchCorpus::Content),
-            Coordinate::ScrollPrefixSearch => Some(ScrollSearchCorpus::Prefix),
-            _ => None,
-        };
+        let in_search = app.renderer.coordinate == Coordinate::ScrollSearch;
+        // Each level below the entered list is indented four spaces (capped at
+        // half the width, so a deep level still has room to wrap).
+        let scroll_indents: Vec<f32> =
+            crate::list::scroll_indent_levels(&app.renderer.total_list)
+                .into_iter()
+                .map(|level| (level as f32 * list_indent_px).min(max_content_w.max(1.0) / 2.0))
+                .collect();
         // Content viewport = window minus tabs band + header (+ search bar in
         // search modes). Cached so scroll handlers clamp to the exact area the
         // renderer uses — otherwise the last line/image bottom is unreachable.
-        let scroll_clip_y = if search_corpus.is_some() {
+        let scroll_clip_y = if in_search {
             line_height as f32 * 2.0 + top_offset
         } else {
             line_height as f32 + top_offset
@@ -911,12 +913,13 @@ fn update_view(app: &mut AppState) {
         }
 
         // Render scroll content — full list with pixel-smooth scrolling
-        if let Some(corpus) = search_corpus {
+        if in_search {
             let result = render_scroll_search_full(
                 app.font_renderer.as_mut().unwrap(),
                 app.rect_renderer.as_mut(),
                 app.image_renderer.as_mut(),
                 &list_items,
+                &scroll_indents,
                 list_index,
                 text_scroll_offset,
                 &search_query,
@@ -926,7 +929,6 @@ fn update_view(app: &mut AppState) {
                 search_current_match,
                 search_needs_position,
                 search_snap,
-                corpus,
                 scale,
                 line_height,
                 ascender,
@@ -962,6 +964,7 @@ fn update_view(app: &mut AppState) {
                 app.rect_renderer.as_mut(),
                 app.image_renderer.as_mut(),
                 &list_items,
+                &scroll_indents,
                 list_index,
                 text_scroll_offset,
                 scale,
@@ -2744,20 +2747,17 @@ fn update_view(app: &mut AppState) {
 // Scroll mode rendering
 // ---------------------------------------------------------------------------
 
-/// Per-item vertical layout for scroll mode. Each item renders its extended
-/// prefix line(s) (`layer: X list: Y/Z`) followed by the element content —
-/// wrapped text for text items, a scaled image (with caption text above and
-/// below it) for image items.
+/// Per-item vertical layout for scroll mode. Each item renders its element
+/// content, indented one step per level below the entered list: wrapped text
+/// for text items, a scaled image (with caption text above and below it) for
+/// image items.
 struct ScrollItemLayout {
     /// Virtual-space (pre-scroll) pixel top of the item.
     top: i32,
-    /// Full item height in pixels (prefix + content).
+    /// Full item height in pixels.
     height: i32,
-    /// Number of wrapped lines the extended prefix occupies.
-    prefix_lines: usize,
-    /// Number of wrapped lines the content occupies — text rows for text
-    /// items, or caption-prefix + image + caption-suffix rows for image items.
-    content_lines: usize,
+    /// Horizontal indent in pixels: four spaces per level below the entered list.
+    indent: f32,
     /// Image layout for image items; `None` for text items.
     img: Option<ScrollImg>,
 }
@@ -2772,8 +2772,6 @@ struct ScrollImg {
     image_lines: usize,
     /// Wrapped lines of caption text rendered above the image.
     caption_prefix_lines: usize,
-    /// Wrapped lines of caption text rendered below the image.
-    caption_suffix_lines: usize,
 }
 
 /// Display caption text wrapped around an image item's path: `(prefix, suffix)`,
@@ -2785,13 +2783,6 @@ fn scroll_image_caption<'a>(label: &'a str, path: &str) -> (&'a str, &'a str) {
     (caption_prefix.trim(), suffix_text.trim())
 }
 
-/// Element content searched by Ctrl-F (`Content`) vs Tab (`Prefix`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ScrollSearchCorpus {
-    Content,
-    Prefix,
-}
-
 /// Display-stripped `(list_prefix, content)` parts of a scroll-mode label.
 /// `list_prefix` is the type tag (`-`, `+`, `-c`, …) with no trailing space;
 /// `content` is the element text. Mirrors general-mode column alignment.
@@ -2801,12 +2792,19 @@ fn scroll_item_parts(label: &str) -> (String, String) {
     (prefix.trim_end().to_string(), content.to_string())
 }
 
+/// Width an item's content wraps at: the content column minus its indent.
+fn scroll_item_width(max_w: f32, indent: f32) -> f32 {
+    (max_w - indent).max(1.0)
+}
+
 /// Compute per-item layout for the scroll-mode list. Shared by the plain
-/// scroll renderer and the scroll search renderers.
+/// scroll renderer and the scroll search renderer. `indents` holds each
+/// item's indent in pixels.
 fn measure_scroll_items(
     fr: &crate::text::FontRenderer,
     ir: Option<&mut crate::image::ImageRenderer>,
     list_items: &[(String, Option<String>, bool, Vec<u32>, Option<String>)],
+    indents: &[f32],
     scale: f32,
     line_height: i32,
     max_w: f32,
@@ -2814,11 +2812,11 @@ fn measure_scroll_items(
     let mut ir = ir;
     let mut layouts = Vec::with_capacity(list_items.len());
     let mut y_accum: i32 = 0;
-    for (label, img_data, _, _, ext_prefix) in list_items.iter() {
-        let prefix_text = ext_prefix.as_deref().unwrap_or("");
-        let prefix_lines = fr.count_wrapped_lines(prefix_text, scale, max_w).max(1);
+    for (i, (label, img_data, _, _, _)) in list_items.iter().enumerate() {
+        let indent = indents.get(i).copied().unwrap_or(0.0);
+        let item_w = scroll_item_width(max_w, indent);
         let (img, content_lines) = if let Some(path) = img_data {
-            let img_w = max_w;
+            let img_w = item_w;
             let img_h = ir
                 .as_deref_mut()
                 .and_then(|ir| unsafe { ir.texture_size(path) })
@@ -2835,12 +2833,12 @@ fn measure_scroll_items(
             let caption_prefix_lines = if caption_prefix.is_empty() {
                 0
             } else {
-                fr.count_wrapped_lines(caption_prefix, scale, max_w).max(1)
+                fr.count_wrapped_lines(caption_prefix, scale, item_w).max(1)
             };
             let caption_suffix_lines = if caption_suffix.is_empty() {
                 0
             } else {
-                fr.count_wrapped_lines(caption_suffix, scale, max_w).max(1)
+                fr.count_wrapped_lines(caption_suffix, scale, item_w).max(1)
             };
             let content_lines = caption_prefix_lines + image_lines + caption_suffix_lines;
             (
@@ -2849,20 +2847,18 @@ fn measure_scroll_items(
                     img_h,
                     image_lines,
                     caption_prefix_lines,
-                    caption_suffix_lines,
                 }),
                 content_lines,
             )
         } else {
             let (_, content) = scroll_item_parts(label);
-            (None, fr.count_wrapped_lines(&content, scale, max_w).max(1))
+            (None, fr.count_wrapped_lines(&content, scale, item_w).max(1))
         };
-        let height = (prefix_lines + content_lines) as i32 * line_height;
+        let height = content_lines as i32 * line_height;
         layouts.push(ScrollItemLayout {
             top: y_accum,
             height,
-            prefix_lines,
-            content_lines,
+            indent,
             img,
         });
         y_accum += height;
@@ -2870,12 +2866,45 @@ fn measure_scroll_items(
     (layouts, y_accum)
 }
 
-/// Render one scroll-mode item: the list prefix in the left column (a graphical
-/// radio/checkbox indicator plus its `-c`/`-r` tag, or a plain `-`/`+` tag), the
-/// extended prefix (`layer: X list: Y/Z`) on the same first line, then the
-/// element content below — wrapped text, or an image's caption prefix text,
-/// the scaled image, and its caption suffix text — all aligned at `content_x`
-/// like general mode. Lines/images outside `[clip_y, win_h)` are clipped.
+/// Draw wrapped `text` at `x`, one line per row from `top`, skipping rows
+/// outside `[clip_y, win_h)`.
+#[allow(clippy::too_many_arguments)]
+fn render_scroll_lines(
+    fr: &mut crate::text::FontRenderer,
+    text: &str,
+    x: f32,
+    top: f32,
+    width: f32,
+    scale: f32,
+    ascender: f32,
+    lh: f32,
+    clip_y: f32,
+    win_h: f32,
+    color: u32,
+) {
+    for (n, (line, _)) in fr
+        .wrap_lines_with_offsets(text, scale, width)
+        .iter()
+        .enumerate()
+    {
+        let line_top = top + n as f32 * lh;
+        if line_top + lh <= clip_y {
+            continue;
+        }
+        if line_top >= win_h {
+            break;
+        }
+        let baseline = line_top + ascender * scale + crate::text::TEXT_PADDING;
+        fr.prepare_text_for_rendering(line, x, baseline, scale, color);
+    }
+}
+
+/// Render one scroll-mode item, shifted right by its indent: the list prefix
+/// in the left column (a graphical radio/checkbox indicator plus its `-c`/`-r`
+/// tag, or a plain `-`/`+` tag) on the item's first row, and the element
+/// content at `content_x` — wrapped text, or an image's caption prefix text,
+/// the scaled image, and its caption suffix text. Lines/images outside
+/// `[clip_y, win_h)` are clipped.
 #[allow(clippy::too_many_arguments)]
 fn render_scroll_item(
     fr: &mut crate::text::FontRenderer,
@@ -2883,7 +2912,6 @@ fn render_scroll_item(
     ir: Option<&mut crate::image::ImageRenderer>,
     label: &str,
     img_data: &Option<String>,
-    ext_prefix: &Option<String>,
     layout: &ScrollItemLayout,
     item_top_screen: f32,
     scale: f32,
@@ -2899,73 +2927,48 @@ fn render_scroll_item(
     p: &crate::app_state::ColorPalette,
 ) {
     let lh = line_height as f32;
+    let prefix_x = prefix_x + layout.indent;
+    let content_x = content_x + layout.indent;
+    let content_w = scroll_item_width(content_w, layout.indent);
     let (list_prefix, content) = scroll_item_parts(label);
-    let radio = get_radio_type(label);
-    let checkbox = get_checkbox_type(label);
-    // When any item in the list carries an indicator, every item reserves the
-    // same indicator-width gutter so the text prefixes stay aligned.
-    let text_prefix_x = if list_has_indicators {
-        prefix_x + indicator_width(lh, em_width)
-    } else {
-        prefix_x
-    };
 
-    // First row: list prefix in the left column, extended prefix at content_x.
-    let prefix_text = ext_prefix.as_deref().unwrap_or("");
-    for (n, (line, _)) in fr
-        .wrap_lines_with_offsets(prefix_text, scale, content_w)
-        .iter()
-        .enumerate()
-    {
-        let line_top = item_top_screen + n as f32 * lh;
-        if line_top + lh <= clip_y {
-            continue;
-        }
-        if line_top >= win_h {
-            break;
-        }
-        let baseline = line_top + ascender * scale + crate::text::TEXT_PADDING;
-        if n == 0 {
-            // Graphical radio/checkbox indicator (matches general mode).
-            if let Some(rr) = rr.as_deref_mut() {
-                if radio != RadioType::None {
-                    render_radio_indicator(
-                        rr, &radio, prefix_x, baseline, scale, ascender, lh, em_width, p,
-                    );
-                } else if checkbox != CheckboxType::None {
-                    render_checkbox_indicator(
-                        rr, &checkbox, prefix_x, baseline, scale, ascender, lh, em_width, p,
-                    );
-                }
-            }
-            if !list_prefix.is_empty() {
-                fr.prepare_text_for_rendering(&list_prefix, text_prefix_x, baseline, scale, p.text);
+    // First row: list prefix (and indicator) in the left column.
+    if item_top_screen + lh > clip_y && item_top_screen < win_h {
+        let baseline = item_top_screen + ascender * scale + crate::text::TEXT_PADDING;
+        // When any item in the list carries an indicator, every item reserves
+        // the same indicator-width gutter so the text prefixes stay aligned.
+        let text_prefix_x = if list_has_indicators {
+            prefix_x + indicator_width(lh, em_width)
+        } else {
+            prefix_x
+        };
+        // Graphical radio/checkbox indicator (matches general mode).
+        if let Some(rr) = rr.as_deref_mut() {
+            let radio = get_radio_type(label);
+            let checkbox = get_checkbox_type(label);
+            if radio != RadioType::None {
+                render_radio_indicator(
+                    rr, &radio, prefix_x, baseline, scale, ascender, lh, em_width, p,
+                );
+            } else if checkbox != CheckboxType::None {
+                render_checkbox_indicator(
+                    rr, &checkbox, prefix_x, baseline, scale, ascender, lh, em_width, p,
+                );
             }
         }
-        fr.prepare_text_for_rendering(line, content_x, baseline, scale, p.text);
+        if !list_prefix.is_empty() {
+            fr.prepare_text_for_rendering(&list_prefix, text_prefix_x, baseline, scale, p.text);
+        }
     }
 
-    let content_top = item_top_screen + layout.prefix_lines as f32 * lh;
+    let content_top = item_top_screen;
     if let (Some(path), Some(img)) = (img_data, layout.img.as_ref()) {
         let (caption_prefix, caption_suffix) = scroll_image_caption(label, path);
         // Caption text rendered above the image, at the content column.
-        if !caption_prefix.is_empty() {
-            for (n, (line, _)) in fr
-                .wrap_lines_with_offsets(caption_prefix, scale, content_w)
-                .iter()
-                .enumerate()
-            {
-                let line_top = content_top + n as f32 * lh;
-                if line_top + lh <= clip_y {
-                    continue;
-                }
-                if line_top >= win_h {
-                    break;
-                }
-                let baseline = line_top + ascender * scale + crate::text::TEXT_PADDING;
-                fr.prepare_text_for_rendering(line, content_x, baseline, scale, p.text);
-            }
-        }
+        render_scroll_lines(
+            fr, caption_prefix, content_x, content_top, content_w, scale, ascender, lh, clip_y,
+            win_h, p.text,
+        );
         let img_top = content_top + img.caption_prefix_lines as f32 * lh;
         if img_top + img.img_h > clip_y && img_top < win_h {
             if let Some(ir) = ir {
@@ -2986,45 +2989,21 @@ fn render_scroll_item(
             }
         }
         // Caption text rendered below the image.
-        if !caption_suffix.is_empty() {
-            let suffix_top = img_top + img.image_lines as f32 * lh;
-            for (n, (line, _)) in fr
-                .wrap_lines_with_offsets(caption_suffix, scale, content_w)
-                .iter()
-                .enumerate()
-            {
-                let line_top = suffix_top + n as f32 * lh;
-                if line_top + lh <= clip_y {
-                    continue;
-                }
-                if line_top >= win_h {
-                    break;
-                }
-                let baseline = line_top + ascender * scale + crate::text::TEXT_PADDING;
-                fr.prepare_text_for_rendering(line, content_x, baseline, scale, p.text);
-            }
-        }
+        let suffix_top = img_top + img.image_lines as f32 * lh;
+        render_scroll_lines(
+            fr, caption_suffix, content_x, suffix_top, content_w, scale, ascender, lh, clip_y,
+            win_h, p.text,
+        );
     } else {
-        for (n, (line, _)) in fr
-            .wrap_lines_with_offsets(&content, scale, content_w)
-            .iter()
-            .enumerate()
-        {
-            let line_top = content_top + n as f32 * lh;
-            if line_top + lh <= clip_y {
-                continue;
-            }
-            if line_top >= win_h {
-                break;
-            }
-            let baseline = line_top + ascender * scale + crate::text::TEXT_PADDING;
-            fr.prepare_text_for_rendering(line, content_x, baseline, scale, p.text);
-        }
+        render_scroll_lines(
+            fr, &content, content_x, content_top, content_w, scale, ascender, lh, clip_y, win_h,
+            p.text,
+        );
     }
 }
 
 /// Render the recursively-flattened list with pixel-smooth scrolling.
-/// Each item shows its extended prefix line then its content (text or image).
+/// Each item shows its content (text or image), indented by `indents[i]`.
 /// Returns `(total_height_px, resolved_scroll_offset_px)`.
 #[allow(clippy::too_many_arguments)]
 fn render_scroll_full(
@@ -3032,6 +3011,7 @@ fn render_scroll_full(
     mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
     mut ir: Option<&mut crate::image::ImageRenderer>,
     list_items: &[(String, Option<String>, bool, Vec<u32>, Option<String>)],
+    indents: &[f32],
     list_index: usize,
     text_scroll_offset: i32,
     scale: f32,
@@ -3048,12 +3028,19 @@ fn render_scroll_full(
     let clip_y = line_height as f32 + top_offset;
     let viewport_h = win_h - clip_y;
     let max_w = max_content_w.max(1.0);
-    // List prefix sits in a left column; content + extended prefix align here.
+    // List prefix sits in a left column; content aligns here.
     let content_x = text_x + max_prefix_px;
     let list_has_indicators = scroll_list_has_indicators(list_items);
 
-    let (layouts, total_height) =
-        measure_scroll_items(fr, ir.as_deref_mut(), list_items, scale, line_height, max_w);
+    let (layouts, total_height) = measure_scroll_items(
+        fr,
+        ir.as_deref_mut(),
+        list_items,
+        indents,
+        scale,
+        line_height,
+        max_w,
+    );
 
     // Resolve sentinel (-1): place the selected item at viewport top.
     let max_offset = (total_height - viewport_h as i32).max(0);
@@ -3071,7 +3058,7 @@ fn render_scroll_full(
     // highlight (search sub-modes highlight matches instead).
 
     // Render visible items.
-    for (i, (label, img_data, _, _, ext_prefix)) in list_items.iter().enumerate() {
+    for (i, (label, img_data, _, _, _)) in list_items.iter().enumerate() {
         let l = &layouts[i];
         let item_top_screen = clip_y + (l.top - scroll_offset) as f32;
         if item_top_screen + l.height as f32 <= clip_y {
@@ -3086,7 +3073,6 @@ fn render_scroll_full(
             ir.as_deref_mut(),
             label,
             img_data,
-            ext_prefix,
             l,
             item_top_screen,
             scale,
@@ -3131,13 +3117,15 @@ struct ScrollSearchResult {
     scroll_offset: i32,
 }
 
-/// One searchable text region within a scroll-search row. Text items and the
-/// Prefix corpus contribute a single segment per item; an image item under the
-/// Content corpus contributes two — the caption text above the image and the
-/// caption text below it — since the image splits them into separate regions.
+/// One searchable text region within a scroll-search row. A text item
+/// contributes a single segment; an image item contributes two — the caption
+/// text above the image and the caption text below it — since the image
+/// splits them into separate regions.
 struct SearchSegment {
     /// Index into `list_items` of the row this segment belongs to.
     item_idx: usize,
+    /// Screen x of the segment's text: the content column plus the item's indent.
+    x: f32,
     /// The searchable text.
     text: String,
     /// Wrapped lines of `text`: `(line, byte_offset_into_text)`.
@@ -3156,8 +3144,7 @@ struct ScrollMatch {
     virtual_y: i32,
 }
 
-/// Render a scroll search across the flattened list. `corpus` selects whether
-/// the query matches element content (Ctrl-F) or extended prefixes (Tab).
+/// Render a scroll search (Ctrl+F) across the flattened list's element content.
 /// Returns computed state for write-back.
 #[allow(clippy::too_many_arguments)]
 fn render_scroll_search_full(
@@ -3165,6 +3152,7 @@ fn render_scroll_search_full(
     mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
     mut ir: Option<&mut crate::image::ImageRenderer>,
     list_items: &[(String, Option<String>, bool, Vec<u32>, Option<String>)],
+    indents: &[f32],
     list_index: usize,
     text_scroll_offset: i32,
     search_query: &str,
@@ -3174,7 +3162,6 @@ fn render_scroll_search_full(
     search_current_match: usize,
     needs_position: bool,
     snap: bool,
-    corpus: ScrollSearchCorpus,
     scale: f32,
     line_height: i32,
     ascender: f32,
@@ -3191,51 +3178,52 @@ fn render_scroll_search_full(
     let viewport_h = win_h - clip_y;
     let max_w = max_content_w.max(1.0);
     let lh = line_height as f32;
-    // List prefix sits in a left column; content + extended prefix align here.
+    // List prefix sits in a left column; content aligns here.
     let content_x = text_x + max_prefix_px;
     let list_has_indicators = scroll_list_has_indicators(list_items);
 
-    let (layouts, total_height) =
-        measure_scroll_items(fr, ir.as_deref_mut(), list_items, scale, line_height, max_w);
+    let (layouts, total_height) = measure_scroll_items(
+        fr,
+        ir.as_deref_mut(),
+        list_items,
+        indents,
+        scale,
+        line_height,
+        max_w,
+    );
 
     // Build the searchable segments. Each segment's text is exactly what the
-    // item renders at `content_x`, so wrap offsets and highlight rects line up.
-    // Content corpus (Ctrl-F): element content for text items, or the caption
-    // text above/below the image for image items. Prefix corpus (Tab): the
-    // extended prefix. Segments are appended top-to-bottom so the resulting
-    // match list is ordered by vertical position.
+    // item renders at its indented content column, so wrap offsets and
+    // highlight rects line up: element content for text items, or the caption
+    // text above/below the image for image items. Segments are appended
+    // top-to-bottom so the resulting match list is ordered by vertical position.
     let mut segments: Vec<SearchSegment> = Vec::with_capacity(list_items.len());
-    for (item_idx, (label, img_data, _, _, ext_prefix)) in list_items.iter().enumerate() {
+    for (item_idx, (label, img_data, _, _, _)) in list_items.iter().enumerate() {
         let l = &layouts[item_idx];
+        let x = content_x + l.indent;
+        let item_w = scroll_item_width(max_w, l.indent);
         let mut push_segment = |text: String, virtual_top: i32, fr: &crate::text::FontRenderer| {
-            let wrap = fr.wrap_lines_with_offsets(&text, scale, max_w);
+            let wrap = fr.wrap_lines_with_offsets(&text, scale, item_w);
             segments.push(SearchSegment {
                 item_idx,
+                x,
                 text,
                 wrap,
                 virtual_top,
             });
         };
-        match corpus {
-            ScrollSearchCorpus::Prefix => {
-                push_segment(ext_prefix.clone().unwrap_or_default(), l.top, fr);
+        if let (Some(path), Some(img)) = (img_data, l.img.as_ref()) {
+            let (caption_prefix, caption_suffix) = scroll_image_caption(label, path);
+            if !caption_prefix.is_empty() {
+                push_segment(caption_prefix.to_string(), l.top, fr);
             }
-            ScrollSearchCorpus::Content => {
-                let content_top = l.top + l.prefix_lines as i32 * line_height;
-                if let (Some(path), Some(img)) = (img_data, l.img.as_ref()) {
-                    let (caption_prefix, caption_suffix) = scroll_image_caption(label, path);
-                    if !caption_prefix.is_empty() {
-                        push_segment(caption_prefix.to_string(), content_top, fr);
-                    }
-                    if !caption_suffix.is_empty() {
-                        let suffix_top = content_top
-                            + (img.caption_prefix_lines + img.image_lines) as i32 * line_height;
-                        push_segment(caption_suffix.to_string(), suffix_top, fr);
-                    }
-                } else {
-                    push_segment(scroll_item_parts(label).1, content_top, fr);
-                }
+            if !caption_suffix.is_empty() {
+                let suffix_top =
+                    l.top + (img.caption_prefix_lines + img.image_lines) as i32 * line_height;
+                push_segment(caption_suffix.to_string(), suffix_top, fr);
             }
+        } else {
+            push_segment(scroll_item_parts(label).1, l.top, fr);
         }
     }
 
@@ -3315,19 +3303,15 @@ fn render_scroll_search_full(
     // Search bar at line 1 (below the header separator, under the tabs band).
     let search_bar_y =
         line_height as f32 + ascender * scale + crate::text::TEXT_PADDING + top_offset;
-    let bar_label = match corpus {
-        ScrollSearchCorpus::Content => "search",
-        ScrollSearchCorpus::Prefix => "prefix search",
-    };
     // The `search: ` label stays pinned; the query beyond it is windowed
     // around the caret so a long one elides from the front rather than running
     // off the right edge.
-    let bar_pin = format!("{bar_label}: ");
+    let bar_pin = "search: ";
     let bar_query = format!("{search_query} [{match_count} items]");
-    let chrome_w = (max_content_w - fr.measure_text_width(&bar_pin, scale)).max(1.0);
+    let chrome_w = (max_content_w - fr.measure_text_width(bar_pin, scale)).max(1.0);
     let window = fr.caret_window(&bar_query, cursor_position, scale, chrome_w);
-    fr.prepare_text_for_rendering(&bar_pin, text_x, search_bar_y, scale, p.text);
-    let base_x = text_x + fr.measure_text_width(&bar_pin, scale);
+    fr.prepare_text_for_rendering(bar_pin, text_x, search_bar_y, scale, p.text);
+    let base_x = text_x + fr.measure_text_width(bar_pin, scale);
     fr.prepare_text_for_rendering(&window.text, base_x, search_bar_y, scale, p.text);
 
     // Text-selection highlight + blinking caret in the search input, placed
@@ -3373,7 +3357,7 @@ fn render_scroll_search_full(
             let local_start = m.byte_off.saturating_sub(line_byte_off);
             let safe_start = local_start.min(line_text.len());
             let safe_end = (local_start + m.mlen).min(line_text.len());
-            let match_x = content_x + fr.measure_text_width(&line_text[..safe_start], scale);
+            let match_x = seg.x + fr.measure_text_width(&line_text[..safe_start], scale);
             let match_w = fr
                 .measure_text_width(&line_text[safe_start..safe_end], scale)
                 .max(2.0);
@@ -3387,7 +3371,7 @@ fn render_scroll_search_full(
     }
 
     // Render visible items on top of the highlights.
-    for (i, (label, img_data, _, _, ext_prefix)) in list_items.iter().enumerate() {
+    for (i, (label, img_data, _, _, _)) in list_items.iter().enumerate() {
         let l = &layouts[i];
         let item_top_screen = clip_y + (l.top - scroll_offset) as f32;
         if item_top_screen + l.height as f32 <= clip_y {
@@ -3403,7 +3387,6 @@ fn render_scroll_search_full(
             ir.as_deref_mut(),
             label,
             img_data,
-            ext_prefix,
             l,
             item_top_screen,
             scale,

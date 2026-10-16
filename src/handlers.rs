@@ -37,7 +37,7 @@ pub fn handle_up(r: &mut AppRenderer) {
         return;
     }
     match r.coordinate.base() {
-        Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch => {
+        Coordinate::ScrollSearch => {
             if r.scroll_search_match_count > 0 {
                 if r.scroll_search_current_match > 0 {
                     r.scroll_search_current_match -= 1;
@@ -101,7 +101,7 @@ pub fn handle_down(r: &mut AppRenderer) {
         return;
     }
     match r.coordinate.base() {
-        Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch => {
+        Coordinate::ScrollSearch => {
             if r.scroll_search_match_count > 0 {
                 if r.scroll_search_current_match < r.scroll_search_match_count - 1 {
                     r.scroll_search_current_match += 1;
@@ -1018,7 +1018,7 @@ pub fn handle_page_up(r: &mut AppRenderer) {
     let page_size = ((r.window_height / line_height) - 3).max(1) as usize;
 
     match r.coordinate.base() {
-        Coordinate::Scroll | Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch => {
+        Coordinate::Scroll | Coordinate::ScrollSearch => {
             let viewport_h = r.text_scroll_viewport_h;
             r.text_scroll_offset = (r.text_scroll_offset - viewport_h).max(0);
         }
@@ -1074,7 +1074,7 @@ pub fn handle_page_down(r: &mut AppRenderer) {
     let page_size = ((r.window_height / line_height) - 3).max(1) as usize;
 
     match r.coordinate.base() {
-        Coordinate::Scroll | Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch => {
+        Coordinate::Scroll | Coordinate::ScrollSearch => {
             let viewport_h = r.text_scroll_viewport_h;
             let max_offset = (r.text_scroll_total_height - viewport_h).max(0);
             r.text_scroll_offset = (r.text_scroll_offset + viewport_h).min(max_offset);
@@ -1357,7 +1357,7 @@ fn prefetch_scroll_subtree(r: &mut AppRenderer) {
 pub fn handle_enter_scroll(r: &mut AppRenderer) {
     if !matches!(
         r.coordinate,
-        Coordinate::Scroll | Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch
+        Coordinate::Scroll | Coordinate::ScrollSearch
     ) {
         return;
     }
@@ -1419,22 +1419,8 @@ pub fn handle_whereami_any_mode(r: &mut AppRenderer) {
 /// Enter Tab search mode.
 pub fn handle_tab(r: &mut AppRenderer) {
     match r.coordinate.base() {
-        Coordinate::Scroll => {
-            // Open the prefix-search layout: search the `layer: X list: Y/Z`
-            // extended prefixes. `previous_coordinate` is left as-is (General)
-            // so Escape walks ScrollPrefixSearch -> Scroll -> General.
-            r.coordinate = Coordinate::ScrollPrefixSearch;
-            r.speak_mode_change(None);
-            r.input_buffer.clear();
-            r.cursor_position = 0;
-            r.selection_anchor = None;
-            r.scroll_search_match_count = 0;
-            r.scroll_search_current_match = 0;
-            r.scroll_search_needs_position = true;
-            r.needs_redraw = true;
-        }
-        Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch => {
-            // noop while already in a scroll search sub-mode
+        Coordinate::Scroll | Coordinate::ScrollSearch => {
+            // Tab does nothing in scroll mode: Ctrl+F is its search.
         }
         Coordinate::General | Coordinate::Insert => {
             r.previous_coordinate = r.coordinate;
@@ -4454,7 +4440,7 @@ pub fn handle_escape(r: &mut AppRenderer) {
             handle_dashboard_leave(r);
             return;
         }
-        Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch => {
+        Coordinate::ScrollSearch => {
             r.coordinate = Coordinate::Scroll;
             r.scroll_search_match_count = 0;
             r.scroll_search_current_match = 0;
@@ -4621,7 +4607,7 @@ pub fn handle_input(r: &mut AppRenderer, text: &str) {
             announce_typed_text(r, text);
             r.needs_redraw = true;
         }
-        Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch => {
+        Coordinate::ScrollSearch => {
             if has_selection(r) {
                 delete_selection(r);
             }
@@ -4719,7 +4705,6 @@ pub fn handle_backspace(r: &mut AppRenderer) {
         Coordinate::Command
         | Coordinate::Insert
         | Coordinate::ScrollSearch
-        | Coordinate::ScrollPrefixSearch
         | Coordinate::ExtendedSearch
         | Coordinate::TabSwitcher => {
             let buffer_changed = if has_selection(r) {
@@ -6399,7 +6384,6 @@ pub(crate) fn is_text_edit_mode(r: &AppRenderer) -> bool {
             | Coordinate::ExtendedSearch
             | Coordinate::Command
             | Coordinate::ScrollSearch
-            | Coordinate::ScrollPrefixSearch
             | Coordinate::InputSearch
     )
 }
@@ -7052,7 +7036,7 @@ pub fn handle_ctrl_f(r: &mut AppRenderer) {
             r.scroll_search_needs_position = true;
             r.needs_redraw = true;
         }
-        Coordinate::ScrollSearch | Coordinate::ScrollPrefixSearch | Coordinate::InputSearch => {
+        Coordinate::ScrollSearch | Coordinate::InputSearch => {
             // noop
         }
         Coordinate::Insert => {
@@ -10467,14 +10451,12 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn tab_in_scroll_enters_prefix_search() {
+    fn tab_does_nothing_in_scroll_mode() {
         let mut r = make_renderer();
         r.coordinate = Coordinate::Scroll;
         handle_tab(&mut r);
-        assert_eq!(r.coordinate, Coordinate::ScrollPrefixSearch);
-        assert!(r.input_buffer.is_empty());
-        assert_eq!(r.cursor_position, 0);
-        assert!(r.scroll_search_needs_position);
+        assert_eq!(r.coordinate, Coordinate::Scroll);
+        assert!(!r.scroll_search_needs_position);
     }
 
     #[test]
@@ -10805,14 +10787,6 @@ mod tests {
     }
 
     #[test]
-    fn escape_from_prefix_search_returns_to_scroll() {
-        let mut r = make_renderer();
-        r.coordinate = Coordinate::ScrollPrefixSearch;
-        handle_escape(&mut r);
-        assert_eq!(r.coordinate, Coordinate::Scroll);
-    }
-
-    #[test]
     fn enter_in_scroll_navigates_to_general() {
         let mut r = make_renderer();
         r.coordinate = Coordinate::General;
@@ -10843,22 +10817,9 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_prefix_search_navigates_to_element() {
+    fn up_down_in_scroll_search_step_matches() {
         let mut r = make_renderer();
-        r.coordinate = Coordinate::General;
-        handle_s(&mut r);
-        r.coordinate = Coordinate::ScrollPrefixSearch;
-        let target_id = r.total_list[2].id.clone(); // "item 2"
-        r.list_index = 2;
-        handle_enter_scroll(&mut r);
-        assert_eq!(r.coordinate, Coordinate::General);
-        assert_eq!(r.current_id, target_id);
-    }
-
-    #[test]
-    fn up_down_in_prefix_search_step_matches() {
-        let mut r = make_renderer();
-        r.coordinate = Coordinate::ScrollPrefixSearch;
+        r.coordinate = Coordinate::ScrollSearch;
         r.scroll_search_match_count = 3;
         r.scroll_search_current_match = 0;
         handle_down(&mut r);
@@ -10872,7 +10833,8 @@ mod tests {
         // The renderer announces the new match only when `snap` is set, and
         // picks the clamped match (not a viewport-relative one) once
         // `needs_position` is cleared. Both flags are this contract.
-        for mode in [Coordinate::ScrollSearch, Coordinate::ScrollPrefixSearch] {
+        {
+            let mode = Coordinate::ScrollSearch;
             for nav in [handle_down as fn(&mut AppRenderer), handle_up] {
                 let mut r = make_renderer();
                 r.coordinate = mode;
@@ -10904,7 +10866,8 @@ mod tests {
 
     #[test]
     fn scroll_search_query_supports_caret_and_selection() {
-        for mode in [Coordinate::ScrollSearch, Coordinate::ScrollPrefixSearch] {
+        {
+            let mode = Coordinate::ScrollSearch;
             let mut r = make_renderer();
             r.coordinate = mode;
             r.input_buffer = "abc".to_string();
@@ -11746,14 +11709,6 @@ mod tests {
         r.coordinate = Coordinate::ScrollSearch;
         handle_tab(&mut r);
         assert_eq!(r.coordinate, Coordinate::ScrollSearch);
-    }
-
-    #[test]
-    fn tab_noop_in_scroll_prefix_search_mode() {
-        let mut r = make_renderer();
-        r.coordinate = Coordinate::ScrollPrefixSearch;
-        handle_tab(&mut r);
-        assert_eq!(r.coordinate, Coordinate::ScrollPrefixSearch);
     }
 
     #[test]

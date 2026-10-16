@@ -44,7 +44,6 @@ hint-enter-go-to-element = Enter  Zum Element
 hint-enter-go-to-match = Enter  Zum Treffer
 
 hint-tab-search = Tab    Suchen
-hint-tab-prefix-search = Tab    Präfix-Suche
 hint-tab-next-field = Tab    Nächstes Feld
 
 hint-bspc-backspace = Bspc   Rücktaste
@@ -107,7 +106,6 @@ mode-second-command = zweiter Befehlsmodus
 mode-controls = Steuerungsmodus
 mode-scroll = Scroll-Modus
 mode-scroll-search = Scroll-Suchmodus
-mode-scroll-prefix-search = Scroll-Präfixsuchmodus
 mode-input-search = Eingabe-Suchmodus
 mode-dashboard = Dashboard-Modus
 mode-meta = Meta-Modus

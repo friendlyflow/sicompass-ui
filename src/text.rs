@@ -21,6 +21,9 @@ use std::collections::HashMap;
 pub const MAX_TEXT_VERTICES: usize = 1_048_576;
 pub const FONT_SIZE_PT: f32 = 12.0;
 pub const TEXT_PADDING: f32 = 4.0;
+/// How many space widths a tab advances. A fixed width, not tab stops: a tab
+/// mostly shows up as indentation at the start of a line.
+pub const TAB_WIDTH_SPACES: f32 = 4.0;
 
 /// Glyphs warmed into the atlas at startup so the common case (ASCII) is
 /// resident on the very first frame and never needs a mid-frame re-upload.
@@ -1299,12 +1302,20 @@ impl FontRenderer {
 
     /// Horizontal advance of `ch` in atlas pixels, ensuring the glyph exists.
     /// Unknown codepoints fall back to the space advance so layout progresses.
+    /// A tab is [`TAB_WIDTH_SPACES`] spaces wide.
     fn advance(&self, ch: char) -> f32 {
+        if ch == '\t' {
+            return self.space_advance() * TAB_WIDTH_SPACES;
+        }
         if let Some(g) = self.ensure_glyph(ch as u32) {
             if g.advance > 0.0 {
                 return g.advance;
             }
         }
+        self.space_advance()
+    }
+
+    fn space_advance(&self) -> f32 {
         self.ensure_glyph(' ' as u32)
             .map(|g| g.advance)
             .unwrap_or(0.0)
@@ -1393,11 +1404,13 @@ impl FontRenderer {
         let col = [r, g, b];
 
         let mut cx = x;
-        let space_adv = self
-            .ensure_glyph(' ' as u32)
-            .map(|g| g.advance)
-            .unwrap_or(0.0);
+        let space_adv = self.space_advance();
         for ch in text.chars() {
+            // A tab draws nothing and moves as far as `advance` measures it.
+            if ch == '\t' {
+                cx += space_adv * TAB_WIDTH_SPACES * scale;
+                continue;
+            }
             // Rasterize on demand; an unsupported codepoint advances like a space.
             let gi = match self.ensure_glyph(ch as u32) {
                 Some(g) => g,
@@ -2105,6 +2118,13 @@ mod tests {
         assert!((fr.measure_text_width("abc", 1.0) - 30.0).abs() < 1e-3);
     }
 
+    #[test]
+    fn measure_tab_is_four_spaces() {
+        let fr = make_fr_uniform(10.0);
+        assert!((fr.measure_text_width("\tx", 1.0) - 50.0).abs() < 1e-3);
+        assert!((fr.measure_text_width("\t\t", 2.0) - 160.0).abs() < 1e-3);
+    }
+
     // ---- count_wrapped_lines ---
 
     #[test]
@@ -2195,6 +2215,20 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], ("abc".to_string(), 0));
         assert_eq!(result[1], ("def".to_string(), 4));
+    }
+
+    #[test]
+    fn wrap_offsets_keep_leading_indentation() {
+        let fr = make_fr_uniform(10.0);
+        // "  \tab" = 20 + 40 (tab) + 20 = 80px, fits, indentation and all.
+        let result = fr.wrap_lines_with_offsets("  \tab", 1.0, 100.0);
+        assert_eq!(result, vec![("  \tab".to_string(), 0)]);
+        // "\tabcdefg" = 40 + 70 = 110px: the tab counts as four spaces, so
+        // the force-break falls after "f" (100px), at byte 7.
+        let result = fr.wrap_lines_with_offsets("\tabcdefg", 1.0, 100.0);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("\tabcdef".to_string(), 0));
+        assert_eq!(result[1], ("g".to_string(), 7));
     }
 
     // ---- wrap_lines_with_offsets_hanging ---

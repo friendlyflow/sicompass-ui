@@ -195,7 +195,6 @@ pub enum Coordinate {
     Command,
     Scroll,
     ScrollSearch,
-    ScrollPrefixSearch,
     InputSearch,
     Dashboard,
     Meta,
@@ -295,7 +294,7 @@ impl Coordinate {
     /// Every variant. Exists so the locale-coverage test can assert that each
     /// mode resolves in all four bundles without a hand-maintained list that
     /// silently misses a new variant.
-    pub const ALL: [Coordinate; 20] = [
+    pub const ALL: [Coordinate; 19] = [
         Coordinate::General,
         Coordinate::Insert,
         Coordinate::Normal,
@@ -305,7 +304,6 @@ impl Coordinate {
         Coordinate::Command,
         Coordinate::Scroll,
         Coordinate::ScrollSearch,
-        Coordinate::ScrollPrefixSearch,
         Coordinate::InputSearch,
         Coordinate::Dashboard,
         Coordinate::Meta,
@@ -340,7 +338,6 @@ impl Coordinate {
             Coordinate::Command => "command mode",
             Coordinate::Scroll => "scroll mode",
             Coordinate::ScrollSearch => "scroll search mode",
-            Coordinate::ScrollPrefixSearch => "scroll prefix search mode",
             Coordinate::InputSearch => "input search mode",
             Coordinate::Dashboard => "dashboard mode",
             Coordinate::Meta => "meta mode",
@@ -370,7 +367,6 @@ impl Coordinate {
             Coordinate::Command => "mode-command",
             Coordinate::Scroll => "mode-scroll",
             Coordinate::ScrollSearch => "mode-scroll-search",
-            Coordinate::ScrollPrefixSearch => "mode-scroll-prefix-search",
             Coordinate::InputSearch => "mode-input-search",
             Coordinate::Dashboard => "mode-dashboard",
             Coordinate::Meta => "mode-meta",
@@ -558,7 +554,8 @@ pub struct RenderListItem {
     pub data: Option<String>,
     /// Non-None for extended-search results: the provider-level navigation path.
     pub nav_path: Option<String>,
-    /// Extended prefix (`layer: X list: Y/Z`) for scroll mode; `None` elsewhere.
+    /// Image path for an image element in a search result list (`data` holds
+    /// the breadcrumb there); `None` elsewhere.
     pub ext_prefix: Option<String>,
 }
 
@@ -2480,7 +2477,7 @@ mod tests {
             assert!(!seen.contains(&c), "{c:?} listed twice");
             seen.push(c);
         }
-        assert_eq!(Coordinate::ALL.len(), 20);
+        assert_eq!(Coordinate::ALL.len(), 19);
     }
 
     #[test]
@@ -2659,10 +2656,6 @@ mod tests {
     #[test]
     fn coordinate_as_str_scroll_search() {
         assert_eq!(Coordinate::ScrollSearch.as_str(), "scroll search mode");
-        assert_eq!(
-            Coordinate::ScrollPrefixSearch.as_str(),
-            "scroll prefix search mode"
-        );
     }
 
     #[test]

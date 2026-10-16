@@ -44,7 +44,6 @@ hint-enter-go-to-element = Enter  Ga naar elem.
 hint-enter-go-to-match = Enter  Ga naar match
 
 hint-tab-search = Tab    Zoeken
-hint-tab-prefix-search = Tab    Voorvoegsel
 hint-tab-next-field = Tab    Volgend veld
 
 hint-bspc-backspace = Bspc   Backspace
@@ -107,7 +106,6 @@ mode-second-command = tweede commandomodus
 mode-controls = bedieningsmodus
 mode-scroll = scrolmodus
 mode-scroll-search = scrolzoekmodus
-mode-scroll-prefix-search = scrolvoorvoegsel-zoekmodus
 mode-input-search = invoerzoekmodus
 mode-dashboard = dashboardmodus
 mode-meta = metamodus

@@ -44,7 +44,6 @@ hint-enter-go-to-element = Enter  Aller à élém.
 hint-enter-go-to-match = Enter  Aller corresp.
 
 hint-tab-search = Tab    Recherche
-hint-tab-prefix-search = Tab    Préfixe
 hint-tab-next-field = Tab    Champ suiv.
 
 hint-bspc-backspace = Bspc   Retour arr.
@@ -107,7 +106,6 @@ mode-second-command = second mode commande
 mode-controls = mode contrôles
 mode-scroll = mode défilement
 mode-scroll-search = mode recherche défilement
-mode-scroll-prefix-search = mode rech. préfixe défilement
 mode-input-search = mode recherche saisie
 mode-dashboard = mode tableau de bord
 mode-meta = mode méta
