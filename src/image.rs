@@ -664,7 +664,7 @@ impl ImageRenderer {
                 .is_some_and(|t| t.width == frame.width && t.height == frame.height);
             if !same {
                 if let Some(old) = self.video.take() {
-                    self.destroy_texture(old);
+                    self.destroy_video_texture(old);
                 }
                 match self.upload_rgba("video", 0, frame.width, frame.height, &frame.rgba) {
                     Ok(tex) => {
@@ -769,8 +769,20 @@ impl ImageRenderer {
     pub unsafe fn clear_video(&mut self) {
         unsafe {
             if let Some(old) = self.video.take() {
-                self.destroy_texture(old);
+                self.destroy_video_texture(old);
             }
+        }
+    }
+
+    /// Free the video's texture. Frames still on the GPU may be drawing it, because it
+    /// is drawn every frame. Waiting is fine here: this happens when a video starts or
+    /// stops, never while one plays.
+    unsafe fn destroy_video_texture(&self, old: CachedTexture) {
+        unsafe {
+            if let Err(e) = self.device.device_wait_idle() {
+                tracing::warn!("video: could not wait for the GPU: {e}");
+            }
+            self.destroy_texture(old);
         }
     }
 
