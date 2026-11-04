@@ -52,6 +52,9 @@ pub struct AccessKitAdapter {
     /// speaking. See [`take_late_registration`](Self::take_late_registration).
     #[cfg(target_os = "linux")]
     awaiting_late_registration: bool,
+    /// Which node the focused row is. See [`ElementIds`].
+    #[cfg(target_os = "linux")]
+    element_ids: ElementIds,
     #[cfg(target_os = "windows")]
     adapter: accesskit_windows::SubclassingAdapter,
     #[cfg(target_os = "macos")]
@@ -195,6 +198,7 @@ impl AccessKitAdapter {
                 adapter,
                 registered,
                 awaiting_late_registration: false,
+                element_ids: ElementIds::default(),
             });
         }
 
@@ -278,7 +282,15 @@ impl AccessKitAdapter {
     #[allow(unused_variables)]
     pub fn update_if_active(&mut self, renderer: &AppRenderer) {
         #[cfg(target_os = "linux")]
-        self.adapter.update_if_active(|| build_tree(renderer));
+        {
+            // Only while a screen reader listens, so a computer without one does not
+            // work out the spoken label every frame.
+            let element_ids = &mut self.element_ids;
+            self.adapter.update_if_active(|| {
+                let element = element_ids.for_row(renderer);
+                build_tree_with_element(renderer, element)
+            });
+        }
 
         #[cfg(target_os = "windows")]
         if let Some(events) = self.adapter.update_if_active(|| build_tree(renderer)) {
@@ -589,8 +601,9 @@ fn focused_row_counts(
 /// Layout (mirrors the C `render.c` single-element pattern):
 /// - `ROOT_ID` (`Role::Window`): the sicompass application window.
 /// - `ELEMENT_ID` (`Role::ListItem`): **one** placeholder whose label is the
-///   currently selected item.  Updated in place on every navigation step so
-///   Orca only ever reads the current item, not an enumeration of all items.
+///   currently selected item, so Orca only ever reads the current item, not an
+///   enumeration of all items.  On Linux a move to another row replaces it with a
+///   fresh id, see [`ElementIds`].  On Windows it is updated in place.
 /// - `ANNOUNCEMENT_ID` (`Role::ListItem`, `Live::Polite`): always-present
 ///   live-region.  Its name is `pending_announcement` when an announcement is
 ///   queued, `""` otherwise.  Keeping the node permanently in the tree (rather
@@ -598,7 +611,7 @@ fn focused_row_counts(
 ///   every content change — which NVDA and Orca monitor — rather than the less
 ///   reliable `NodeAdded` event.
 ///
-/// Focus is `ELEMENT_ID` when `total_list` is non-empty, `ROOT_ID` otherwise.
+/// Focus is that element when `total_list` is non-empty, `ROOT_ID` otherwise.
 ///
 /// macOS builds its own tree ([`build_tree_macos`]) because NSAccessibility
 /// honours neither the label-mutation nor the label-only live region above;
@@ -606,6 +619,47 @@ fn focused_row_counts(
 /// AT-SPI / UIA shape.
 #[cfg(any(not(target_os = "macos"), test))]
 fn build_tree(renderer: &AppRenderer) -> TreeUpdate {
+    build_tree_with_element(renderer, ELEMENT_ID)
+}
+
+/// Picks the node the focused row is, so that moving between rows with similar names is
+/// spoken.
+///
+/// Orca skips a name change at least 85% similar to the last one on that node
+/// (`_strings_are_redundant`), so `photo-01.jpg` to `photo-02.jpg` said nothing when one
+/// node's label was changed. A focus move to another node has no such filter, and it must
+/// be a new id each time: alternating between two ids was tried, and does not work.
+///
+/// Only a move to another row with other text gets one. Typing changes the label on the
+/// same row, and a fresh node would read the whole line back at every key. Output arriving
+/// in a terminal changes the row number under the same text, and that must stay silent.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Default)]
+struct ElementIds {
+    /// The row last seen: where it is, and what it says.
+    last: Option<(sicompass_sdk::ffon::IdArray, usize, String)>,
+    /// How many fresh ids have been given out.
+    moves: u64,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl ElementIds {
+    fn for_row(&mut self, renderer: &AppRenderer) -> NodeId {
+        let (label, _) = current_element(renderer);
+        let moved = self.last.as_ref().is_some_and(|(id, index, last_label)| {
+            (*id != renderer.current_id || *index != renderer.list_index) && *last_label != label
+        });
+        if moved {
+            self.moves += 1;
+        }
+        self.last = Some((renderer.current_id.clone(), renderer.list_index, label));
+        // Counting up from ELEMENT_ID, and so never ROOT_ID or ANNOUNCEMENT_ID.
+        NodeId(ELEMENT_ID.0 + self.moves)
+    }
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn build_tree_with_element(renderer: &AppRenderer, element_id: NodeId) -> TreeUpdate {
     let mut nodes: Vec<(NodeId, accesskit::Node)> = Vec::with_capacity(3);
 
     // Active UI locale (e.g. "nl-BE"); used as the language fallback for any
@@ -630,7 +684,7 @@ fn build_tree(renderer: &AppRenderer) -> TreeUpdate {
     // voice for the language is installed.
     let elem_lang = detect_language(&element_content).unwrap_or_else(|| ui_locale.clone());
     elem.set_language(elem_lang);
-    nodes.push((ELEMENT_ID, elem));
+    nodes.push((element_id, elem));
 
     // ---- Announcement live-region node (always present) --------------------
     // Announcements (mode changes, errors, tab switches) are app-generated in
@@ -647,13 +701,13 @@ fn build_tree(renderer: &AppRenderer) -> TreeUpdate {
     let mut root_builder = Node::new(Role::Window);
     root_builder.set_label(Box::<str>::from(renderer.a11y_name.as_str()));
     root_builder.set_language(ui_locale.clone());
-    root_builder.set_children(vec![ELEMENT_ID, ANNOUNCEMENT_ID]);
+    root_builder.set_children(vec![element_id, ANNOUNCEMENT_ID]);
     nodes.insert(0, (ROOT_ID, root_builder));
 
     let focus = if renderer.total_list.is_empty() {
         ROOT_ID
     } else {
-        ELEMENT_ID
+        element_id
     };
 
     TreeUpdate {
@@ -811,6 +865,76 @@ mod tests {
             });
         }
         r
+    }
+
+    #[test]
+    fn a_move_between_similar_rows_gets_a_fresh_node_so_orca_speaks_it() {
+        let mut r =
+            make_renderer_with_list(&["-p photo-01.jpg", "-p photo-02.jpg", "-p photo-03.jpg"]);
+        let mut ids = ElementIds::default();
+        let first = ids.for_row(&r);
+        assert_eq!(
+            first, ELEMENT_ID,
+            "the first row is the node the initial tree has"
+        );
+
+        r.list_index = 1;
+        let second = ids.for_row(&r);
+        assert_ne!(second, first);
+
+        // Going back is a new node too: alternating two ids does not get past Orca.
+        r.list_index = 0;
+        let third = ids.for_row(&r);
+        assert_ne!(third, first);
+        assert_ne!(third, second);
+
+        // And the tree says so: focus is on it, and it is the root's child.
+        let tree = build_tree_with_element(&r, third);
+        assert_eq!(tree.focus, third);
+        assert_eq!(tree.nodes[1].0, third);
+        assert_eq!(tree.nodes[0].1.children(), &[third, ANNOUNCEMENT_ID]);
+    }
+
+    /// The same row with other text is typing, and a new node would read it all back.
+    #[test]
+    fn typing_in_a_row_keeps_its_node() {
+        let mut r = make_renderer_with_list(&["-i a"]);
+        let mut ids = ElementIds::default();
+        let before = ids.for_row(&r);
+        r.total_list[0].label = "-i ab".to_owned();
+        assert_eq!(ids.for_row(&r), before);
+    }
+
+    /// Output arriving in a terminal moves the input row down under the same text.
+    #[test]
+    fn a_row_that_moves_with_the_same_text_keeps_its_node() {
+        let mut r = make_renderer_with_list(&["-i prompt", "-i prompt"]);
+        let mut ids = ElementIds::default();
+        let before = ids.for_row(&r);
+        r.list_index = 1;
+        assert_eq!(ids.for_row(&r), before);
+    }
+
+    #[test]
+    fn a_frame_with_nothing_new_keeps_its_node() {
+        let mut r = make_renderer_with_list(&["-p a.jpg", "-p b.jpg"]);
+        let mut ids = ElementIds::default();
+        ids.for_row(&r);
+        r.list_index = 1;
+        let moved = ids.for_row(&r);
+        assert_eq!(ids.for_row(&r), moved);
+        assert_eq!(ids.for_row(&r), moved);
+    }
+
+    #[test]
+    fn fresh_nodes_never_take_a_reserved_id() {
+        let mut r = make_renderer_with_list(&["-p a.jpg", "-p b.jpg"]);
+        let mut ids = ElementIds::default();
+        for step in 0..1000 {
+            r.list_index = step % 2;
+            let id = ids.for_row(&r);
+            assert!(id != ROOT_ID && id != ANNOUNCEMENT_ID);
+        }
     }
 
     #[test]
