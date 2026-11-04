@@ -1031,7 +1031,7 @@ fn update_view(app: &mut AppState) {
         }
         Some(crate::video::Request::TogglePause) => {
             if app.video.as_ref().is_some_and(|a| a.player.has_ended()) {
-                // Played to the end: Space plays it again.
+                // Played to the end: Enter plays it again.
                 if let Some(path) = app.renderer.video_open.clone() {
                     app.renderer.video_request = Some(crate::video::Request::Open(path));
                     app.renderer.needs_redraw = true;

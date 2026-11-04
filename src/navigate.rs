@@ -392,7 +392,8 @@ fn open_image_view_with(r: &mut AppRenderer, video_available: bool) {
     r.speak_mode_change(Some(phrase));
 }
 
-/// Space in the big view: pause the video, or start it again.
+/// Enter in the big view: pause the video, start it again, or play it again from the
+/// start if it has ended.
 pub fn handle_toggle_video(r: &mut AppRenderer) {
     if r.video_open.is_some() {
         r.video_request = Some(crate::video::Request::TogglePause);
@@ -821,7 +822,33 @@ mod tests {
     }
 
     #[test]
-    fn space_pauses_only_while_a_video_is_open() {
+    fn enter_is_the_key_that_pauses_and_space_is_not() {
+        let mut r = open_video(r#"<video src="/clips/v.mp4"></video>"#, false, true);
+        r.video_request = None;
+        press(&mut r, Keycode::Space);
+        assert!(r.video_request.is_none(), "Space does nothing to a video");
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.video_request, Some(crate::video::Request::TogglePause));
+        assert_eq!(
+            r.coordinate,
+            Coordinate::Dashboard,
+            "it stays in the big view"
+        );
+    }
+
+    /// Enter on a picture in the big view is not a pause, and leaves it open.
+    #[test]
+    fn enter_on_a_picture_in_the_big_view_asks_for_nothing() {
+        let mut r = renderer(&["<image>a.jpg</image>"], 0);
+        press(&mut r, Keycode::D);
+        assert!(in_image_view(&r));
+        press(&mut r, Keycode::Return);
+        assert!(r.video_request.is_none());
+        assert!(in_image_view(&r));
+    }
+
+    #[test]
+    fn enter_pauses_only_while_a_video_is_open() {
         let mut r = open_video(r#"<video src="/clips/v.mp4"></video>"#, false, true);
         r.video_request = None;
         handle_toggle_video(&mut r);
