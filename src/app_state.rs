@@ -737,6 +737,10 @@ pub struct AppRenderer {
     /// How far navigate mode has scrolled the row it is in, for a row of boxes taller
     /// than the window.
     pub row_scroll: f32,
+    /// What the key handlers want done with the playing video, taken by the frame loop.
+    pub video_request: Option<crate::video::Request>,
+    /// The video open in the big view, by path.
+    pub video_open: Option<String>,
 
     /// The stylesheets in force.
     pub sheets: crate::style::Sheets,
@@ -1185,6 +1189,8 @@ impl AppRenderer {
             nav_return: Coordinate::General,
             element_image_view: false,
             row_scroll: 0.0,
+            video_request: None,
+            video_open: None,
             sheets: crate::style::Sheets::default(),
             input_buffer: String::new(),
             cursor_position: 0,
@@ -2213,6 +2219,8 @@ pub struct AppState {
     pub font_renderer: Option<crate::text::FontRenderer>,
     pub rect_renderer: Option<crate::rectangle::RectangleRenderer>,
     pub image_renderer: Option<crate::image::ImageRenderer>,
+    /// The video open in the big view, if any.
+    pub video: Option<crate::video::Active>,
 
     // ---- Accessibility -----------------------------------------------------
     pub accesskit_adapter: Option<crate::accesskit_sdl::AccessKitAdapter>,

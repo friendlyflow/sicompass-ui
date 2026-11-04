@@ -38,6 +38,9 @@ const MAX_IMAGE_VERTICES: usize = MAX_DRAWS * VERTS_PER_QUAD;
 /// Textures uploaded to the GPU in one frame. Decoding is on other threads, but the
 /// upload is not, so a screen of photos arrives over a few frames instead of stalling one.
 const UPLOADS_PER_FRAME: usize = 4;
+/// The descriptor set of the video that is playing, after those of the cached pictures.
+const VIDEO_SLOT: usize = MAX_CACHED_IMAGES;
+const DESCRIPTOR_SETS: usize = MAX_CACHED_IMAGES + 1;
 
 // ---------------------------------------------------------------------------
 // Vertex layout (must match shaders/image_vert.spv)
@@ -103,6 +106,8 @@ pub struct ImageRenderer {
 
     /// Decodes pictures on other threads, see [`Loader`].
     loader: Loader,
+    /// The picture of the video that is playing, updated in place for each frame.
+    video: Option<CachedTexture>,
     /// Pictures that could not be decoded, not asked for again.
     broken: std::collections::HashSet<String>,
 
@@ -147,14 +152,14 @@ impl ImageRenderer {
             // ---- Descriptor pool (one set per cache slot) -------------------------
             let pool_size = vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(MAX_CACHED_IMAGES as u32);
+                .descriptor_count(DESCRIPTOR_SETS as u32);
             let pool_info = vk::DescriptorPoolCreateInfo::default()
-                .max_sets(MAX_CACHED_IMAGES as u32)
+                .max_sets(DESCRIPTOR_SETS as u32)
                 .pool_sizes(std::slice::from_ref(&pool_size));
             let descriptor_pool = device.create_descriptor_pool(&pool_info, None)?;
 
             // Allocate all sets upfront
-            let layouts = vec![descriptor_set_layout; MAX_CACHED_IMAGES];
+            let layouts = vec![descriptor_set_layout; DESCRIPTOR_SETS];
             let alloc_info = vk::DescriptorSetAllocateInfo::default()
                 .descriptor_pool(descriptor_pool)
                 .set_layouts(&layouts);
@@ -289,6 +294,7 @@ impl ImageRenderer {
                 pipeline_layout,
                 pipeline,
                 loader: Loader::new(3),
+                video: None,
                 broken: std::collections::HashSet::new(),
                 cache: (0..MAX_CACHED_IMAGES).map(|_| None).collect(),
                 draws: Vec::new(),
@@ -496,6 +502,9 @@ impl ImageRenderer {
 
     pub unsafe fn cleanup(&mut self) {
         unsafe {
+            if let Some(tex) = self.video.take() {
+                self.destroy_texture(tex);
+            }
             for slot in self.cache.iter_mut() {
                 if let Some(tex) = slot.take() {
                     self.device.destroy_sampler(tex.sampler, None);
@@ -636,6 +645,132 @@ impl ImageRenderer {
                 vertex_offset,
             });
             true
+        }
+    }
+
+    /// Show `frame` as the playing video's picture. The texture is made when the first
+    /// frame arrives, and written over for each after it.
+    pub unsafe fn upload_video_frame(&mut self, frame: &crate::video::VideoFrame) {
+        unsafe {
+            if frame.width == 0
+                || frame.height == 0
+                || frame.rgba.len() < (frame.width * frame.height * 4) as usize
+            {
+                return;
+            }
+            let same = self
+                .video
+                .as_ref()
+                .is_some_and(|t| t.width == frame.width && t.height == frame.height);
+            if !same {
+                if let Some(old) = self.video.take() {
+                    self.destroy_texture(old);
+                }
+                match self.upload_rgba("video", 0, frame.width, frame.height, &frame.rgba) {
+                    Ok(tex) => {
+                        self.bind_slot(VIDEO_SLOT, &tex);
+                        self.video = Some(tex);
+                    }
+                    Err(e) => eprintln!("sicompass: video texture failed: {e}"),
+                }
+                return;
+            }
+            let Some(tex) = self.video.as_ref() else {
+                return;
+            };
+            let size = (frame.width * frame.height * 4) as vk::DeviceSize;
+            let Ok((buffer, memory)) = render::create_buffer(
+                &self.device,
+                &self.instance,
+                self.physical_device,
+                size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ) else {
+                return;
+            };
+            if let Ok(ptr) = self
+                .device
+                .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())
+            {
+                ptr::copy_nonoverlapping(frame.rgba.as_ptr(), ptr as *mut u8, size as usize);
+                self.device.unmap_memory(memory);
+                render::transition_image_layout(
+                    &self.device,
+                    self.command_pool,
+                    self.queue,
+                    tex.image,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                );
+                render::copy_buffer_to_image(
+                    &self.device,
+                    self.command_pool,
+                    self.queue,
+                    buffer,
+                    tex.image,
+                    frame.width,
+                    frame.height,
+                );
+                render::transition_image_layout(
+                    &self.device,
+                    self.command_pool,
+                    self.queue,
+                    tex.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+            }
+            self.device.destroy_buffer(buffer, None);
+            self.device.free_memory(memory, None);
+        }
+    }
+
+    /// Draw the playing video's picture into `bx`, as `prepare_picture` does a file's.
+    /// Returns whether there is a picture to draw.
+    pub unsafe fn prepare_video(
+        &mut self,
+        bx: [f32; 4],
+        fit: crate::style::ObjectFit,
+        clip_top: f32,
+        clip_bottom: f32,
+    ) -> bool {
+        if self.draws.len() >= MAX_DRAWS {
+            return false;
+        }
+        let Some(tex) = self.video.as_ref() else {
+            return false;
+        };
+        let Some(place) = place_picture(bx, (tex.width, tex.height), fit, clip_top, clip_bottom)
+        else {
+            return true;
+        };
+        let vertex_offset = self.vertices.len() as u32;
+        let [x0, y0, x1, y1] = place.rect;
+        let [u0, v0, u1, v1] = place.uv;
+        for (pos, tex_coord) in [
+            ([x0, y0], [u0, v0]),
+            ([x1, y0], [u1, v0]),
+            ([x1, y1], [u1, v1]),
+            ([x0, y0], [u0, v0]),
+            ([x1, y1], [u1, v1]),
+            ([x0, y1], [u0, v1]),
+        ] {
+            self.vertices.push(ImageVertex { pos, tex_coord });
+        }
+        self.draws.push(ImageDraw {
+            slot: VIDEO_SLOT,
+            vertex_offset,
+        });
+        true
+    }
+
+    /// Forget the playing video's picture, when it stops.
+    pub unsafe fn clear_video(&mut self) {
+        unsafe {
+            if let Some(old) = self.video.take() {
+                self.destroy_texture(old);
+            }
         }
     }
 
@@ -936,6 +1071,12 @@ pub(crate) fn size_class_for(side: f32) -> u32 {
 /// longer side. Returns its size and RGBA pixels.
 pub(crate) fn decode_scaled(path: &str, max_side: u32) -> Result<(u32, u32, Vec<u8>), SiError> {
     use img_crate::ImageDecoder as _;
+    // A video's first picture, through whatever backend the application registered.
+    if let Some(video) = path.strip_prefix(crate::video::THUMBNAIL_PREFIX) {
+        return crate::video::first_frame(video, max_side)
+            .map(|f| (f.width, f.height, f.rgba))
+            .ok_or_else(|| SiError::Other(format!("no picture in {video}")));
+    }
     let mut decoder = reader_for(path)
         .ok_or_else(|| SiError::Other(format!("cannot read {path}")))?
         .into_decoder()

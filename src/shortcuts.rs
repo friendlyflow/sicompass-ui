@@ -674,6 +674,16 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: crate::navigate::handle_copy,
     },
     Shortcut {
+        key: Keycode::Space,
+        key2: None,
+        ctrl: false,
+        shift: false,
+        modes: &[Coordinate::Dashboard],
+        label: "Space  Pause",
+        is_available: crate::navigate::video_is_open,
+        handle: crate::navigate::handle_toggle_video,
+    },
+    Shortcut {
         key: Keycode::Right,
         key2: Some(Keycode::L),
         ctrl: false,

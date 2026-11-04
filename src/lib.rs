@@ -51,6 +51,7 @@ pub mod state;
 pub mod style;
 pub mod text;
 pub mod unicode_search;
+pub mod video;
 
 #[cfg(test)]
 mod launcher_mode_tests;

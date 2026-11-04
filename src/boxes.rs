@@ -471,7 +471,7 @@ impl<'a, 'c> Planner<'a, 'c> {
                 let mut style = style;
                 // A picture can be shown smaller than it is, so it never holds a
                 // column open: columns of photos come out equal.
-                style.min_size.width = length(0.0);
+                style.min_size.width = length(0.0_f32);
                 // And it is as tall as its shape says, not as tall as the row: a browser
                 // does not stretch a replaced element that has an aspect ratio either.
                 style.align_self = Some(taffy::AlignSelf::Start);

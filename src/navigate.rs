@@ -46,7 +46,7 @@ pub(crate) fn can_navigate(r: &AppRenderer) -> bool {
 /// The row's one target is an image, so Enter and `d` can open it from General.
 pub(crate) fn focused_is_only_an_image(r: &AppRenderer) -> bool {
     let counts = focused_counts(r);
-    r.current_id.depth() > 1 && counts.images == 1 && counts.total() == 1
+    r.current_id.depth() > 1 && counts.images + counts.videos == 1 && counts.total() == 1
 }
 
 fn localized(key: &str, args: &Args, fallback: String) -> String {
@@ -352,20 +352,57 @@ pub fn handle_view_only_image(r: &mut AppRenderer) {
 }
 
 fn show_image(r: &mut AppRenderer) {
-    if let Some(target) = r.nav_targets.get(r.nav_index) {
-        r.dashboard_image_path = target.value.clone();
+    if let Some(target) = r.nav_targets.get(r.nav_index).cloned() {
+        if target.kind == TargetKind::Video {
+            // The frame loop opens it and starts it, and the picture is its.
+            r.dashboard_image_path.clear();
+            r.video_open = Some(target.value.clone());
+            r.video_request = Some(crate::video::Request::Open(target.value));
+        } else {
+            r.dashboard_image_path = target.value;
+            if r.video_open.take().is_some() {
+                r.video_request = Some(crate::video::Request::Stop);
+            }
+        }
     }
     r.needs_redraw = true;
 }
 
-/// The big view of the selected image.
+/// The big view of the selected image or video.
 fn open_image_view(r: &mut AppRenderer) {
+    open_image_view_with(r, crate::video::available());
+}
+
+fn open_image_view_with(r: &mut AppRenderer, video_available: bool) {
+    let is_video = r
+        .nav_targets
+        .get(r.nav_index)
+        .is_some_and(|t| t.kind == TargetKind::Video);
+    if is_video && !video_available {
+        // Said, and nothing opens: a black window would say less.
+        r.error_message = localize::t("video-unavailable");
+        r.needs_redraw = true;
+        return;
+    }
     show_image(r);
     r.element_image_view = true;
     r.previous_coordinate = r.coordinate;
     r.coordinate = Coordinate::Dashboard;
     let phrase = target_phrase(&r.nav_targets, r.nav_index);
     r.speak_mode_change(Some(phrase));
+}
+
+/// Space in the big view: pause the video, or start it again.
+pub fn handle_toggle_video(r: &mut AppRenderer) {
+    if r.video_open.is_some() {
+        r.video_request = Some(crate::video::Request::TogglePause);
+        r.needs_redraw = true;
+    }
+}
+
+/// A video is open in the big view.
+pub(crate) fn video_is_open(r: &AppRenderer) -> bool {
+    in_image_view(r) && r.video_open.is_some()
 }
 
 /// True while the dashboard is showing an image from a row.
@@ -375,7 +412,7 @@ pub(crate) fn in_image_view(r: &AppRenderer) -> bool {
 
 /// The image `step` images on from the current one in the row, skipping other kinds.
 fn image_step(targets: &[Target], from: usize, forward: bool) -> Option<usize> {
-    let is_image = |i: &usize| targets[*i].kind == TargetKind::Image;
+    let is_image = |i: &usize| matches!(targets[*i].kind, TargetKind::Image | TargetKind::Video);
     if forward {
         (from + 1..targets.len()).find(is_image)
     } else {
@@ -734,6 +771,104 @@ mod tests {
             assert!(in_image_view(&r));
             assert_eq!(r.dashboard_image_path, "b.jpg");
         }
+    }
+
+    fn open_video(row: &str, at_last: bool, available: bool) -> AppRenderer {
+        struct Markup;
+        impl sicompass_sdk::provider::Provider for Markup {
+            fn name(&self) -> &str {
+                "markup"
+            }
+            fn fetch(&mut self) -> Vec<FfonElement> {
+                Vec::new()
+            }
+            fn markup(&self) -> bool {
+                true
+            }
+        }
+        let mut r = renderer(&[row], 0);
+        r.providers.push(Box::new(Markup));
+        list::create_list_current_layer(&mut r);
+        press(&mut r, if at_last { Keycode::A } else { Keycode::I });
+        open_image_view_with(&mut r, available);
+        r
+    }
+
+    const MIXED: &str =
+        r#"<img src="a.jpg"><video src="/clips/v.mp4">Clip</video><img src="b.jpg">"#;
+
+    #[test]
+    fn a_video_opens_in_the_big_view_and_asks_to_be_played() {
+        let r = open_video(r#"<video src="/clips/v.mp4">Clip</video>"#, false, true);
+        assert_eq!(r.coordinate, Coordinate::Dashboard);
+        assert!(in_image_view(&r));
+        assert_eq!(r.video_open.as_deref(), Some("/clips/v.mp4"));
+        assert_eq!(
+            r.video_request,
+            Some(crate::video::Request::Open("/clips/v.mp4".to_owned()))
+        );
+        assert!(r.dashboard_image_path.is_empty());
+        assert!(announced(&r).contains("Clip"), "{}", announced(&r));
+    }
+
+    /// With no decoder the window must say so, and not open on nothing.
+    #[test]
+    fn a_video_with_no_backend_says_so_and_stays_put() {
+        let r = open_video(r#"<video src="/clips/v.mp4"></video>"#, false, false);
+        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert!(r.video_request.is_none() && r.video_open.is_none());
+        assert!(!r.error_message.is_empty());
+    }
+
+    #[test]
+    fn space_pauses_only_while_a_video_is_open() {
+        let mut r = open_video(r#"<video src="/clips/v.mp4"></video>"#, false, true);
+        r.video_request = None;
+        handle_toggle_video(&mut r);
+        assert_eq!(r.video_request, Some(crate::video::Request::TogglePause));
+        let mut r = renderer(&["<image>a.jpg</image>"], 0);
+        press(&mut r, Keycode::D);
+        handle_toggle_video(&mut r);
+        assert!(r.video_request.is_none(), "an image has nothing to pause");
+    }
+
+    #[test]
+    fn leaving_the_big_view_stops_the_video() {
+        let mut r = open_video(r#"<video src="/clips/v.mp4"></video>"#, false, true);
+        r.video_request = None;
+        crate::handlers::handle_dashboard_leave(&mut r);
+        assert_eq!(r.video_request, Some(crate::video::Request::Stop));
+        assert!(r.video_open.is_none());
+    }
+
+    /// Left and Right in the big view go over pictures and videos alike, and each step
+    /// starts or stops the player as it should.
+    #[test]
+    fn stepping_over_a_mixed_row_opens_and_stops_the_video() {
+        let mut r = open_video(MIXED, false, true);
+        assert_eq!(r.video_open, None, "it opened on the first picture");
+        r.nav_index = 1;
+        show_image(&mut r);
+        assert_eq!(
+            r.video_request,
+            Some(crate::video::Request::Open("/clips/v.mp4".to_owned()))
+        );
+        r.nav_index = 2;
+        r.video_request = None;
+        show_image(&mut r);
+        assert_eq!(r.video_request, Some(crate::video::Request::Stop));
+        assert_eq!(r.dashboard_image_path, "b.jpg");
+        assert!(r.video_open.is_none());
+        assert_eq!(image_step(&r.nav_targets, 0, true), Some(1));
+        assert_eq!(image_step(&r.nav_targets, 2, false), Some(1));
+    }
+
+    #[test]
+    fn a_rows_only_video_opens_from_general_with_enter_or_d() {
+        let mut r = open_video(r#"<video src="/clips/v.mp4"></video>"#, false, true);
+        press(&mut r, Keycode::Escape);
+        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert!(focused_is_only_an_image(&r));
     }
 
     #[test]

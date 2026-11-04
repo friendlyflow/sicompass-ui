@@ -7292,6 +7292,9 @@ pub fn handle_dashboard_leave(r: &mut AppRenderer) {
         r.dashboard_cell_size = (0, 0);
     }
     r.dashboard_last_ctrl_c = 0;
+    if r.video_open.take().is_some() {
+        r.video_request = Some(crate::video::Request::Stop);
+    }
     if r.element_image_view {
         r.element_image_view = false;
         r.dashboard_image_path.clear();

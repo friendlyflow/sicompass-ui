@@ -1337,6 +1337,7 @@ pub fn build_app_with(cfg: &crate::app_state::AppConfig) -> Result<AppState, SiE
         font_renderer: None,
         rect_renderer: None,
         image_renderer: None,
+        video: None,
         accesskit_adapter: None,
         maximized_ready: false,
         hit_test_win_pt,

@@ -1011,6 +1011,63 @@ fn update_view(app: &mut AppState) {
         return;
     }
 
+    // ---- The video in the big view ------------------------------------------
+    // The key handlers ask, and this answers: it owns the player and the audio.
+    match app.renderer.video_request.take() {
+        Some(crate::video::Request::Open(path)) => {
+            app.video = None;
+            if let Some(ir) = app.image_renderer.as_mut() {
+                unsafe { ir.clear_video() };
+            }
+            match crate::video::Active::start(&path, Some(&app._sdl)) {
+                Ok(active) => {
+                    app.video = Some(active);
+                    app.renderer.video_open = Some(path.clone());
+                }
+                Err(e) => {
+                    app.renderer.video_open = None;
+                    app.renderer.error_message = e;
+                }
+            }
+        }
+        Some(crate::video::Request::TogglePause) => {
+            if app.video.as_ref().is_some_and(|a| a.player.has_ended()) {
+                // Played to the end: Space plays it again.
+                if let Some(path) = app.renderer.video_open.clone() {
+                    app.renderer.video_request = Some(crate::video::Request::Open(path));
+                    app.renderer.needs_redraw = true;
+                }
+            } else if let Some(active) = app.video.as_mut() {
+                active.toggle_pause();
+                let paused = active.player.is_paused();
+                app.renderer
+                    .announce_provider_line(sicompass_sdk::localize::t(if paused {
+                        "video-paused"
+                    } else {
+                        "video-playing"
+                    }));
+            }
+        }
+        Some(crate::video::Request::Stop) => {
+            app.video = None;
+            app.renderer.video_open = None;
+            if let Some(ir) = app.image_renderer.as_mut() {
+                unsafe { ir.clear_video() };
+            }
+        }
+        None => {}
+    }
+    if let Some(active) = app.video.as_mut() {
+        let polled = active.update();
+        if let (Some(frame), Some(ir)) = (polled.frame, app.image_renderer.as_mut()) {
+            unsafe { ir.upload_video_frame(&frame) };
+        }
+        // Keep drawing while it plays, and once more when it stops.
+        if !active.player.is_paused() || polled.ended {
+            app.renderer.needs_redraw = true;
+        }
+    }
+
     // ---- Dashboard early dispatch --------------------------------------------
     // Single coordinate for both flavors. Image vs interactive (cell-grid) is
     // decided by the active provider's `dashboard_kind()`.
@@ -1254,9 +1311,19 @@ fn update_view(app: &mut AppState) {
             }
 
             // Render the dashboard image (tabs band + header occupy two line_heights)
-            if !dashboard_path.is_empty() {
+            if app.video.is_some() {
                 if let Some(ir) = app.image_renderer.as_mut() {
-                    let avail_w = win_w - 100.0;
+                    let top = line_height as f32 + top_offset;
+                    let area = [0.0, top, win_w, (win_h - top - line_height as f32).max(1.0)];
+                    unsafe { ir.prepare_video(area, crate::style::ObjectFit::Contain, top, win_h) };
+                }
+            } else if !dashboard_path.is_empty() {
+                if let Some(ir) = app.image_renderer.as_mut() {
+                    let avail_w = if app.renderer.element_image_view {
+                        win_w - 20.0
+                    } else {
+                        win_w - 100.0
+                    };
                     let avail_h = win_h - line_height as f32 * 2.0 - top_offset;
                     if let Some((img_w, img_h)) = unsafe { ir.texture_size(&dashboard_path) } {
                         let img_w = img_w as f32;
@@ -1528,7 +1595,8 @@ fn update_view(app: &mut AppState) {
             }),
         };
         // From the file's header, so laying a list out never decodes a photo.
-        let mut image_size = |path: &str| crate::image::dimensions(path);
+        let mut image_size =
+            |path: &str| crate::image::dimensions(path).or_else(|| crate::video::dimensions(path));
         list_items
             .iter()
             .enumerate()
@@ -3671,15 +3739,14 @@ fn draw_box_row(
                     (placed.w - placed.inset[1] - placed.inset[3]).max(0.0),
                     (placed.h - placed.inset[0] - placed.inset[2]).max(0.0),
                 ];
-                let source = if *is_video {
-                    poster.as_deref()
-                } else {
-                    Some(path.as_str())
+                // A video with no poster shows its first picture.
+                let source = match (*is_video, poster.as_deref()) {
+                    (false, _) => path.clone(),
+                    (true, Some(poster)) => poster.to_owned(),
+                    (true, None) => format!("{}{path}", crate::video::THUMBNAIL_PREFIX),
                 };
-                let shown = source.is_some_and(|source| {
-                    ir.as_deref_mut().is_some_and(|ir| unsafe {
-                        ir.prepare_picture(source, inner, *fit, clip.0, clip.1)
-                    })
+                let shown = ir.as_deref_mut().is_some_and(|ir| unsafe {
+                    ir.prepare_picture(&source, inner, *fit, clip.0, clip.1)
                 });
                 if !shown && let Some(rr) = rr.as_deref_mut() {
                     // Still on its way: a patch of the right size.

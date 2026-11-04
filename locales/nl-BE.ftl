@@ -167,3 +167,8 @@ targets-videos = { $count ->
     [one] 1 video
    *[other] { $count } video's
 }
+
+hint-space-pause = Space  Pauze
+video-playing = speelt
+video-paused = gepauzeerd
+video-unavailable = Deze versie van Sicompass kan geen video afspelen
