@@ -373,6 +373,7 @@ fn elem_raw(e: &sicompass_sdk::ffon::FfonElement) -> &str {
 pub(crate) fn element_nav_name(raw: &str) -> String {
     if sicompass_sdk::tags::has_input(raw) {
         sicompass_sdk::tags::extract_input(raw)
+            .map(|name| crate::handlers::unescaped(&name))
             .unwrap_or_else(|| sicompass_sdk::tags::strip_display(raw))
     } else {
         sicompass_sdk::tags::strip_display(raw)

@@ -2636,6 +2636,7 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
             .map(|o| o.key.clone());
         if parent_key.is_some_and(|k| is_live_input_slot(r, &k)) {
             let value = tags::extract_button_function_name(child_text).unwrap_or_default();
+            let value = value_of_row(r, &value);
             fill_live_input(r, &parent_id, &value);
             return;
         }
@@ -2709,6 +2710,7 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
     // nothing at all.
     if cursor_on_live_input_slot(r, &elem_text, _is_obj_elem) {
         let content = tags::extract_input(&elem_text).unwrap_or_default();
+        let content = value_of_row(r, &content);
         crate::provider::commit_edit(r, "", &content);
         crate::provider::refresh_current_directory(r);
         snap_to_trailing_input(r);
@@ -2722,7 +2724,8 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
     // triggers the provider's refresh.
     if !_is_obj_elem && tags::has_input(&elem_text) && !row_editing_is_provider_owned {
         let content = tags::extract_input(&elem_text).unwrap_or_default();
-        crate::provider::commit_edit(r, &content, &content);
+        let typed = value_of_row(r, &content);
+        crate::provider::commit_edit(r, &content, &typed);
         crate::provider::refresh_current_directory(r);
         list::create_list_current_layer(r);
         r.needs_redraw = true;
@@ -2743,7 +2746,7 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
     }
     if r.pending_file_browser_open && is_filebrowser && matches!(elem_clone, FfonElement::Str(_)) {
         let fname_opt = if tags::has_input(&elem_text) {
-            tags::extract_input(&elem_text)
+            tags::extract_input(&elem_text).map(|name| unescaped(&name))
         } else {
             Some(elem_text.clone())
         };
@@ -2835,7 +2838,7 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
     // For filebrowser string elements: open file with the system default program.
     if matches!(elem_clone, FfonElement::Str(_)) {
         let filename = if tags::has_input(&elem_text) {
-            tags::extract_input(&elem_text)
+            tags::extract_input(&elem_text).map(|name| unescaped(&name))
         } else {
             None
         };
@@ -3243,13 +3246,14 @@ fn fill_live_input(r: &mut AppRenderer, parent_id: &sicompass_sdk::ffon::IdArray
             Some(k) => k,
             None => return,
         };
+        let typed = typed_for_row(r, value);
         let open = "<input>";
         let close = "</input>";
         match (key.find(open), key.find(close)) {
             (Some(op), Some(cp)) if cp >= op => format!(
                 "{}{}{}",
                 &key[..op],
-                tags::format_input(value),
+                tags::format_input(&typed),
                 &key[cp + close.len()..],
             ),
             _ => return,
@@ -3896,7 +3900,7 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
                 return;
             }
             // No provider handled it: update FFON element key directly.
-            let new_key = tags::format_input(&new_content);
+            let new_key = tags::format_input(&typed_for_row(r, &new_content));
             let idx = r.current_id.last().unwrap_or(0);
             if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id)
                 && let Some(e) = arr.get_mut(idx)
@@ -4002,10 +4006,11 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
     let new_elem_text = {
         let prefix = &r.input_prefix;
         let suffix = &r.input_suffix;
+        let typed = typed_for_row(r, &new_content);
         if r.input_is_password {
-            format!("{prefix}<password>{new_content}</password>{suffix}")
+            format!("{prefix}<password>{typed}</password>{suffix}")
         } else {
-            format!("{prefix}<input>{new_content}</input>{suffix}")
+            format!("{prefix}<input>{typed}</input>{suffix}")
         }
     };
 
@@ -5532,6 +5537,34 @@ pub(crate) fn wipe_input_buffer(r: &mut AppRenderer) {
     r.input_buffer.clear();
 }
 
+/// What the user typed, as it goes into a row. In a list of markup a typed `<b>` is two
+/// letters and a bracket like any other text, so it is escaped. [`populate_input_buffer`]
+/// reads it back through `strip_display`, which undoes that.
+pub(crate) fn typed_for_row(r: &AppRenderer, typed: &str) -> String {
+    if r.sheets.markup_here() {
+        tags::escape(typed)
+    } else {
+        typed.to_owned()
+    }
+}
+
+/// [`typed_for_row`] backwards: a value read out of a row, as the user would type it.
+/// A provider is told the new value in this form, however it got there. Only the
+/// escapes go, not annotations like `<src=N>`.
+pub(crate) fn value_of_row(r: &AppRenderer, raw: &str) -> String {
+    if r.sheets.markup_here() {
+        unescaped(raw)
+    } else {
+        raw.to_owned()
+    }
+}
+
+/// A row's text without its `\<` and `\>`, which is the real value: a file's name, a
+/// line of text. Only the escapes go, not annotations like `<src=N>`.
+pub(crate) fn unescaped(raw: &str) -> String {
+    tags::unescape(raw)
+}
+
 /// Populate `input_buffer`, `input_prefix`, `input_suffix` from the current element.
 ///
 /// Called by `handle_i` and `handle_a` before entering insert mode.
@@ -5682,15 +5715,16 @@ pub(crate) fn apply_insert_session_chunk(r: &mut AppRenderer) {
     };
     // Preserve the tag type so the live FFON (and the list label rebuilt from
     // it) keeps masking a password while it is being typed.
+    let typed = typed_for_row(r, &r.input_buffer);
     let new_key = if r.input_is_password {
         format!(
             "{}<password>{}</password>{}",
-            effective_prefix, r.input_buffer, r.input_suffix
+            effective_prefix, typed, r.input_suffix
         )
     } else {
         format!(
             "{}<input>{}</input>{}",
-            effective_prefix, r.input_buffer, r.input_suffix
+            effective_prefix, typed, r.input_suffix
         )
     };
     let after = match &before {
@@ -5794,6 +5828,7 @@ pub(crate) fn cancel_insert_session(r: &mut AppRenderer) {
     // user just cancelled. Providers without a live prompt no-op here.
     if let Some(key) = restored_key.filter(|k| sicompass_sdk::tags::has_input(k)) {
         let restored = sicompass_sdk::tags::extract_input(&key).unwrap_or_default();
+        let restored = value_of_row(r, &restored);
         if let Some(p) = crate::provider::get_active_provider(r) {
             p.set_input_value(&restored);
         }
@@ -6813,7 +6848,7 @@ pub(crate) fn copy_display_text(raw: &str) -> String {
 pub(crate) fn copy_underlying_value(raw: &str) -> String {
     tags::extract_link(raw)
         .or_else(|| tags::extract_image(raw))
-        .or_else(|| tags::extract_input(raw))
+        .or_else(|| tags::extract_input(raw).map(|value| unescaped(&value)))
         .unwrap_or_else(|| copy_display_text(raw))
 }
 
@@ -13734,6 +13769,12 @@ mod tests {
             copy_underlying_value("<input>typed value</input>"),
             "typed value"
         );
+    }
+
+    /// The value is what the row shows, not how the row has to write it.
+    #[test]
+    fn copy_underlying_value_has_no_escapes() {
+        assert_eq!(copy_underlying_value(r"<input>\<b\>x</input>"), "<b>x");
     }
 
     #[test]

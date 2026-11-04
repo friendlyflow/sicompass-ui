@@ -249,7 +249,7 @@ impl MarkupScope {
 
     /// The row's text as the rest of the app reads it.
     pub(crate) fn text<'a>(&self, id: &IdArray, text: &'a str) -> std::borrow::Cow<'a, str> {
-        if self.covers(id) {
+        if self.covers(id) && text.contains('<') {
             sicompass_sdk::markup::plain(text).into()
         } else {
             text.into()
@@ -276,10 +276,15 @@ impl MarkupScope {
 
 /// The element at `id` in the tree: its text.
 pub(crate) fn text_at(ffon: &[FfonElement], id: &IdArray) -> Option<String> {
+    text_ref_at(ffon, id).map(str::to_owned)
+}
+
+/// [`text_at`] without the copy, for what runs on every row of a list.
+pub(crate) fn text_ref_at<'a>(ffon: &'a [FfonElement], id: &IdArray) -> Option<&'a str> {
     let index = id.last()?;
     get_ffon_at_id(ffon, id)?.get(index).map(|e| match e {
-        FfonElement::Str(s) => s.clone(),
-        FfonElement::Obj(o) => o.key.clone(),
+        FfonElement::Str(s) => s.as_str(),
+        FfonElement::Obj(o) => o.key.as_str(),
     })
 }
 
@@ -1320,7 +1325,9 @@ fn ffon_str_snippet(elem: &FfonElement, max_len: usize) -> String {
         FfonElement::Str(s) => s.clone(),
         FfonElement::Obj(o) => o.key.clone(),
     };
-    let s = tags::extract_input(&raw).unwrap_or(raw);
+    let s = tags::extract_input(&raw)
+        .map(|value| crate::handlers::unescaped(&value))
+        .unwrap_or(raw);
     if s.chars().count() <= max_len {
         s
     } else {
@@ -2721,6 +2728,27 @@ mod markup_scope_tests {
         r.total_list.iter().map(|i| i.label.as_str()).collect()
     }
 
+    /// A `<b>` typed into a list of markup is text. It must not turn the row bold while
+    /// it is typed or after it is saved, and editing the row again shows what was typed.
+    #[test]
+    fn typed_tags_in_a_list_of_markup_stay_text() {
+        let typed = "<b>x</b> <input>y</input>";
+        let r = renderer(true, &["<input>a</input>"], 0);
+        let stored = tags::format_input(&crate::handlers::typed_for_row(&r, typed));
+        assert!(!sicompass_sdk::markup::has_markup(&stored), "{stored}");
+        let inner = tags::extract_input(&stored).expect("the row is still one input");
+        assert_eq!(tags::strip_display(&inner), typed);
+
+        assert_eq!(
+            crate::handlers::value_of_row(&r, &tags::escape(typed)),
+            typed
+        );
+
+        let r = renderer(false, &["<input>a</input>"], 0);
+        assert_eq!(crate::handlers::typed_for_row(&r, "<b>x"), "<b>x");
+        assert_eq!(crate::handlers::value_of_row(&r, r"\<b"), r"\<b");
+    }
+
     /// A file named `<b>x` is a file named `<b>x`.
     #[test]
     fn a_provider_that_did_not_opt_in_keeps_every_bracket() {
@@ -2730,7 +2758,6 @@ mod markup_scope_tests {
             ["- <b>x</b>", "- <style>li { color: red }</style>"]
         );
         assert!(!r.sheets.markup_here());
-        assert!(!r.sheets.styles_rows());
     }
 
     #[test]
@@ -2761,7 +2788,7 @@ mod markup_scope_tests {
         assert_eq!(labels(&r), ["- one", "- two"]);
         assert_eq!(r.ffon[0].as_obj().unwrap().children.len(), 2);
         assert_eq!(r.current_id.last(), Some(0));
-        assert!(r.sheets.styles_rows());
+        assert!(r.sheets.markup_here());
     }
 
     #[test]

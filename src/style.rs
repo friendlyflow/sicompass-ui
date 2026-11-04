@@ -39,6 +39,9 @@ use std::sync::{Arc, Mutex};
 /// What every list starts from. The column every current plugin is drawn in used to
 /// be hardcoded in the view: a site or a `user.css` goes wide with
 /// `ul { max-width: none }`.
+/// The corners of every background, until a stylesheet says otherwise.
+pub const DEFAULT_RADIUS: f32 = 5.0;
+
 pub const DEFAULT_CSS: &str = "ul { max-width: 120ch }
     h1 { font-size: 2em; font-weight: bold }
     h2 { font-size: 1.5em; font-weight: bold }
@@ -174,7 +177,7 @@ impl Default for Style {
             margin: NO_SIDES,
             border_width: Length::Px(0.0),
             border_color: None,
-            border_radius: Length::Px(0.0),
+            border_radius: Length::Px(DEFAULT_RADIUS),
             width: Length::Auto,
             height: Length::Auto,
             max_width: None,
@@ -1289,12 +1292,6 @@ impl Sheets {
         self.markup_here
     }
 
-    /// Whether anything can change a row. Without it every list is drawn exactly as
-    /// it always was, and no row is matched against anything.
-    pub fn styles_rows(&self) -> bool {
-        self.user.is_some() || !self.active.is_empty() || self.markup_here
-    }
-
     fn all(&self) -> Vec<&Stylesheet> {
         std::iter::once(&self.default)
             .chain(self.active.iter().map(Arc::as_ref))
@@ -1801,15 +1798,36 @@ mod tests {
     }
 
     #[test]
-    fn without_a_user_sheet_nothing_touches_a_row() {
+    fn a_user_sheet_changes_a_row_only_while_it_says_something() {
+        let env = StyleEnv::default();
+        let color = |sheets: &Sheets| sheets.row_style(None, false, &env).li.color;
         let mut sheets = Sheets::default();
-        assert!(!sheets.styles_rows());
+        assert_eq!(color(&sheets), None);
         sheets.set_user(Some("  /* nothing */ "));
-        assert!(!sheets.styles_rows(), "an empty file is no stylesheet");
+        assert_eq!(color(&sheets), None, "an empty file is no stylesheet");
         sheets.set_user(Some("li { color: #fff }"));
-        assert!(sheets.styles_rows());
+        assert_eq!(color(&sheets), Some(0xffffffff));
         sheets.set_user(None);
-        assert!(!sheets.styles_rows());
+        assert_eq!(color(&sheets), None);
+    }
+
+    /// Every background is rounded unless a stylesheet says otherwise: a focused row,
+    /// a coloured row and a box inside a row.
+    #[test]
+    fn every_background_is_rounded_by_default() {
+        let env = StyleEnv::default();
+        let radius = |sheets: &Sheets, focus| sheets.row_style(None, focus, &env).li.border_radius;
+        let mut sheets = Sheets::default();
+        assert_eq!(radius(&sheets, true), Length::Px(DEFAULT_RADIUS));
+        assert_eq!(radius(&sheets, false), Length::Px(DEFAULT_RADIUS));
+        sheets.set_user(Some("li { background: #123456 }"));
+        assert_eq!(radius(&sheets, false), Length::Px(DEFAULT_RADIUS));
+        sheets.set_user(Some("li { border-radius: 0 }"));
+        assert_eq!(
+            radius(&sheets, true),
+            Length::Px(0.0),
+            "a sheet can square it"
+        );
     }
 
     #[test]

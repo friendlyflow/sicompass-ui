@@ -17,8 +17,7 @@ use crate::view::{
     split_image_label, split_label,
 };
 
-/// A stylesheet's say over one row, set when one applies. `None` on [`ListItem`] is
-/// the row as it always was.
+/// How one row looks. Every row has one: with no stylesheet it is the default sheet's.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RowStyle {
     pub li: crate::style::Style,
@@ -82,7 +81,7 @@ pub struct ListItem {
     pub match_pos: Vec<u32>,
     /// In extended search, the path of the image this result shows.
     pub ext_prefix: Option<String>,
-    pub style: Option<std::sync::Arc<RowStyle>>,
+    pub style: std::sync::Arc<RowStyle>,
     /// The row's markup, for a row of boxes.
     pub markup: Option<String>,
 }
@@ -246,8 +245,8 @@ pub(crate) fn measure_row(
     image_size: &mut dyn FnMut(&str) -> Option<(u32, u32)>,
 ) -> RowShape {
     let editing_this = m.edited_row.as_ref().is_some_and(|e| e.index == index);
-    if let (Some(be), Some(markup), Some(row_style)) = (&m.boxes, &item.markup, &item.style)
-        && row_style.boxed
+    if let (Some(be), Some(markup)) = (&m.boxes, &item.markup)
+        && item.style.boxed
         && !editing_this
         && !m.is_extended_search
     {

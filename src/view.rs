@@ -827,7 +827,7 @@ fn update_view(app: &mut AppState) {
                 .iter()
                 .map(|ListItem { label, style, .. }| {
                     let (p, _) = split_label(label);
-                    let font = style.as_ref().map_or(1.0, |s| s.li.font_scale);
+                    let font = style.li.font_scale;
                     let text_w = fr.measure_text_width(&prefix_for_display(p), scale * font);
                     // When any item has an indicator, all items reserve the same indicator width
                     let indicator_w = if list_has_indicators {
@@ -965,6 +965,7 @@ fn update_view(app: &mut AppState) {
                 win_h,
                 top_offset,
                 &p,
+                &style_env,
             );
             app.renderer.text_scroll_total_height = result.total_height;
             app.renderer.scroll_search_match_count = result.match_count;
@@ -1003,6 +1004,7 @@ fn update_view(app: &mut AppState) {
                 win_h,
                 top_offset,
                 &p,
+                &style_env,
             );
             app.renderer.text_scroll_total_height = total_height;
             app.renderer.text_scroll_offset = resolved_offset;
@@ -1598,9 +1600,8 @@ fn update_view(app: &mut AppState) {
             .iter()
             .enumerate()
             .map(|(i, item)| {
-                let row_box = item.style.as_ref().map_or_else(Default::default, |s| {
-                    crate::layout::RowBoxStyle::resolve(&s.li, &style_env, max_content_w)
-                });
+                let row_box =
+                    crate::layout::RowBoxStyle::resolve(&item.style.li, &style_env, max_content_w);
                 crate::layout::measure_row(fr, &metrics, i, item, &row_box, &mut image_size)
             })
             .collect()
@@ -1786,9 +1787,12 @@ fn update_view(app: &mut AppState) {
     // The `ul`'s background, behind the column.
     if let (Some(color), Some(rr)) = (ul_style.background, app.rect_renderer.as_mut()) {
         let top = first_item_y - ascender * scale - crate::text::TEXT_PADDING;
-        rr.prepare_rectangle(content_x, top, content_w, win_h - top, color, 0.0);
+        let radius =
+            crate::layout::RowBoxStyle::resolve(&ul_style, &style_env, max_content_w).radius;
+        rr.prepare_rectangle(content_x, top, content_w, win_h - top, color, radius);
     }
-    // What a stylesheet draws behind a row: its border and its background.
+    // What is drawn behind a row: its border and its background, the cursor's row
+    // always having one.
     for (
         i,
         ListItem {
@@ -1799,16 +1803,63 @@ fn update_view(app: &mut AppState) {
         .take(rows.len())
         .enumerate()
     {
-        let Some(style) = style else { continue };
+        // In insert mode the highlight is deferred: only the input buffer portion
+        // is highlighted (drawn in the text pass below), not the full row.
         if *is_selected && renders_insert_buffer {
             continue;
         }
         let row = &rows[i];
         let x = content_x + 4.0 * em_width + row.style.margin[3];
         let background = row_background(style, *is_selected, list_background, &p);
+        let radius = row.style.radius;
+        // A picture's row fits round the picture and its text.
+        if let (true, Some(layout)) = (*is_selected, &row.image) {
+            let bg_top = row.y
+                - ascender * scale
+                - crate::text::TEXT_PADDING
+                - if layout.prefix_lines == 0 {
+                    crate::text::TEXT_PADDING
+                } else {
+                    0.0
+                };
+            let img_y = if layout.prefix_lines > 0 {
+                bg_top + layout.prefix_lines as f32 * line_height as f32
+            } else {
+                row.y - ascender * scale - crate::text::TEXT_PADDING
+            };
+            let bg_right = row.content_x + layout.img_w + crate::text::TEXT_PADDING;
+            let img_display_h = layout.image_lines as f32 * line_height as f32;
+            let bg_bottom = if layout.suffix_lines > 0 {
+                img_y + img_display_h + layout.suffix_lines as f32 * line_height as f32
+            } else {
+                img_y + layout.img_h + crate::text::TEXT_PADDING
+            };
+            if let Some(rr) = app.rect_renderer.as_mut() {
+                rr.prepare_rectangle(
+                    x,
+                    bg_top,
+                    bg_right - x,
+                    bg_bottom - bg_top,
+                    background.unwrap_or(p.selected),
+                    radius,
+                );
+                // In element mode's selected image: its frame shows in the 2 px the
+                // image is inset by.
+                if selected_image_frame {
+                    rr.prepare_rectangle(
+                        row.content_x,
+                        img_y,
+                        layout.img_w,
+                        layout.img_h,
+                        p.scroll_search,
+                        0.0,
+                    );
+                }
+            }
+            continue;
+        }
         if let Some(rr) = app.rect_renderer.as_mut() {
             let border = row.style.border;
-            let radius = row.style.radius;
             if border > 0.0 {
                 let color = style.li.border_color.or(style.li.color).unwrap_or(p.text);
                 rr.prepare_rectangle(x, row.box_y, row.highlight_w, row.box_h, color, radius);
@@ -1823,96 +1874,6 @@ fn update_view(app: &mut AppState) {
                 );
             } else if let Some(color) = background {
                 rr.prepare_rectangle(x, row.box_y, row.highlight_w, row.box_h, color, radius);
-            }
-        }
-    }
-    for (
-        i,
-        ListItem {
-            is_selected, style, ..
-        },
-    ) in list_items[start_index..]
-        .iter()
-        .take(rows.len())
-        .enumerate()
-    {
-        if !is_selected || style.is_some() {
-            continue;
-        }
-        // In insert mode the highlight is deferred: only the input buffer portion
-        // is highlighted (drawn in the text pass below), not the full row.
-        if renders_insert_buffer {
-            continue;
-        }
-        let row = &rows[i];
-        let (item_y, content_start_x, highlight_w) = (row.y, row.content_x, row.highlight_w);
-        if let Some(layout) = &row.image {
-            // Tight-fitting selection background around image + prefix/suffix text.
-            let bg_top = item_y
-                - ascender * scale
-                - crate::text::TEXT_PADDING
-                - if layout.prefix_lines == 0 {
-                    crate::text::TEXT_PADDING
-                } else {
-                    0.0
-                };
-            let img_y = if layout.prefix_lines > 0 {
-                bg_top + layout.prefix_lines as f32 * line_height as f32
-            } else {
-                item_y - ascender * scale - crate::text::TEXT_PADDING
-            };
-            let bg_left = content_x + 4.0 * em_width;
-            let bg_right = content_start_x + layout.img_w + crate::text::TEXT_PADDING;
-            let img_display_h = layout.image_lines as f32 * line_height as f32;
-            let bg_bottom = if layout.suffix_lines > 0 {
-                img_y + img_display_h + layout.suffix_lines as f32 * line_height as f32
-            } else {
-                img_y + layout.img_h + crate::text::TEXT_PADDING
-            };
-            let bg_w = bg_right - bg_left;
-            let bg_h = bg_bottom - bg_top;
-            if let Some(rr) = app.rect_renderer.as_mut() {
-                rr.prepare_rectangle(bg_left, bg_top, bg_w, bg_h, p.selected, 5.0);
-                // In element mode's selected image: its frame shows in the 2 px the
-                // image is inset by.
-                if selected_image_frame {
-                    rr.prepare_rectangle(
-                        content_start_x,
-                        img_y,
-                        layout.img_w,
-                        layout.img_h,
-                        p.scroll_search,
-                        0.0,
-                    );
-                }
-                // Square off top-right corner when no prefix text
-                if layout.prefix_lines == 0 {
-                    rr.prepare_rectangle(bg_right - 5.0, bg_top, 5.0, 5.0, p.selected, 0.0);
-                }
-                // Square off bottom-right corner when no suffix text
-                if layout.suffix_lines == 0 {
-                    rr.prepare_rectangle(
-                        bg_right - 5.0,
-                        bg_top + bg_h - 5.0,
-                        5.0,
-                        5.0,
-                        p.selected,
-                        0.0,
-                    );
-                }
-            }
-        } else {
-            let rect_y = row.box_y;
-            let rect_h = row.box_h;
-            if let Some(rr) = app.rect_renderer.as_mut() {
-                rr.prepare_rectangle(
-                    content_x + 4.0 * em_width,
-                    rect_y,
-                    highlight_w,
-                    rect_h,
-                    p.selected,
-                    5.0,
-                );
             }
         }
     }
@@ -1944,14 +1905,13 @@ fn update_view(app: &mut AppState) {
     {
         let (item_y, content_start_x) = (rows[i].y, rows[i].content_x);
         if let Some(laid) = rows[i].boxes.as_ref() {
-            let background = style
-                .as_ref()
-                .and_then(|s| row_background(s, *is_selected, list_background, &p))
-                .unwrap_or(if *is_selected {
+            let background = row_background(style, *is_selected, list_background, &p).unwrap_or(
+                if *is_selected {
                     p.selected
                 } else {
                     list_background
-                });
+                },
+            );
             let top = item_y - ascender * scale - crate::text::TEXT_PADDING;
             let chrome_bottom = first_item_y - ascender * scale - crate::text::TEXT_PADDING;
             let prefix_x = if list_has_indicators {
@@ -1978,8 +1938,7 @@ fn update_view(app: &mut AppState) {
             let top = top - scroll;
             if let Some(fr) = app.font_renderer.as_mut() {
                 let (prefix, _) = split_label(label.as_str());
-                let marker = style.as_ref().and_then(|s| s.marker_color);
-                let marker = crate::style::readable_color(marker, background, p.text);
+                let marker = crate::style::readable_color(style.marker_color, background, p.text);
                 fr.prepare_text_for_rendering(
                     &prefix_for_display(prefix),
                     prefix_x,
@@ -2523,19 +2482,17 @@ fn update_view(app: &mut AppState) {
                 let font = row.style.font_scale;
                 let row_scale = scale * font;
                 let row_line_h = line_height as f32 * font;
-                let background = style
-                    .as_ref()
-                    .and_then(|s| row_background(s, *is_selected, list_background, &p))
+                let background = row_background(style, *is_selected, list_background, &p)
                     .unwrap_or(if *is_selected {
                         p.selected
                     } else {
                         list_background
                     });
-                let wanted = style.as_ref().and_then(|s| s.li.color);
+                let wanted = style.li.color;
                 let text_color = crate::style::readable_color(wanted, background, p.text);
-                let marker = style.as_ref().and_then(|s| s.marker_color).or(wanted);
+                let marker = style.marker_color.or(wanted);
                 let marker_color = crate::style::readable_color(marker, background, p.text);
-                let bold = style.as_ref().is_some_and(|s| s.li.bold);
+                let bold = style.li.bold;
                 fr.set_bold(bold);
                 fr.prepare_text_for_rendering(
                     &prefix_for_display(prefix),
@@ -2550,10 +2507,8 @@ fn update_view(app: &mut AppState) {
                     .map(|&p| p - prefix_char_count)
                     .collect();
                 let wrap_w = (max_content_w - row.style.extra_width()).max(1.0);
-                let align = style
-                    .as_ref()
-                    .map_or(Default::default(), |s| s.li.text_align);
-                let runs = style.as_ref().map_or(&[][..], |s| s.runs.as_slice());
+                let align = style.li.text_align;
+                let runs = style.runs.as_slice();
                 let by_lines = align != crate::style::TextAlign::Left || !runs.is_empty();
                 if by_lines && content_positions.is_empty() {
                     for (n, (line, offset)) in fr
@@ -2994,7 +2949,7 @@ fn render_scroll_lines(
 #[allow(clippy::too_many_arguments)]
 fn render_scroll_item(
     fr: &mut crate::text::FontRenderer,
-    rr: Option<&mut crate::rectangle::RectangleRenderer>,
+    mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
     ir: Option<&mut crate::image::ImageRenderer>,
     label: &str,
     img_data: &Option<String>,
@@ -3011,8 +2966,25 @@ fn render_scroll_item(
     clip_y: f32,
     win_h: f32,
     p: &crate::app_state::ColorPalette,
+    look: &ScrollLook,
 ) {
     let lh = line_height as f32;
+    if let (Some(color), Some(rr)) = (look.background, rr.as_deref_mut()) {
+        // Clipped by hand: a scrolled row must not paint over the header.
+        let top = item_top_screen.max(clip_y);
+        let bottom = (item_top_screen + layout.height as f32).min(win_h);
+        if bottom > top {
+            rr.prepare_rectangle(
+                prefix_x + layout.indent,
+                top,
+                content_x - prefix_x + scroll_item_width(content_w, layout.indent),
+                bottom - top,
+                color,
+                look.radius,
+            );
+        }
+    }
+    fr.set_bold(look.bold);
     let prefix_x = prefix_x + layout.indent;
     let content_x = content_x + layout.indent;
     let content_w = scroll_item_width(content_w, layout.indent);
@@ -3066,7 +3038,7 @@ fn render_scroll_item(
                 text_prefix_x,
                 baseline,
                 scale,
-                p.text,
+                look.marker,
             );
         }
     }
@@ -3086,7 +3058,7 @@ fn render_scroll_item(
             lh,
             clip_y,
             win_h,
-            p.text,
+            look.color,
         );
         let img_top = content_top + img.caption_prefix_lines as f32 * lh;
         if img_top + img.img_h > clip_y
@@ -3123,7 +3095,7 @@ fn render_scroll_item(
             lh,
             clip_y,
             win_h,
-            p.text,
+            look.color,
         );
     } else {
         render_scroll_lines(
@@ -3137,8 +3109,36 @@ fn render_scroll_item(
             lh,
             clip_y,
             win_h,
-            p.text,
+            look.color,
         );
+    }
+    fr.set_bold(false);
+}
+
+/// What a row's style changes in the scroll view, which reads as one flow of text: no
+/// focus, one font size, and a picture or two instead of a grid.
+struct ScrollLook {
+    background: Option<u32>,
+    color: u32,
+    marker: u32,
+    bold: bool,
+    radius: f32,
+}
+
+fn scroll_look(
+    style: &crate::layout::RowStyle,
+    env: &crate::style::StyleEnv,
+    column: f32,
+    p: &crate::app_state::ColorPalette,
+) -> ScrollLook {
+    let behind = style.li.background.unwrap_or(p.background);
+    let wanted = style.li.color;
+    ScrollLook {
+        background: style.li.background,
+        color: crate::style::readable_color(wanted, behind, p.text),
+        marker: crate::style::readable_color(style.marker_color.or(wanted), behind, p.text),
+        bold: style.li.bold,
+        radius: crate::layout::RowBoxStyle::resolve(&style.li, env, column).radius,
     }
 }
 
@@ -3164,6 +3164,7 @@ fn render_scroll_full(
     win_h: f32,
     top_offset: f32,
     p: &crate::app_state::ColorPalette,
+    env: &crate::style::StyleEnv,
 ) -> (i32, i32) {
     let clip_y = line_height as f32 + top_offset;
     let viewport_h = win_h - clip_y;
@@ -3203,6 +3204,7 @@ fn render_scroll_full(
         ListItem {
             label,
             data: img_data,
+            style,
             ..
         },
     ) in list_items.iter().enumerate()
@@ -3234,6 +3236,7 @@ fn render_scroll_full(
             clip_y,
             win_h,
             p,
+            &scroll_look(style, env, max_w, p),
         );
     }
 
@@ -3318,6 +3321,7 @@ fn render_scroll_search_full(
     win_h: f32,
     top_offset: f32,
     p: &crate::app_state::ColorPalette,
+    env: &crate::style::StyleEnv,
 ) -> ScrollSearchResult {
     // Tabs band + header + search bar occupy three line_heights from the top.
     let clip_y = line_height as f32 * 2.0 + top_offset;
@@ -3530,6 +3534,7 @@ fn render_scroll_search_full(
         ListItem {
             label,
             data: img_data,
+            style,
             ..
         },
     ) in list_items.iter().enumerate()
@@ -3562,6 +3567,7 @@ fn render_scroll_search_full(
             clip_y,
             win_h,
             p,
+            &scroll_look(style, env, max_w, p),
         );
     }
 
@@ -3595,20 +3601,25 @@ fn build_header_text(r: &AppRenderer, line_height: i32) -> String {
 /// Returns `(label, item_data, is_selected, fuzzy_match_positions, ext_prefix)`.
 fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<ListItem> {
     let len = r.active_list_len();
-    // Rows only in the lists that are the tree's own, and only if a stylesheet has
-    // something to say about them. Every row looks the same to a stylesheet so far,
+    // Only the tree's own lists hold rows that can be markup: a row of the meta list or
+    // the timeline has no element behind it. A row with no markup looks like any other,
     // so two styles cover a list of any length.
-    let markup_here = r.sheets.markup_here();
-    let styled = r.sheets.styles_rows()
-        && matches!(
-            r.coordinate.base(),
-            Coordinate::General
-                | Coordinate::InElement
-                | Coordinate::Insert
-                | Coordinate::Normal
-                | Coordinate::Visual
-                | Coordinate::SimpleSearch
-        );
+    let scrolling = matches!(r.coordinate, Coordinate::Scroll | Coordinate::ScrollSearch);
+    let markup_here = r.sheets.markup_here()
+        && (scrolling
+            || matches!(
+                r.coordinate.base(),
+                Coordinate::General
+                    | Coordinate::InElement
+                    | Coordinate::Insert
+                    | Coordinate::Normal
+                    | Coordinate::Visual
+                    | Coordinate::SimpleSearch
+            ));
+    let plain = [
+        r.sheets.row_style(None, false, env),
+        r.sheets.row_style(None, true, env),
+    ];
     // The row being edited is drawn as an edit buffer, whatever it looks like at rest.
     let editing = matches!(
         r.coordinate.base(),
@@ -3631,14 +3642,21 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
                 Vec::new()
             };
             let focus = i == r.list_index;
-            let markup = (styled && markup_here)
-                .then(|| crate::list::text_at(&r.ffon, &item.id))
+            // Most rows hold no `<` at all, and this runs for every row of the list.
+            let markup = markup_here
+                .then(|| crate::list::text_ref_at(&r.ffon, &item.id))
                 .flatten()
-                .filter(|row| sicompass_sdk::markup::has_markup(row));
-            let style = styled
-                .then(|| r.sheets.row_style(markup.as_deref(), focus, env))
-                .filter(|_| !(editing && focus));
-            let boxed = style.as_ref().is_some_and(|s| s.boxed);
+                .filter(|row| row.contains('<') && sicompass_sdk::markup::has_markup(row))
+                .map(str::to_owned);
+            // Scrolling has no cursor to show, and no boxes: it reads as one flow.
+            let styled_focus = focus && !scrolling;
+            let style = match &markup {
+                Some(row) if !(editing && focus) => {
+                    r.sheets.row_style(Some(row), styled_focus, env)
+                }
+                _ => std::sync::Arc::clone(&plain[usize::from(styled_focus)]),
+            };
+            let boxed = style.boxed && !scrolling;
             out.push(ListItem {
                 label: item.label.clone(),
                 // A row of boxes draws its own pictures.
@@ -4885,6 +4903,25 @@ mod tests {
         let (prefix, content) = split_label("+ Section name");
         assert_eq!(prefix, "+ ");
         assert_eq!(content, "Section name");
+    }
+
+    #[test]
+    fn a_scrolled_row_keeps_its_colours_and_rounded_background() {
+        let env = crate::style::StyleEnv::default();
+        let p = crate::app_state::PALETTE_DARK;
+        let plain = crate::layout::RowStyle::default();
+        let look = scroll_look(&plain, &env, 800.0, &p);
+        assert_eq!(look.background, None);
+        assert_eq!(look.color, p.text);
+        assert!(!look.bold);
+
+        let mut styled = crate::layout::RowStyle::default();
+        styled.li.background = Some(0x123456ff);
+        styled.li.bold = true;
+        let look = scroll_look(&styled, &env, 800.0, &p);
+        assert_eq!(look.background, Some(0x123456ff));
+        assert!(look.bold);
+        assert_eq!(look.radius, crate::style::DEFAULT_RADIUS * env.px_scale);
     }
 
     #[test]
