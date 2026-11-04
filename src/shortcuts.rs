@@ -2769,6 +2769,8 @@ fn dispatch_table(r: &mut AppRenderer, k: Keycode, ctrl: bool, shift: bool) -> b
         if !(s.is_available)(r) {
             continue;
         }
+        // A move, a mode change: what was typed is no longer news.
+        r.typed_speech = None;
         (s.handle)(r);
         return true;
     }

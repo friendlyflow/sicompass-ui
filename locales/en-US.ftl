@@ -182,3 +182,5 @@ hint-enter-pause = Enter  Pause
 video-playing = playing
 video-paused = paused
 video-unavailable = This version of Sicompass cannot play video
+
+search-no-matches = no matches

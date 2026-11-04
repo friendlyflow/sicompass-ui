@@ -185,6 +185,14 @@ impl AccessKitAdapter {
         #[cfg(target_os = "linux")]
         {
             let registered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            // On its own thread, so a stuck session bus never holds up the window.
+            let keys_heard = std::sync::Arc::clone(&renderer.keys_heard_by_screen_reader);
+            std::thread::spawn(move || {
+                keys_heard.store(
+                    compositor_lends_the_keyboard(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            });
             let initial_tree = build_tree(renderer);
             let adapter = accesskit_unix::Adapter::new(
                 ActivationHandlerImpl {
@@ -536,6 +544,14 @@ fn focus_is_password(renderer: &AppRenderer) -> bool {
 }
 
 fn current_element(renderer: &AppRenderer) -> (String, String) {
+    if renderer.search_found_nothing() {
+        let none = sicompass_sdk::localize::t("search-no-matches");
+        let spoken = match &renderer.typed_speech {
+            Some(typed) => format!("{typed}, {none}"),
+            None => none,
+        };
+        return (spoken.clone(), spoken);
+    }
     if renderer.total_list.is_empty() {
         return (String::new(), String::new());
     }
@@ -551,7 +567,10 @@ fn current_element(renderer: &AppRenderer) -> (String, String) {
     };
     let item = &renderer.total_list[raw_idx];
     let raw_label = &item.label;
-    let mut spoken = label_to_speech(raw_label);
+    let mut spoken = match &renderer.typed_speech {
+        Some(typed) => format!("{typed}, {}", label_to_speech(raw_label)),
+        None => label_to_speech(raw_label),
+    };
     let counts = focused_row_counts(renderer, item);
     if counts.total() > 0 {
         spoken.push_str(", ");
@@ -622,6 +641,24 @@ fn build_tree(renderer: &AppRenderer) -> TreeUpdate {
     build_tree_with_element(renderer, ELEMENT_ID)
 }
 
+/// Whether this session has the service that lets Orca hear the keyboard on Wayland, the
+/// compositor's `org.freedesktop.a11y.KeyboardMonitor`. Where it does, Orca says typed keys
+/// itself, as the user set it to, and the app saying them too is every key twice. Where it
+/// does not, the app's echo is the only one there is.
+#[cfg(target_os = "linux")]
+fn compositor_lends_the_keyboard() -> bool {
+    let Ok(connection) = zbus::blocking::Connection::session() else {
+        return false;
+    };
+    let Ok(bus) = zbus::blocking::fdo::DBusProxy::new(&connection) else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from("org.freedesktop.a11y.Manager") else {
+        return false;
+    };
+    bus.name_has_owner(name).unwrap_or(false)
+}
+
 /// Picks the node the focused row is, so that moving between rows with similar names is
 /// spoken.
 ///
@@ -638,6 +675,8 @@ fn build_tree(renderer: &AppRenderer) -> TreeUpdate {
 struct ElementIds {
     /// The row last seen: where it is, and what it says.
     last: Option<(sicompass_sdk::ffon::IdArray, usize, String)>,
+    /// The key typed into a search that was last spoken.
+    typed_seq: u64,
     /// How many fresh ids have been given out.
     moves: u64,
 }
@@ -649,7 +688,11 @@ impl ElementIds {
         let moved = self.last.as_ref().is_some_and(|(id, index, last_label)| {
             (*id != renderer.current_id || *index != renderer.list_index) && *last_label != label
         });
-        if moved {
+        // A key typed into a search is spoken with the row, and must be heard even when the
+        // row stays and the same letter comes twice.
+        let typed = renderer.typed_speech.is_some() && renderer.typed_speech_seq != self.typed_seq;
+        self.typed_seq = renderer.typed_speech_seq;
+        if moved || typed {
             self.moves += 1;
         }
         self.last = Some((renderer.current_id.clone(), renderer.list_index, label));
@@ -704,7 +747,7 @@ fn build_tree_with_element(renderer: &AppRenderer, element_id: NodeId) -> TreeUp
     root_builder.set_children(vec![element_id, ANNOUNCEMENT_ID]);
     nodes.insert(0, (ROOT_ID, root_builder));
 
-    let focus = if renderer.total_list.is_empty() {
+    let focus = if renderer.total_list.is_empty() && !renderer.search_found_nothing() {
         ROOT_ID
     } else {
         element_id
@@ -893,6 +936,132 @@ mod tests {
         assert_eq!(tree.focus, third);
         assert_eq!(tree.nodes[1].0, third);
         assert_eq!(tree.nodes[0].1.children(), &[third, ANNOUNCEMENT_ID]);
+    }
+
+    /// A search key is spoken with the row it lands on, on a fresh node, so nothing cuts it
+    /// off and Orca's similarity filter does not swallow it. Even when the row stays and the
+    /// same letter comes again.
+    #[test]
+    fn a_key_typed_into_a_search_is_said_in_front_of_the_row_every_time() {
+        let mut r = make_renderer_with_list(&["-p photo.jpg"]);
+        let mut ids = ElementIds::default();
+        let before = ids.for_row(&r);
+
+        r.speak_typed_then_element("p");
+        let first = ids.for_row(&r);
+        assert_ne!(first, before);
+        assert_eq!(current_element(&r).0, "p, dash p photo.jpg");
+        assert!(r.pending_announcement.is_none(), "one message, not two");
+
+        r.speak_typed_then_element("p");
+        let second = ids.for_row(&r);
+        assert_ne!(second, first, "the same letter again");
+
+        // Frames in between do not repeat it.
+        assert_eq!(ids.for_row(&r), second);
+    }
+
+    /// A word the list does not hold finds nothing, and is said to: not a row of the whole
+    /// list as if it had matched.
+    #[test]
+    fn a_search_that_matches_nothing_says_so_and_shows_no_rows() {
+        for mode in [Coordinate::SimpleSearch, Coordinate::ExtendedSearch] {
+            let mut r = make_renderer_with_list(&["-p photo.jpg", "-p other.jpg"]);
+            r.coordinate = mode;
+            r.search_string = "zzz".to_owned();
+            r.input_buffer = "zzz".to_owned();
+            crate::list::populate_list_current_layer(&mut r, "zzz");
+            assert!(r.search_found_nothing(), "{mode:?}");
+            assert_eq!(r.active_list_len(), 0, "{mode:?}");
+            assert!(
+                r.header_text().ends_with("list: 0/0"),
+                "{mode:?}: {}",
+                r.header_text()
+            );
+            assert!(r.current_list_item().is_none(), "{mode:?}");
+
+            let mut ids = ElementIds::default();
+            let before = ids.for_row(&r);
+            r.speak_typed_then_element("z");
+            let (spoken, _) = current_element(&r);
+            let none = sicompass_sdk::localize::t("search-no-matches");
+            assert_eq!(spoken, format!("z, {none}"), "{mode:?}");
+            assert!(!spoken.contains("photo"), "{mode:?}: {spoken}");
+            let after = ids.for_row(&r);
+            assert_ne!(after, before, "{mode:?}: it is spoken");
+            assert_eq!(build_tree_with_element(&r, after).focus, after, "{mode:?}");
+        }
+    }
+
+    /// Clearing the word, or a word that matches, brings the rows back.
+    #[test]
+    fn a_search_that_matches_again_shows_its_rows() {
+        let mut r = make_renderer_with_list(&["-p photo.jpg", "-p other.jpg"]);
+        r.coordinate = Coordinate::SimpleSearch;
+        r.search_string = "zzz".to_owned();
+        crate::list::populate_list_current_layer(&mut r, "zzz");
+        assert!(r.search_found_nothing());
+
+        r.search_string = "other".to_owned();
+        crate::list::populate_list_current_layer(&mut r, "other");
+        assert!(!r.search_found_nothing());
+        assert_eq!(r.active_list_len(), 1);
+
+        r.search_string.clear();
+        crate::list::populate_list_current_layer(&mut r, "");
+        assert!(!r.search_found_nothing());
+        assert_eq!(r.active_list_len(), 2);
+    }
+
+    /// Palettes keep their own meaning: nothing typed there is decided by them.
+    #[test]
+    fn only_a_search_treats_an_empty_filter_as_nothing_found() {
+        let mut r = make_renderer_with_list(&["-p photo.jpg"]);
+        r.coordinate = Coordinate::Command;
+        r.input_buffer = "zzz".to_owned();
+        r.search_string = "zzz".to_owned();
+        assert!(!r.search_found_nothing());
+        assert_eq!(r.active_list_len(), 1);
+    }
+
+    #[test]
+    fn a_move_takes_the_typed_key_out_of_the_speech() {
+        let mut r = make_renderer_with_list(&["-p photo.jpg", "-p other.jpg"]);
+        r.coordinate = Coordinate::SimpleSearch;
+        r.speak_typed_then_element("p");
+        assert!(current_element(&r).0.starts_with("p, "));
+        crate::events::dispatch_key(
+            &mut r,
+            Some(sdl3::keyboard::Keycode::Down),
+            sdl3::keyboard::Mod::NOMOD,
+        );
+        assert!(r.typed_speech.is_none());
+        assert!(
+            !current_element(&r).0.starts_with("p, "),
+            "{}",
+            current_element(&r).0
+        );
+    }
+
+    /// A search with no row leaves the key alone: the screen reader says it, with nothing to
+    /// cut it off, or the app does where none can hear the keyboard.
+    #[test]
+    fn a_search_with_no_row_says_only_the_key() {
+        let mut r = AppRenderer::new();
+        r.speak_typed_then_element("q");
+        assert_eq!(r.typed_speech, None);
+        assert_eq!(
+            r.pending_announcement
+                .as_deref()
+                .map(|s| s.trim_end_matches('\u{200B}')),
+            Some("q")
+        );
+
+        let mut r = AppRenderer::new();
+        r.keys_heard_by_screen_reader
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        r.speak_typed_then_element("q");
+        assert_eq!(r.pending_announcement, None);
     }
 
     /// The same row with other text is typing, and a new node would read it all back.

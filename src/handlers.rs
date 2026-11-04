@@ -127,11 +127,7 @@ pub fn handle_down(r: &mut AppRenderer) {
         | Coordinate::ConfirmCloseTab
         | Coordinate::TabSwitcher => {
             r.error_message.clear();
-            let max_index = if r.filtered_list_indices.is_empty() {
-                r.total_list.len().saturating_sub(1)
-            } else {
-                r.filtered_list_indices.len().saturating_sub(1)
-            };
+            let max_index = r.active_list_len().saturating_sub(1);
             if r.list_index < max_index {
                 r.list_index += 1;
                 // `base()`, matching the arm above: these lists are built by
@@ -4627,7 +4623,7 @@ pub fn handle_input(r: &mut AppRenderer, text: &str) {
             list::populate_list_current_layer(r, &search);
             r.list_index = 0;
             r.sync_current_id_from_list();
-            r.speak_current_element();
+            r.speak_typed_then_element(text);
             r.needs_redraw = true;
         }
         Coordinate::Command => {
@@ -4711,7 +4707,7 @@ pub fn handle_input(r: &mut AppRenderer, text: &str) {
             list::populate_list_current_layer(r, &filter);
             r.list_index = 0;
             r.sync_current_id_from_list();
-            r.speak_current_element();
+            r.speak_typed_then_element(text);
             r.needs_redraw = true;
         }
         _ => {}
@@ -5967,13 +5963,31 @@ pub(crate) fn announce_text(r: &mut AppRenderer, text: &str) {
 /// [`announce_char`] (one character, password-masked); a multi-character
 /// insertion (clipboard paste or an IME commit) is announced as one run, masked
 /// to `*` per character in password fields. No-op on empty text.
+///
+/// A screen reader that hears the keyboard says a typed key itself, so a single key is
+/// left to it. Not in a password field, where it stays silent on purpose and the `*` is
+/// all there is, and not a paste or an IME commit, which are not one key.
 pub(crate) fn announce_typed_text(r: &mut AppRenderer, text: &str) {
     let mut chars = text.chars();
     let Some(first) = chars.next() else {
         return;
     };
     if chars.next().is_none() {
+        if !r.masks_input()
+            && r.keys_heard_by_screen_reader
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         announce_char(r, first);
+        return;
+    }
+    announce_run(r, text);
+}
+
+/// Say text that did not come from one key, as one run, masked in a password field.
+fn announce_run(r: &mut AppRenderer, text: &str) {
+    if text.is_empty() {
         return;
     }
     let spoken = if r.masks_input() {
@@ -6898,6 +6912,18 @@ pub fn handle_ctrl_shift_c(r: &mut AppRenderer) {
 }
 
 /// Ctrl+V — paste from system clipboard (insert modes), file paste (filebrowser), or FFON paste.
+/// Put pasted text at the caret and say it, since no key says it. A filter mode goes on
+/// to speak the row it landed on.
+fn insert_pasted_text(r: &mut AppRenderer, text: &str) {
+    let pos = r.cursor_position.min(active_text_buf(r).len());
+    active_text_buf_mut(r).insert_str(pos, text);
+    r.cursor_position = pos + text.len();
+    r.caret.reset(sdl_ticks());
+    announce_run(r, text);
+    maybe_update_search(r);
+    r.needs_redraw = true;
+}
+
 pub fn handle_ctrl_v(r: &mut AppRenderer) {
     if is_text_edit_mode(r) {
         let text = match sdl_get_clipboard() {
@@ -6907,12 +6933,7 @@ pub fn handle_ctrl_v(r: &mut AppRenderer) {
         if has_selection(r) {
             delete_selection(r);
         }
-        let pos = r.cursor_position.min(active_text_buf(r).len());
-        active_text_buf_mut(r).insert_str(pos, &text);
-        r.cursor_position = pos + text.len();
-        r.caret.reset(sdl_ticks());
-        maybe_update_search(r);
-        r.needs_redraw = true;
+        insert_pasted_text(r, &text);
         return;
     }
     // File browser: paste file from clipboard
@@ -12483,6 +12504,63 @@ mod tests {
         handle_input(&mut r, "i");
         assert_eq!(announced_text(&r).as_deref(), Some("i"));
         assert_eq!(r.input_buffer, "hi");
+    }
+
+    /// Where Orca hears the keyboard it says the key, and the app saying it too was every
+    /// key twice.
+    #[test]
+    fn a_typed_key_is_left_to_a_screen_reader_that_hears_the_keyboard() {
+        let mut r = make_input_renderer("");
+        r.keys_heard_by_screen_reader
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        handle_input(&mut r, "h");
+        assert_eq!(announced_text(&r), None);
+        assert_eq!(r.input_buffer, "h", "it is still typed");
+    }
+
+    /// A paste is no key, so nothing else says it. Even one character.
+    #[test]
+    fn pasted_text_is_said_and_inserted_at_the_caret() {
+        let mut r = make_input_renderer("ab");
+        r.cursor_position = 1;
+        r.keys_heard_by_screen_reader
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        insert_pasted_text(&mut r, "XY");
+        assert_eq!(r.input_buffer, "aXYb");
+        assert_eq!(r.cursor_position, 3);
+        assert_eq!(announced_text(&r).as_deref(), Some("XY"));
+        insert_pasted_text(&mut r, "Z");
+        assert_eq!(announced_text(&r).as_deref(), Some("Z"));
+    }
+
+    #[test]
+    fn a_pasted_password_is_masked() {
+        let mut r = make_input_renderer("");
+        r.input_is_password = true;
+        insert_pasted_text(&mut r, "secret");
+        assert_eq!(r.input_buffer, "secret");
+        assert_eq!(announced_text(&r).as_deref(), Some("******"));
+    }
+
+    /// Orca does not say what it cannot hear as one key.
+    #[test]
+    fn a_paste_is_still_said_where_the_keyboard_is_heard() {
+        let mut r = make_input_renderer("");
+        r.keys_heard_by_screen_reader
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        handle_input(&mut r, "hello");
+        assert_eq!(announced_text(&r).as_deref(), Some("hello"));
+    }
+
+    /// Orca stays silent in a password field, so the `*` is the only feedback there is.
+    #[test]
+    fn a_password_key_is_still_said_where_the_keyboard_is_heard() {
+        let mut r = make_input_renderer("");
+        r.input_is_password = true;
+        r.keys_heard_by_screen_reader
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        handle_input(&mut r, "s");
+        assert_eq!(announced_text(&r).as_deref(), Some("*"));
     }
 
     #[test]

@@ -970,6 +970,17 @@ pub struct AppRenderer {
     /// (\u{200B}) is appended when the toggle is true; screen readers ignore it.
     pub announcement_parity: bool,
 
+    /// A screen reader here hears the keyboard and says typed keys itself, so the app
+    /// must not say them too. Set from another thread at startup, see
+    /// `accesskit_sdl::compositor_lends_the_keyboard`.
+    pub keys_heard_by_screen_reader: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// What was just typed into a search, said in front of the focused row until the next
+    /// shortcut key. See [`AppRenderer::speak_typed_then_element`].
+    pub typed_speech: Option<String>,
+    /// Goes up with every such key, so that each one is spoken even when the words repeat.
+    pub typed_speech_seq: u64,
+
     // ---- Privacy -----------------------------------------------------------
     /// When true the visual output is suppressed (blank screen). Navigation,
     /// FFON state, and AccessKit/screen-reader output continue to work normally.
@@ -1259,6 +1270,9 @@ impl AppRenderer {
             current_uri: String::new(),
             pending_announcement: None,
             announcement_parity: false,
+            keys_heard_by_screen_reader: Default::default(),
+            typed_speech: None,
+            typed_speech_seq: 0,
             privacy_blank: false,
             launcher_mode: false,
             launcher_window: false,
@@ -1973,6 +1987,20 @@ impl AppRenderer {
     /// Mirrors `accesskitSpeakCurrentElement` in C. No-op if the list is empty.
     /// Toggles `announcement_parity` so back-to-back identical items still
     /// produce an AccessKit tree diff.
+    /// What was typed into a search goes in front of the row it landed on, in the row's own
+    /// speech. Speaking the row cuts off anything said before it, the screen reader's echo of
+    /// the key included, so the two have to be one thing. Nothing to land on leaves the key
+    /// to whoever says keys.
+    pub fn speak_typed_then_element(&mut self, typed: &str) {
+        if self.current_list_item().is_some() || self.search_found_nothing() {
+            self.typed_speech_seq += 1;
+            self.typed_speech = Some(typed.to_owned());
+        } else {
+            self.typed_speech = None;
+            crate::handlers::announce_typed_text(self, typed);
+        }
+    }
+
     pub fn speak_current_element(&mut self) {
         let Some(item) = self.current_list_item() else {
             return;
@@ -2026,7 +2054,14 @@ impl AppRenderer {
         let depth = self.current_id.depth().saturating_sub(1);
         let last_id = self.current_id.last().unwrap_or(0);
         let total = self.active_list_len();
-        format!("{mode}, layer: {depth} list: {}/{total}", last_id + 1)
+        // Nothing found has no position to report: the cursor id still names a row that is
+        // not on screen.
+        let position = if self.search_found_nothing() {
+            0
+        } else {
+            last_id + 1
+        };
+        format!("{mode}, layer: {depth} list: {position}/{total}")
     }
 
     /// The Ctrl+F-style absolute breadcrumb path to the current focus, e.g.
@@ -2080,9 +2115,27 @@ impl AppRenderer {
 
     // ---- List helpers ------------------------------------------------------
 
+    /// A search with text in it that matched nothing.
+    ///
+    /// An empty `filtered_list_indices` means no filter, and also a filter matching nothing.
+    /// In a search those must differ: showing the whole list for a word it does not hold
+    /// reads as if every row matched. Palettes decide this for themselves.
+    pub fn search_found_nothing(&self) -> bool {
+        if !self.filtered_list_indices.is_empty() {
+            return false;
+        }
+        match self.coordinate.base() {
+            Coordinate::SimpleSearch => !self.search_string.is_empty(),
+            Coordinate::ExtendedSearch => !self.input_buffer.is_empty(),
+            _ => false,
+        }
+    }
+
     /// Number of items in the currently active list (filtered or total).
     pub fn active_list_len(&self) -> usize {
-        if self.filtered_list_indices.is_empty() {
+        if self.search_found_nothing() {
+            0
+        } else if self.filtered_list_indices.is_empty() {
             self.total_list.len()
         } else {
             self.filtered_list_indices.len()
@@ -2091,7 +2144,9 @@ impl AppRenderer {
 
     /// Currently selected item.
     pub fn current_list_item(&self) -> Option<&RenderListItem> {
-        if self.filtered_list_indices.is_empty() {
+        if self.search_found_nothing() {
+            None
+        } else if self.filtered_list_indices.is_empty() {
             self.total_list.get(self.list_index)
         } else {
             let raw_idx = *self.filtered_list_indices.get(self.list_index)?;

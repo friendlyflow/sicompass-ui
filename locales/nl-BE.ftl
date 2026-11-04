@@ -172,3 +172,5 @@ hint-enter-pause = Enter  Pauze
 video-playing = speelt
 video-paused = gepauzeerd
 video-unavailable = Deze versie van Sicompass kan geen video afspelen
+
+search-no-matches = geen resultaten

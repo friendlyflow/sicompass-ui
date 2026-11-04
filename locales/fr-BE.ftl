@@ -172,3 +172,5 @@ hint-enter-pause = Enter  Pause
 video-playing = lecture
 video-paused = en pause
 video-unavailable = Cette version de Sicompass ne peut pas lire de vidéo
+
+search-no-matches = aucun résultat
