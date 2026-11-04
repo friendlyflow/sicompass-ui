@@ -139,7 +139,12 @@ mod tests {
     #[test]
     fn embedded_icon_is_not_blank() {
         let (pixels, _, _) = window_icon().expect("the embedded icon must decode");
-        let opaque = pixels.chunks_exact(4).filter(|px| px[3] > 0).count();
+        let opaque = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[3] > 0)
+            .count();
         assert!(
             opaque > 1000,
             "only {opaque} non-transparent pixels; the icon is effectively blank"

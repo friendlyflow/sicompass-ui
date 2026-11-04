@@ -77,26 +77,26 @@ fn collect_items_recursive(
         });
 
         // Recurse into object children
-        if let FfonElement::Obj(obj) = elem {
-            if !obj.children.is_empty() {
-                let display = sicompass_sdk::tags::strip_display(&obj.key);
-                let new_bc = if breadcrumb.is_empty() {
-                    format!("{} > ", display)
-                } else {
-                    format!("{}{} > ", breadcrumb, display)
-                };
-                let mut child_id = item_id.clone();
-                child_id.push(0);
-                let child_parent_has_radio = sicompass_sdk::tags::has_radio(&obj.key);
-                collect_items_recursive(
-                    &obj.children,
-                    &child_id,
-                    &new_bc,
-                    child_parent_has_radio,
-                    scope,
-                    out,
-                );
-            }
+        if let FfonElement::Obj(obj) = elem
+            && !obj.children.is_empty()
+        {
+            let display = sicompass_sdk::tags::strip_display(&obj.key);
+            let new_bc = if breadcrumb.is_empty() {
+                format!("{} > ", display)
+            } else {
+                format!("{}{} > ", breadcrumb, display)
+            };
+            let mut child_id = item_id.clone();
+            child_id.push(0);
+            let child_parent_has_radio = sicompass_sdk::tags::has_radio(&obj.key);
+            collect_items_recursive(
+                &obj.children,
+                &child_id,
+                &new_bc,
+                child_parent_has_radio,
+                scope,
+                out,
+            );
         }
     }
 }
@@ -178,19 +178,19 @@ fn collect_scroll_items_recursive(
             ext_prefix: None,
         });
 
-        if let FfonElement::Obj(obj) = elem {
-            if !obj.children.is_empty() {
-                let mut child_id = item_id.clone();
-                child_id.push(0);
-                let child_parent_has_radio = tags::has_radio(&obj.key);
-                collect_scroll_items_recursive(
-                    &obj.children,
-                    &child_id,
-                    child_parent_has_radio,
-                    scope,
-                    out,
-                );
-            }
+        if let FfonElement::Obj(obj) = elem
+            && !obj.children.is_empty()
+        {
+            let mut child_id = item_id.clone();
+            child_id.push(0);
+            let child_parent_has_radio = tags::has_radio(&obj.key);
+            collect_scroll_items_recursive(
+                &obj.children,
+                &child_id,
+                child_parent_has_radio,
+                scope,
+                out,
+            );
         }
     }
 }
@@ -748,10 +748,10 @@ fn build_str_label(s: &str, parent_has_radio: bool) -> String {
 
     // Editor file-content Str — Str inside <input> with a <src=N> annotation
     // (only the editor emits these). Render as `-ci <text>`.
-    if let Some(inner) = tags::extract_input(s) {
-        if tags::has_src(&inner) {
-            return format!("-ci {}", tags::strip_display(s));
-        }
+    if let Some(inner) = tags::extract_input(s)
+        && tags::has_src(&inner)
+    {
+        return format!("-ci {}", tags::strip_display(s));
     }
 
     let (prefix, content): (&str, String) = if tags::has_image(s) {
@@ -811,10 +811,10 @@ fn build_obj_label(obj: &FfonObject) -> String {
 
     // Editor file-content Obj — Obj key wrapped in <input> with a <src=N>
     // annotation (only the editor emits these). Render as `+ci <text>`.
-    if let Some(inner) = tags::extract_input(key) {
-        if tags::has_src(&inner) {
-            return format!("+ci {}", tags::strip_display(key));
-        }
+    if let Some(inner) = tags::extract_input(key)
+        && tags::has_src(&inner)
+    {
+        return format!("+ci {}", tags::strip_display(key));
     }
     // Editor directory-view dir entry: `<dir><input>name</input>` → `+di name`.
     if tags::has_dir(key) {
@@ -2261,7 +2261,7 @@ mod tests {
         // "dcmt" should match "Documents" via fuzzy (non-contiguous subsequence)
         let mut r = make_renderer_with_items(&["Documents", "Downloads", "Desktop"]);
         populate_list_current_layer(&mut r, "dcmt");
-        assert!(r.filtered_list_indices.len() >= 1);
+        assert!(!r.filtered_list_indices.is_empty());
         let labels: Vec<&str> = r
             .filtered_list_indices
             .iter()

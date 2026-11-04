@@ -62,16 +62,28 @@ pub(crate) unsafe fn create_buffer(
     }
 }
 
+/// The image [`create_image_helper`] makes.
+pub(crate) struct ImageSpec {
+    pub width: u32,
+    pub height: u32,
+    pub format: vk::Format,
+    pub tiling: vk::ImageTiling,
+    pub usage: vk::ImageUsageFlags,
+    pub properties: vk::MemoryPropertyFlags,
+}
+
 pub(crate) unsafe fn create_image_helper(
     device: &ash::Device,
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
-    width: u32,
-    height: u32,
-    format: vk::Format,
-    tiling: vk::ImageTiling,
-    usage: vk::ImageUsageFlags,
-    properties: vk::MemoryPropertyFlags,
+    ImageSpec {
+        width,
+        height,
+        format,
+        tiling,
+        usage,
+        properties,
+    }: ImageSpec,
 ) -> Result<(vk::Image, vk::DeviceMemory), SiError> {
     unsafe {
         let img_info = vk::ImageCreateInfo::default()
@@ -717,9 +729,8 @@ unsafe fn is_device_suitable(
         };
         for required in DEVICE_EXTENSIONS {
             if !ext_props.iter().any(|e| {
-                CStr::from_bytes_until_nul(&e.extension_name.map(|b| b as u8))
-                    .ok()
-                    .map_or(false, |n| n == *required)
+                CStr::from_bytes_until_nul(&e.extension_name.map(|b| b as u8)).ok()
+                    == Some(*required)
             }) {
                 return false;
             }
@@ -747,15 +758,27 @@ pub struct SwapchainBundle {
     pub image_views: Vec<vk::ImageView>,
 }
 
-unsafe fn create_swapchain(
-    device: &ash::Device,
-    swapchain_loader: &ash::khr::swapchain::Device,
-    surface_loader: &ash::khr::surface::Instance,
+/// Where a swapchain presents.
+struct SwapchainTarget<'a> {
+    surface_loader: &'a ash::khr::surface::Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     graphics_family: u32,
     present_family: u32,
-    window: &sdl3::video::Window,
+    window: &'a sdl3::video::Window,
+}
+
+unsafe fn create_swapchain(
+    device: &ash::Device,
+    swapchain_loader: &ash::khr::swapchain::Device,
+    SwapchainTarget {
+        surface_loader,
+        physical_device,
+        surface,
+        graphics_family,
+        present_family,
+        window,
+    }: SwapchainTarget,
     old_swapchain: vk::SwapchainKHR,
 ) -> Result<SwapchainBundle, SiError> {
     unsafe {
@@ -1256,12 +1279,14 @@ pub fn build_app_with(cfg: &crate::app_state::AppConfig) -> Result<AppState, SiE
         create_swapchain(
             &device,
             &swapchain_loader,
-            &surface_loader,
-            physical_device,
-            surface,
-            queue_families.graphics,
-            queue_families.present,
-            &window,
+            SwapchainTarget {
+                surface_loader: &surface_loader,
+                physical_device,
+                surface,
+                graphics_family: queue_families.graphics,
+                present_family: queue_families.present,
+                window: &window,
+            },
             vk::SwapchainKHR::null(),
         )?
     };
@@ -1379,12 +1404,14 @@ pub fn recreate_swapchain(app: &mut AppState) -> Result<Recreated, SiError> {
         let sc = create_swapchain(
             &app.device,
             &app.swapchain_loader,
-            &app.surface_loader,
-            app.physical_device,
-            app.surface,
-            app.graphics_family,
-            app.present_family,
-            &app.window,
+            SwapchainTarget {
+                surface_loader: &app.surface_loader,
+                physical_device: app.physical_device,
+                surface: app.surface,
+                graphics_family: app.graphics_family,
+                present_family: app.present_family,
+                window: &app.window,
+            },
             old,
         )?;
 

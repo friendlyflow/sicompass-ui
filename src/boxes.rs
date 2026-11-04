@@ -692,16 +692,27 @@ pub(crate) fn layout(
 /// What a laid out row depends on.
 pub(crate) type BoxKey = (String, bool, i32, u32, u32, u32, u32, u8);
 
+/// What a row's layout depends on besides its own markup and width.
+pub(crate) struct RowInputs<'a> {
+    pub sheets: &'a Sheets,
+    pub env: &'a StyleEnv,
+    pub fr: &'a FontRenderer,
+    pub scale: f32,
+    pub line_height: f32,
+}
+
 /// [`layout`] for a row of markup, kept until the stylesheets or the size change: a grid
 /// of a hundred photos is laid out once, not once a frame.
 pub(crate) fn layout_row(
     markup: &str,
     focus: bool,
-    sheets: &Sheets,
-    env: &StyleEnv,
-    fr: &FontRenderer,
-    scale: f32,
-    line_height: f32,
+    RowInputs {
+        sheets,
+        env,
+        fr,
+        scale,
+        line_height,
+    }: RowInputs,
     width: f32,
     image_size: &mut dyn FnMut(&str) -> Option<(u32, u32)>,
 ) -> std::sync::Arc<RowLayout> {
@@ -1227,14 +1238,62 @@ mod tests {
             Some((100, 100))
         };
         let row = r#"<div class="grid-container"><img src="a"><img src="b"></div>"#;
-        let once = layout_row(row, false, &sheets, &env, &fr, 1.0, LH, 600.0, &mut size);
-        let again = layout_row(row, false, &sheets, &env, &fr, 1.0, LH, 600.0, &mut size);
+        let once = layout_row(
+            row,
+            false,
+            crate::boxes::RowInputs {
+                sheets: &sheets,
+                env: &env,
+                fr: &fr,
+                scale: 1.0,
+                line_height: LH,
+            },
+            600.0,
+            &mut size,
+        );
+        let again = layout_row(
+            row,
+            false,
+            crate::boxes::RowInputs {
+                sheets: &sheets,
+                env: &env,
+                fr: &fr,
+                scale: 1.0,
+                line_height: LH,
+            },
+            600.0,
+            &mut size,
+        );
         assert!(std::sync::Arc::ptr_eq(&once, &again));
         assert_eq!(looked_up.get(), 2, "each picture's size was asked for once");
-        let narrower = layout_row(row, false, &sheets, &env, &fr, 1.0, LH, 300.0, &mut size);
+        let narrower = layout_row(
+            row,
+            false,
+            crate::boxes::RowInputs {
+                sheets: &sheets,
+                env: &env,
+                fr: &fr,
+                scale: 1.0,
+                line_height: LH,
+            },
+            300.0,
+            &mut size,
+        );
         assert!(!std::sync::Arc::ptr_eq(&once, &narrower));
         assert_ne!(once.height, narrower.height);
-        let focused = layout_row(row, true, &sheets, &env, &fr, 1.0, LH, 600.0, &mut size);
+        let focused = layout_row(
+            row,
+            true,
+            crate::boxes::RowInputs {
+                sheets: &sheets,
+                env: &env,
+                fr: &fr,
+                scale: 1.0,
+                line_height: LH,
+            },
+            600.0,
+            &mut size,
+        );
         assert!(
             !std::sync::Arc::ptr_eq(&once, &focused),
             "li:focus can change it"
@@ -1248,12 +1307,36 @@ mod tests {
         let fr = make_fr_uniform(10.0);
         let row = r#"<div class="g"><img src="a"><img src="b"></div>"#;
         let mut size = |_: &str| Some((100, 100));
-        let before = layout_row(row, false, &sheets, &env, &fr, 1.0, LH, 400.0, &mut size);
+        let before = layout_row(
+            row,
+            false,
+            crate::boxes::RowInputs {
+                sheets: &sheets,
+                env: &env,
+                fr: &fr,
+                scale: 1.0,
+                line_height: LH,
+            },
+            400.0,
+            &mut size,
+        );
         assert_eq!(before.boxes[1].x, 0.0);
         sheets.set_user(Some(
             ".g { display: grid; grid-template-columns: 1fr 1fr 1fr }",
         ));
-        let after = layout_row(row, false, &sheets, &env, &fr, 1.0, LH, 400.0, &mut size);
+        let after = layout_row(
+            row,
+            false,
+            crate::boxes::RowInputs {
+                sheets: &sheets,
+                env: &env,
+                fr: &fr,
+                scale: 1.0,
+                line_height: LH,
+            },
+            400.0,
+            &mut size,
+        );
         assert_ne!(before.boxes[2].w, after.boxes[2].w);
     }
 

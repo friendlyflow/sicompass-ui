@@ -420,10 +420,10 @@ pub(crate) fn label_to_speech(label: &str) -> String {
         Some(word) => {
             // A list prefix may be followed by a timeline positioner marker
             // ("- > x" / "- · x"); announce that second marker too.
-            if let Some((marker, rest)) = content.split_once(' ') {
-                if let Some(marker_word) = list_prefix_to_word(marker) {
-                    return format!("{word} {marker_word} {rest}");
-                }
+            if let Some((marker, rest)) = content.split_once(' ')
+                && let Some(marker_word) = list_prefix_to_word(marker)
+            {
+                return format!("{word} {marker_word} {rest}");
             }
             format!("{word} {content}")
         }
@@ -842,7 +842,7 @@ mod tests {
         let tree = build_tree(&r);
         // Focus always lands on ELEMENT_ID; the label reflects the selected item.
         assert_eq!(tree.focus, ELEMENT_ID);
-        assert_eq!(tree.nodes[1].1.label().as_deref(), Some("c"));
+        assert_eq!(tree.nodes[1].1.label(), Some("c"));
     }
 
     #[test]
@@ -851,7 +851,7 @@ mod tests {
         r.list_index = 99; // out of bounds
         let tree = build_tree(&r);
         assert_eq!(tree.focus, ELEMENT_ID);
-        assert_eq!(tree.nodes[1].1.label().as_deref(), Some("only"));
+        assert_eq!(tree.nodes[1].1.label(), Some("only"));
     }
 
     #[test]
@@ -987,18 +987,12 @@ mod tests {
         // First item (index 0)
         let r = make_renderer_with_list(&["-i newfile.txt", "+l dir"]);
         let tree = build_tree(&r);
-        assert_eq!(
-            tree.nodes[1].1.label().as_deref(),
-            Some("dash i newfile.txt")
-        );
+        assert_eq!(tree.nodes[1].1.label(), Some("dash i newfile.txt"));
         // Second item (index 1)
         let mut r2 = make_renderer_with_list(&["-i newfile.txt", "+l dir"]);
         r2.list_index = 1;
         let tree2 = build_tree(&r2);
-        assert_eq!(
-            tree2.nodes[1].1.label().as_deref(),
-            Some("arrow right l dir")
-        );
+        assert_eq!(tree2.nodes[1].1.label(), Some("arrow right l dir"));
     }
 
     #[test]
@@ -1006,12 +1000,12 @@ mod tests {
         // First item (index 0)
         let r = make_renderer_with_list(&["Files", "Tutorial"]);
         let tree = build_tree(&r);
-        assert_eq!(tree.nodes[1].1.label().as_deref(), Some("Files"));
+        assert_eq!(tree.nodes[1].1.label(), Some("Files"));
         // Second item (index 1)
         let mut r2 = make_renderer_with_list(&["Files", "Tutorial"]);
         r2.list_index = 1;
         let tree2 = build_tree(&r2);
-        assert_eq!(tree2.nodes[1].1.label().as_deref(), Some("Tutorial"));
+        assert_eq!(tree2.nodes[1].1.label(), Some("Tutorial"));
     }
 
     // --- per-item language tagging ---
@@ -1063,7 +1057,7 @@ mod tests {
     fn build_tree_root_name_is_sicompass() {
         let r = AppRenderer::new();
         let tree = build_tree(&r);
-        assert_eq!(tree.nodes[0].1.label().as_deref(), Some("sicompass"));
+        assert_eq!(tree.nodes[0].1.label(), Some("sicompass"));
     }
 
     #[test]

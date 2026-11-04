@@ -54,6 +54,9 @@ pub struct RectangleRenderer {
 }
 
 impl RectangleRenderer {
+    /// # Safety
+    ///
+    /// Every Vulkan handle passed in must be valid, and the device must outlive what this returns, until it is cleaned up.
     pub unsafe fn new(
         device: &ash::Device,
         instance: &ash::Instance,
@@ -506,6 +509,10 @@ impl RectangleRenderer {
     }
 
     /// Upload vertices and issue draw command.
+    ///
+    /// # Safety
+    ///
+    /// `command_buffer` must be recording, inside the render pass this was made for.
     pub unsafe fn draw_rectangles(
         &self,
         device: &ash::Device,
@@ -548,6 +555,9 @@ impl RectangleRenderer {
 
     // ---- Cleanup -----------------------------------------------------------
 
+    /// # Safety
+    ///
+    /// The GPU must be finished with everything this drew (wait for the device to go idle first), and it must not be used afterwards.
     pub unsafe fn cleanup(&self, device: &ash::Device) {
         unsafe {
             device.destroy_pipeline(self.pipeline, None);

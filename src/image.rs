@@ -118,6 +118,9 @@ pub struct ImageRenderer {
 }
 
 impl ImageRenderer {
+    /// # Safety
+    ///
+    /// Every Vulkan handle passed in must be valid, and the device must outlive what this returns, until it is cleaned up.
     pub unsafe fn new(
         device: &ash::Device,
         instance: &ash::Instance,
@@ -314,6 +317,10 @@ impl ImageRenderer {
     }
 
     /// Return `(width, height)` of the cached/loaded texture, or `None` on failure.
+    ///
+    /// # Safety
+    ///
+    /// The device this was made on must still be alive, and no other thread may be using its graphics queue.
     pub unsafe fn texture_size(&mut self, path: &str) -> Option<(u32, u32)> {
         unsafe {
             let slot = self.find_or_load(path)?;
@@ -327,6 +334,10 @@ impl ImageRenderer {
     /// If `path` is already cached the texture is reused; otherwise the image
     /// file is loaded, uploaded to the GPU, and placed in the least-recently-
     /// used cache slot.
+    ///
+    /// # Safety
+    ///
+    /// The device this was made on must still be alive, and no other thread may be using its graphics queue.
     pub unsafe fn prepare_image(&mut self, path: &str, x: f32, y: f32, width: f32, height: f32) {
         unsafe {
             if self.draws.len() >= MAX_DRAWS {
@@ -378,13 +389,14 @@ impl ImageRenderer {
     /// `[clip_top, clip_bottom]`, cropping the texture (adjusting UVs) rather
     /// than stretching it. Used by scroll mode so a scrolled image does not
     /// bleed over the header / tabs band.
+    ///
+    /// # Safety
+    ///
+    /// The device this was made on must still be alive, and no other thread may be using its graphics queue.
     pub unsafe fn prepare_image_clipped(
         &mut self,
         path: &str,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
+        [x, y, width, height]: [f32; 4],
         clip_top: f32,
         clip_bottom: f32,
     ) {
@@ -446,6 +458,10 @@ impl ImageRenderer {
     }
 
     /// Upload vertices and issue one draw call per queued image.
+    ///
+    /// # Safety
+    ///
+    /// `command_buffer` must be recording, inside the render pass this was made for.
     pub unsafe fn draw_images(
         &self,
         device: &ash::Device,
@@ -500,6 +516,9 @@ impl ImageRenderer {
 
     // ---- Cleanup -------------------------------------------------------------
 
+    /// # Safety
+    ///
+    /// The GPU must be finished with everything this drew (wait for the device to go idle first), and it must not be used afterwards.
     pub unsafe fn cleanup(&mut self) {
         unsafe {
             if let Some(tex) = self.video.take() {
@@ -532,11 +551,12 @@ impl ImageRenderer {
         unsafe {
             // Check if already cached
             for (i, slot) in self.cache.iter_mut().enumerate() {
-                if let Some(tex) = slot {
-                    if tex.path == path && tex.class == 0 {
-                        tex.last_used_frame = self.current_frame;
-                        return Some(i);
-                    }
+                if let Some(tex) = slot
+                    && tex.path == path
+                    && tex.class == 0
+                {
+                    tex.last_used_frame = self.current_frame;
+                    return Some(i);
                 }
             }
 
@@ -584,7 +604,7 @@ impl ImageRenderer {
     ///
     /// The texture is made no bigger than the box needs, so a screen of thumbnails is a
     /// few megabytes and a photo of twelve megapixels is read once, off this thread.
-    pub unsafe fn prepare_picture(
+    pub fn prepare_picture(
         &mut self,
         path: &str,
         bx: [f32; 4],
@@ -592,64 +612,66 @@ impl ImageRenderer {
         clip_top: f32,
         clip_bottom: f32,
     ) -> bool {
-        unsafe {
-            if self.draws.len() >= MAX_DRAWS || self.broken.contains(path) {
-                return false;
-            }
-            let wanted = size_class_for(bx[2].max(bx[3]));
-            // The smallest texture that is big enough, else the biggest there is,
-            // which shows blurred until the right one arrives.
-            let (mut enough, mut biggest): (Option<(usize, u32)>, Option<(usize, u32)>) =
-                (None, None);
-            for (i, slot) in self.cache.iter().enumerate() {
-                let Some(tex) = slot else { continue };
-                if tex.path != path || tex.class == 0 {
-                    continue;
-                }
-                if tex.class >= wanted && enough.is_none_or(|(_, class)| tex.class < class) {
-                    enough = Some((i, tex.class));
-                }
-                if biggest.is_none_or(|(_, class)| tex.class > class) {
-                    biggest = Some((i, tex.class));
-                }
-            }
-            let best = enough.or(biggest);
-            if best.is_none_or(|(_, class)| class < wanted) {
-                self.loader.request(path, wanted);
-            }
-            let Some((slot, _)) = best else { return false };
-            let Some(tex) = self.cache[slot].as_mut() else {
-                return false;
-            };
-            tex.last_used_frame = self.current_frame;
-            let (tw, th) = (tex.width, tex.height);
-            let Some(place) = place_picture(bx, (tw, th), fit, clip_top, clip_bottom) else {
-                // Nothing of it shows, which counts as drawn.
-                return true;
-            };
-            let vertex_offset = self.vertices.len() as u32;
-            let [x0, y0, x1, y1] = place.rect;
-            let [u0, v0, u1, v1] = place.uv;
-            for (pos, tex_coord) in [
-                ([x0, y0], [u0, v0]),
-                ([x1, y0], [u1, v0]),
-                ([x1, y1], [u1, v1]),
-                ([x0, y0], [u0, v0]),
-                ([x1, y1], [u1, v1]),
-                ([x0, y1], [u0, v1]),
-            ] {
-                self.vertices.push(ImageVertex { pos, tex_coord });
-            }
-            self.draws.push(ImageDraw {
-                slot,
-                vertex_offset,
-            });
-            true
+        if self.draws.len() >= MAX_DRAWS || self.broken.contains(path) {
+            return false;
         }
+        let wanted = size_class_for(bx[2].max(bx[3]));
+        // The smallest texture that is big enough, else the biggest there is,
+        // which shows blurred until the right one arrives.
+        let mut enough: Option<(usize, u32)> = None;
+        let mut biggest: Option<(usize, u32)> = None;
+        for (i, slot) in self.cache.iter().enumerate() {
+            let Some(tex) = slot else { continue };
+            if tex.path != path || tex.class == 0 {
+                continue;
+            }
+            if tex.class >= wanted && enough.is_none_or(|(_, class)| tex.class < class) {
+                enough = Some((i, tex.class));
+            }
+            if biggest.is_none_or(|(_, class)| tex.class > class) {
+                biggest = Some((i, tex.class));
+            }
+        }
+        let best = enough.or(biggest);
+        if best.is_none_or(|(_, class)| class < wanted) {
+            self.loader.request(path, wanted);
+        }
+        let Some((slot, _)) = best else { return false };
+        let Some(tex) = self.cache[slot].as_mut() else {
+            return false;
+        };
+        tex.last_used_frame = self.current_frame;
+        let (tw, th) = (tex.width, tex.height);
+        let Some(place) = place_picture(bx, (tw, th), fit, clip_top, clip_bottom) else {
+            // Nothing of it shows, which counts as drawn.
+            return true;
+        };
+        let vertex_offset = self.vertices.len() as u32;
+        let [x0, y0, x1, y1] = place.rect;
+        let [u0, v0, u1, v1] = place.uv;
+        for (pos, tex_coord) in [
+            ([x0, y0], [u0, v0]),
+            ([x1, y0], [u1, v0]),
+            ([x1, y1], [u1, v1]),
+            ([x0, y0], [u0, v0]),
+            ([x1, y1], [u1, v1]),
+            ([x0, y1], [u0, v1]),
+        ] {
+            self.vertices.push(ImageVertex { pos, tex_coord });
+        }
+        self.draws.push(ImageDraw {
+            slot,
+            vertex_offset,
+        });
+        true
     }
 
     /// Show `frame` as the playing video's picture. The texture is made when the first
     /// frame arrives, and written over for each after it.
+    ///
+    /// # Safety
+    ///
+    /// The device this was made on must still be alive, and no other thread may be using its graphics queue.
     pub unsafe fn upload_video_frame(&mut self, frame: &crate::video::VideoFrame) {
         unsafe {
             if frame.width == 0
@@ -728,6 +750,10 @@ impl ImageRenderer {
 
     /// Draw the playing video's picture into `bx`, as `prepare_picture` does a file's.
     /// Returns whether there is a picture to draw.
+    ///
+    /// # Safety
+    ///
+    /// The device this was made on must still be alive, and no other thread may be using its graphics queue.
     pub unsafe fn prepare_video(
         &mut self,
         bx: [f32; 4],
@@ -766,6 +792,10 @@ impl ImageRenderer {
     }
 
     /// Forget the playing video's picture, when it stops.
+    ///
+    /// # Safety
+    ///
+    /// The device this was made on must still be alive, and no other thread may be using its graphics queue.
     pub unsafe fn clear_video(&mut self) {
         unsafe {
             if let Some(old) = self.video.take() {
@@ -788,6 +818,10 @@ impl ImageRenderer {
 
     /// Upload what the decoder threads have finished, a few at a time. Returns whether
     /// there is more to come, so the caller keeps redrawing until the pictures are in.
+    ///
+    /// # Safety
+    ///
+    /// The device this was made on must still be alive, and no other thread may be using its graphics queue.
     pub unsafe fn pump_loads(&mut self) -> bool {
         unsafe {
             for done in self.loader.poll(UPLOADS_PER_FRAME) {
@@ -899,12 +933,14 @@ impl ImageRenderer {
                 &self.device,
                 &self.instance,
                 self.physical_device,
-                width,
-                height,
-                vk::Format::R8G8B8A8_SRGB,
-                vk::ImageTiling::OPTIMAL,
-                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                crate::render::ImageSpec {
+                    width,
+                    height,
+                    format: vk::Format::R8G8B8A8_SRGB,
+                    tiling: vk::ImageTiling::OPTIMAL,
+                    usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                    properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                },
             )?;
 
             // Transition → copy → transition
@@ -1012,7 +1048,8 @@ pub(crate) fn decode_image_source(path: &str) -> Result<img_crate::DynamicImage,
 pub fn dimensions(path: &str) -> Option<(u32, u32)> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    static KNOWN: OnceLock<Mutex<HashMap<String, Option<(u32, u32)>>>> = OnceLock::new();
+    type Sizes = HashMap<String, Option<(u32, u32)>>;
+    static KNOWN: OnceLock<Mutex<Sizes>> = OnceLock::new();
     let known = KNOWN.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(found) = known.lock().ok()?.get(path) {
         return *found;

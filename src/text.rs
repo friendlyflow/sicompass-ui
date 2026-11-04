@@ -347,6 +347,28 @@ unsafe fn rasterize_glyph(
     }
 }
 
+/// Where the next glyph goes in the atlas.
+struct AtlasPen<'a> {
+    pen_x: &'a mut i32,
+    pen_y: &'a mut i32,
+    row_height: &'a mut i32,
+}
+
+/// What [`ColorAtlas::new`] needs.
+struct ColorAtlasSetup<'a> {
+    device: &'a ash::Device,
+    instance: &'a ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    command_pool: vk::CommandPool,
+    graphics_queue: vk::Queue,
+    render_pass: vk::RenderPass,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    pipeline_layout: vk::PipelineLayout,
+    ft_library: ft::FT_Library,
+    atlas_size: u32,
+    raster_em_px: f32,
+}
+
 /// Rasterize color glyph `cp` (emoji) into the RGBA `atlas_data`, converting
 /// FreeType's premultiplied BGRA to premultiplied RGBA. Metrics are scaled by
 /// `strike_scale` into the monochrome raster space so emoji compose with the
@@ -357,9 +379,11 @@ unsafe fn rasterize_color_glyph(
     strike_scale: f32,
     atlas_data: &mut [u8],
     atlas_size: u32,
-    pen_x: &mut i32,
-    pen_y: &mut i32,
-    row_height: &mut i32,
+    AtlasPen {
+        pen_x,
+        pen_y,
+        row_height,
+    }: AtlasPen,
     cp: u32,
 ) -> Option<GlyphInfo> {
     unsafe {
@@ -441,17 +465,19 @@ impl ColorAtlas {
     /// resource fails. Reuses the text descriptor-set layout and pipeline
     /// layout; only the fragment shader and blend differ.
     unsafe fn new(
-        device: &ash::Device,
-        instance: &ash::Instance,
-        physical_device: vk::PhysicalDevice,
-        command_pool: vk::CommandPool,
-        graphics_queue: vk::Queue,
-        render_pass: vk::RenderPass,
-        descriptor_set_layout: vk::DescriptorSetLayout,
-        pipeline_layout: vk::PipelineLayout,
-        ft_library: ft::FT_Library,
-        atlas_size: u32,
-        raster_em_px: f32,
+        ColorAtlasSetup {
+            device,
+            instance,
+            physical_device,
+            command_pool,
+            graphics_queue,
+            render_pass,
+            descriptor_set_layout,
+            pipeline_layout,
+            ft_library,
+            atlas_size,
+            raster_em_px,
+        }: ColorAtlasSetup,
     ) -> Option<ColorAtlas> {
         unsafe {
             let mut face: ft::FT_Face = std::ptr::null_mut();
@@ -496,12 +522,14 @@ impl ColorAtlas {
                 device,
                 instance,
                 physical_device,
-                atlas_size,
-                atlas_size,
-                vk::Format::R8G8B8A8_UNORM,
-                vk::ImageTiling::OPTIMAL,
-                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                crate::render::ImageSpec {
+                    width: atlas_size,
+                    height: atlas_size,
+                    format: vk::Format::R8G8B8A8_UNORM,
+                    tiling: vk::ImageTiling::OPTIMAL,
+                    usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                    properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                },
             )
             .ok()?;
             render::transition_image_layout(
@@ -638,9 +666,11 @@ impl ColorAtlas {
                     self.strike_scale,
                     &mut data,
                     self.atlas_size,
-                    &mut px,
-                    &mut py,
-                    &mut rh,
+                    AtlasPen {
+                        pen_x: &mut px,
+                        pen_y: &mut py,
+                        row_height: &mut rh,
+                    },
                     cp,
                 )
             }
@@ -835,6 +865,10 @@ unsafe fn build_color_pipeline(
 
 impl FontRenderer {
     /// Build the full font renderer: FreeType, glyph atlas, Vulkan pipeline.
+    ///
+    /// # Safety
+    ///
+    /// Every Vulkan handle passed in must be valid, and the device must outlive what this returns, until it is cleaned up.
     pub unsafe fn new(
         device: &ash::Device,
         instance: &ash::Instance,
@@ -962,12 +996,14 @@ impl FontRenderer {
                 device,
                 instance,
                 physical_device,
-                font_atlas_size,
-                font_atlas_size,
-                vk::Format::R8_UNORM,
-                vk::ImageTiling::OPTIMAL,
-                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                crate::render::ImageSpec {
+                    width: font_atlas_size,
+                    height: font_atlas_size,
+                    format: vk::Format::R8_UNORM,
+                    tiling: vk::ImageTiling::OPTIMAL,
+                    usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                    properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                },
             )?;
 
             render::transition_image_layout(
@@ -1202,7 +1238,7 @@ impl FontRenderer {
 
             // Optional color-glyph atlas (emoji). Failure disables emoji, not text.
             let raster_em_px = 64.0 * dpi as f32 / 72.0;
-            let color = ColorAtlas::new(
+            let color = ColorAtlas::new(ColorAtlasSetup {
                 device,
                 instance,
                 physical_device,
@@ -1212,9 +1248,9 @@ impl FontRenderer {
                 descriptor_set_layout,
                 pipeline_layout,
                 ft_library,
-                font_atlas_size,
+                atlas_size: font_atlas_size,
                 raster_em_px,
-            );
+            });
 
             Ok(FontRenderer {
                 ft_library,
@@ -1256,6 +1292,10 @@ impl FontRenderer {
     /// Free all Vulkan and FreeType resources.
     /// The caller must ensure the device is idle before calling this
     /// (e.g. `device.device_wait_idle().unwrap()`).
+    ///
+    /// # Safety
+    ///
+    /// The GPU must be finished with everything this drew (wait for the device to go idle first), and it must not be used afterwards.
     pub unsafe fn destroy(&self, device: &ash::Device) {
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -1301,10 +1341,10 @@ impl FontRenderer {
         if let Some(g) = self.glyphs.borrow().get(&cp).copied() {
             return Some(g);
         }
-        if let Some(ca) = &self.color {
-            if let Some(g) = ca.glyphs.borrow().get(&cp).copied() {
-                return Some(g);
-            }
+        if let Some(ca) = &self.color
+            && let Some(g) = ca.glyphs.borrow().get(&cp).copied()
+        {
+            return Some(g);
         }
         if self.missing.borrow().contains(&cp) {
             return None;
@@ -1338,10 +1378,10 @@ impl FontRenderer {
             self.glyphs.borrow_mut().insert(cp, g);
             return Some(g);
         }
-        if let Some(ca) = &self.color {
-            if let Some(g) = ca.ensure(cp) {
-                return Some(g);
-            }
+        if let Some(ca) = &self.color
+            && let Some(g) = ca.ensure(cp)
+        {
+            return Some(g);
         }
         self.missing.borrow_mut().insert(cp);
         None
@@ -1404,10 +1444,10 @@ impl FontRenderer {
         if ch == '\t' {
             return self.space_advance() * TAB_WIDTH_SPACES;
         }
-        if let Some(g) = self.ensure_glyph(ch as u32) {
-            if g.advance > 0.0 {
-                return g.advance;
-            }
+        if let Some(g) = self.ensure_glyph(ch as u32)
+            && g.advance > 0.0
+        {
+            return g.advance;
         }
         self.space_advance()
     }
@@ -1421,6 +1461,10 @@ impl FontRenderer {
     /// Re-upload the CPU atlas to the GPU image if glyphs were added since the
     /// last flush. Must run outside a render pass (it transitions image layout)
     /// and after all `prepare_*`/measurement calls for the frame.
+    ///
+    /// # Safety
+    ///
+    /// `device`, `command_pool` and `queue` must be valid, no other thread may be using the queue, and no render pass may be recording.
     pub unsafe fn flush_atlas(
         &self,
         device: &ash::Device,
@@ -1572,6 +1616,10 @@ impl FontRenderer {
     }
 
     /// Upload vertex data and issue draw command.
+    ///
+    /// # Safety
+    ///
+    /// `command_buffer` must be recording, inside the render pass this was made for.
     pub unsafe fn draw_text(
         &self,
         device: &ash::Device,
@@ -1619,45 +1667,44 @@ impl FontRenderer {
 
             // Color-glyph (emoji) pass — shares the pipeline layout, uses the RGBA
             // pipeline + descriptor set bound to the color atlas.
-            if let Some(ca) = &self.color {
-                if !self.color_vertices.is_empty() {
-                    let upload_size = (std::mem::size_of::<TextVertex>()
-                        * self.color_vertices.len())
-                        as vk::DeviceSize;
-                    let ptr = device
-                        .map_memory(
-                            ca.vertex_buffer_memory,
-                            0,
-                            upload_size,
-                            vk::MemoryMapFlags::empty(),
-                        )
-                        .unwrap() as *mut TextVertex;
-                    std::ptr::copy_nonoverlapping(
-                        self.color_vertices.as_ptr(),
-                        ptr,
-                        self.color_vertices.len(),
-                    );
-                    device.unmap_memory(ca.vertex_buffer_memory);
+            if let Some(ca) = &self.color
+                && !self.color_vertices.is_empty()
+            {
+                let upload_size = (std::mem::size_of::<TextVertex>() * self.color_vertices.len())
+                    as vk::DeviceSize;
+                let ptr = device
+                    .map_memory(
+                        ca.vertex_buffer_memory,
+                        0,
+                        upload_size,
+                        vk::MemoryMapFlags::empty(),
+                    )
+                    .unwrap() as *mut TextVertex;
+                std::ptr::copy_nonoverlapping(
+                    self.color_vertices.as_ptr(),
+                    ptr,
+                    self.color_vertices.len(),
+                );
+                device.unmap_memory(ca.vertex_buffer_memory);
 
-                    device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, ca.pipeline);
-                    device.cmd_push_constants(
-                        cb,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
-                    );
-                    device.cmd_bind_descriptor_sets(
-                        cb,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        self.pipeline_layout,
-                        0,
-                        &[ca.descriptor_sets[frame % ca.descriptor_sets.len()]],
-                        &[],
-                    );
-                    device.cmd_bind_vertex_buffers(cb, 0, &[ca.vertex_buffer], &[0]);
-                    device.cmd_draw(cb, self.color_vertices.len() as u32, 1, 0, 0);
-                }
+                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, ca.pipeline);
+                device.cmd_push_constants(
+                    cb,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
+                );
+                device.cmd_bind_descriptor_sets(
+                    cb,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline_layout,
+                    0,
+                    &[ca.descriptor_sets[frame % ca.descriptor_sets.len()]],
+                    &[],
+                );
+                device.cmd_bind_vertex_buffers(cb, 0, &[ca.vertex_buffer], &[0]);
+                device.cmd_draw(cb, self.color_vertices.len() as u32, 1, 0, 0);
             }
         }
     }
@@ -1798,8 +1845,7 @@ impl FontRenderer {
     pub fn prepare_text_wrapped(
         &mut self,
         text: &str,
-        x: f32,
-        y: f32,
+        (x, y): (f32, f32),
         scale: f32,
         max_width: f32,
         line_height: f32,
@@ -1867,14 +1913,12 @@ impl FontRenderer {
         let mut segs: Vec<(usize, usize, u32)> = Vec::new();
         let mut seg_byte_start = 0usize;
         let mut seg_char_start = 0u32;
-        let mut char_count = 0u32;
-        for (bi, c) in text.char_indices() {
+        for (char_index, (bi, c)) in (0u32..).zip(text.char_indices()) {
             if c == '\n' {
                 segs.push((seg_byte_start, bi, seg_char_start));
                 seg_byte_start = bi + 1;
-                seg_char_start = char_count + 1;
+                seg_char_start = char_index + 1;
             }
-            char_count += 1;
         }
         segs.push((seg_byte_start, text.len(), seg_char_start));
         segs
@@ -1992,6 +2036,9 @@ impl FontRenderer {
 
     // ---- Cleanup -----------------------------------------------------------
 
+    /// # Safety
+    ///
+    /// The GPU must be finished with everything this drew (wait for the device to go idle first), and it must not be used afterwards.
     pub unsafe fn cleanup(&self, device: &ash::Device) {
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -2711,9 +2758,11 @@ mod tests {
                 strike_scale,
                 &mut atlas,
                 atlas_size,
-                &mut px,
-                &mut py,
-                &mut rh,
+                AtlasPen {
+                    pen_x: &mut px,
+                    pen_y: &mut py,
+                    row_height: &mut rh,
+                },
                 0x1F600,
             );
             assert!(

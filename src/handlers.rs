@@ -269,11 +269,10 @@ fn reposition_after_placeholder_commit(r: &mut AppRenderer, name: &str) {
             .map(|(_, c)| c)
             .unwrap_or(&item.label)
             == name
-    }) {
-        if let Some(id) = r.total_list.get(i).map(|it| it.id.clone()) {
-            r.current_id = id;
-            r.list_index = i;
-        }
+    }) && let Some(id) = r.total_list.get(i).map(|it| it.id.clone())
+    {
+        r.current_id = id;
+        r.list_index = i;
     }
 }
 
@@ -335,13 +334,13 @@ fn find_id_path(arr: &[FfonElement], base_id: &IdArray, target: &str) -> Option<
         if tags::extract_id(key).as_deref() == Some(target) {
             return Some(item_id);
         }
-        if let FfonElement::Obj(obj) = elem {
-            if !obj.children.is_empty() {
-                let mut child_base = item_id.clone();
-                child_base.push(0);
-                if let Some(p) = find_id_path(&obj.children, &child_base, target) {
-                    return Some(p);
-                }
+        if let FfonElement::Obj(obj) = elem
+            && !obj.children.is_empty()
+        {
+            let mut child_base = item_id.clone();
+            child_base.push(0);
+            if let Some(p) = find_id_path(&obj.children, &child_base, target) {
+                return Some(p);
             }
         }
     }
@@ -418,10 +417,10 @@ pub fn navigate_right_raw(r: &mut AppRenderer) -> bool {
             }
             let depth = item_id.depth();
             let last_idx = item_id.get(depth.saturating_sub(1)).unwrap_or(0);
-            if let Some(siblings) = crate::provider::get_ffon_at_id_mut(&mut r.ffon, &item_id) {
-                if let Some(FfonElement::Obj(obj)) = siblings.get_mut(last_idx) {
-                    obj.children = children;
-                }
+            if let Some(siblings) = crate::provider::get_ffon_at_id_mut(&mut r.ffon, &item_id)
+                && let Some(FfonElement::Obj(obj)) = siblings.get_mut(last_idx)
+            {
+                obj.children = children;
             }
             if is_document {
                 mark_document(r, &item_id);
@@ -486,10 +485,10 @@ pub fn navigate_right_raw(r: &mut AppRenderer) -> bool {
             children.push(FfonElement::Str(I_PLACEHOLDER.to_owned()));
         }
         let last_idx = item_id.last().unwrap_or(0);
-        if let Some(siblings) = crate::provider::get_ffon_at_id_mut(&mut r.ffon, &item_id) {
-            if let Some(FfonElement::Obj(obj)) = siblings.get_mut(last_idx) {
-                obj.children = children;
-            }
+        if let Some(siblings) = crate::provider::get_ffon_at_id_mut(&mut r.ffon, &item_id)
+            && let Some(FfonElement::Obj(obj)) = siblings.get_mut(last_idx)
+        {
+            obj.children = children;
         }
         let mut new_id = item_id;
         new_id.push(0);
@@ -681,12 +680,11 @@ fn resolve_http_link(url: &str) -> (Vec<FfonElement>, bool) {
         }
     };
     // A JSON FFON document is a server-hosted tier tree — parse it directly.
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
-        if sicompass_sdk::ffon::is_ffon(&value) {
-            if let Ok(elems) = serde_json::from_value::<Vec<FfonElement>>(value) {
-                return (elems, true);
-            }
-        }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
+        && sicompass_sdk::ffon::is_ffon(&value)
+        && let Ok(elems) = serde_json::from_value::<Vec<FfonElement>>(value)
+    {
+        return (elems, true);
     }
     // Not FFON: an HTML page. A browser plugin renders it with Chrome and
     // answers later (see `apply_rendered_pages`). A renderer compiled into the
@@ -1093,9 +1091,8 @@ fn step_forward_by_lines(line_counts: &[usize], cur: usize, max_id: usize, budge
 
 /// Page up (scroll a full screen up).
 pub fn handle_page_up(r: &mut AppRenderer) {
-    match r.coordinate.base() {
-        Coordinate::Insert => return,
-        _ => {}
+    if r.coordinate.base() == Coordinate::Insert {
+        return;
     }
 
     let line_height = r.cached_line_height.max(1);
@@ -1149,9 +1146,8 @@ pub fn handle_page_up(r: &mut AppRenderer) {
 
 /// Page down (scroll a full screen down).
 pub fn handle_page_down(r: &mut AppRenderer) {
-    match r.coordinate.base() {
-        Coordinate::Insert => return,
-        _ => {}
+    if r.coordinate.base() == Coordinate::Insert {
+        return;
     }
 
     let line_height = r.cached_line_height.max(1);
@@ -1365,12 +1361,12 @@ fn prefetch_scroll_subtree(r: &mut AppRenderer) {
     if let Some(list) = get_ffon_at_id(&r.ffon, &r.current_id) {
         elements += list.len();
         for (i, elem) in list.iter().enumerate() {
-            if let FfonElement::Obj(o) = elem {
-                if visit(&o.key) {
-                    let mut id = r.current_id.clone();
-                    id.set_last(i);
-                    queue.push_back((id, vec![nav_segment(&o.key, use_input_name)]));
-                }
+            if let FfonElement::Obj(o) = elem
+                && visit(&o.key)
+            {
+                let mut id = r.current_id.clone();
+                id.set_last(i);
+                queue.push_back((id, vec![nav_segment(&o.key, use_input_name)]));
             }
         }
     }
@@ -1398,10 +1394,10 @@ fn prefetch_scroll_subtree(r: &mut AppRenderer) {
             if children.is_empty() {
                 continue;
             }
-            if let Some(siblings) = crate::provider::get_ffon_at_id_mut(&mut r.ffon, &id) {
-                if let Some(FfonElement::Obj(obj)) = siblings.get_mut(last) {
-                    obj.children = children;
-                }
+            if let Some(siblings) = crate::provider::get_ffon_at_id_mut(&mut r.ffon, &id)
+                && let Some(FfonElement::Obj(obj)) = siblings.get_mut(last)
+            {
+                obj.children = children;
             }
         }
         let Some(FfonElement::Obj(obj)) = get_ffon_at_id(&r.ffon, &id).and_then(|s| s.get(last))
@@ -1415,14 +1411,14 @@ fn prefetch_scroll_subtree(r: &mut AppRenderer) {
             continue;
         }
         for (i, child) in obj.children.iter().enumerate() {
-            if let FfonElement::Obj(o) = child {
-                if visit(&o.key) {
-                    let mut child_id = id.clone();
-                    child_id.push(i);
-                    let mut child_segments = segments.clone();
-                    child_segments.push(nav_segment(&o.key, use_input_name));
-                    queue.push_back((child_id, child_segments));
-                }
+            if let FfonElement::Obj(o) = child
+                && visit(&o.key)
+            {
+                let mut child_id = id.clone();
+                child_id.push(i);
+                let mut child_segments = segments.clone();
+                child_segments.push(nav_segment(&o.key, use_input_name));
+                queue.push_back((child_id, child_segments));
             }
         }
     }
@@ -2352,7 +2348,6 @@ pub fn handle_enter_command(r: &mut AppRenderer) {
             }
             r.current_command = CommandPhase::None;
             handle_escape(r);
-            return;
         }
         CommandPhase::None => {
             // Phase 1: user chose a command name from the list. The display label
@@ -2609,19 +2604,19 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
     // Toggle checkbox
     if let Some(new_text) = toggle_checkbox(&elem_clone) {
         let idx = r.current_id.last().unwrap_or(0);
-        if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id) {
-            if let Some(elem) = arr.get_mut(idx) {
-                *elem = match &elem_clone {
-                    FfonElement::Str(_) => FfonElement::new_str(new_text.clone()),
-                    FfonElement::Obj(o) => {
-                        let mut new_obj = FfonElement::new_obj(new_text.clone());
-                        for c in &o.children {
-                            new_obj.as_obj_mut().unwrap().push(c.clone());
-                        }
-                        new_obj
+        if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id)
+            && let Some(elem) = arr.get_mut(idx)
+        {
+            *elem = match &elem_clone {
+                FfonElement::Str(_) => FfonElement::new_str(new_text.clone()),
+                FfonElement::Obj(o) => {
+                    let mut new_obj = FfonElement::new_obj(new_text.clone());
+                    for c in &o.children {
+                        new_obj.as_obj_mut().unwrap().push(c.clone());
                     }
-                };
-            }
+                    new_obj
+                }
+            };
         }
         crate::provider::notify_checkbox_changed(r, elem_clone.clone(), &new_text);
         list::create_list_current_layer(r);
@@ -2633,21 +2628,20 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
     // whose parent Obj is a live input slot (terminal/claude). Enter fills the
     // parent's <input> with that command instead of activating the button
     // through the generic `on_button_press` path.
-    if r.current_id.depth() >= 2 {
-        if let FfonElement::Str(child_text) = &elem_clone {
-            if tags::has_button(child_text) {
-                let mut parent_id = r.current_id.clone();
-                let _ = parent_id.pop();
-                let parent_key = get_ffon_at_id(&r.ffon, &parent_id)
-                    .and_then(|a| a.get(parent_id.last().unwrap_or(0)))
-                    .and_then(|e| e.as_obj())
-                    .map(|o| o.key.clone());
-                if parent_key.map_or(false, |k| is_live_input_slot(r, &k)) {
-                    let value = tags::extract_button_function_name(child_text).unwrap_or_default();
-                    fill_live_input(r, &parent_id, &value);
-                    return;
-                }
-            }
+    if r.current_id.depth() >= 2
+        && let FfonElement::Str(child_text) = &elem_clone
+        && tags::has_button(child_text)
+    {
+        let mut parent_id = r.current_id.clone();
+        let _ = parent_id.pop();
+        let parent_key = get_ffon_at_id(&r.ffon, &parent_id)
+            .and_then(|a| a.get(parent_id.last().unwrap_or(0)))
+            .and_then(|e| e.as_obj())
+            .map(|o| o.key.clone());
+        if parent_key.is_some_and(|k| is_live_input_slot(r, &k)) {
+            let value = tags::extract_button_function_name(child_text).unwrap_or_default();
+            fill_live_input(r, &parent_id, &value);
+            return;
         }
     }
 
@@ -2988,7 +2982,7 @@ fn handle_enter_extended_search(r: &mut AppRenderer) {
                 .filter(|o| tags::has_radio(&o.key))
                 .map(|o| o.key.clone());
 
-            if let Some(_) = radio_key {
+            if radio_key.is_some() {
                 let children = get_ffon_at_id(&r.ffon, &ancestor_id)
                     .and_then(|a| a.get(ancestor_idx))
                     .and_then(|e| e.as_obj())
@@ -3002,10 +2996,10 @@ fn handle_enter_extended_search(r: &mut AppRenderer) {
                         blocked_ancestor_id = ancestor_id.clone();
                         break 'outer;
                     }
-                    if let Some(s) = child.as_str() {
-                        if tags::has_checked(s) {
-                            checked_count += 1;
-                        }
+                    if let Some(s) = child.as_str()
+                        && tags::has_checked(s)
+                    {
+                        checked_count += 1;
                     }
                 }
                 if checked_count > 1 {
@@ -3156,7 +3150,7 @@ fn toggle_radio(r: &mut AppRenderer) -> bool {
         let pidx = parent_id.last().unwrap_or(0);
         arr.get(pidx)
             .and_then(|e| e.as_obj())
-            .map_or(false, |o| tags::has_radio(&o.key))
+            .is_some_and(|o| tags::has_radio(&o.key))
     };
     if !parent_is_radio {
         return false;
@@ -3180,7 +3174,7 @@ fn toggle_radio(r: &mut AppRenderer) -> bool {
             let arr = get_ffon_at_id(&r.ffon, &sib_id);
             arr.and_then(|a| a.get(i))
                 .and_then(|e| e.as_str())
-                .map_or(false, |s| tags::has_checked(s))
+                .is_some_and(tags::has_checked)
         };
         if has_checked_tag {
             // Strip <checked>
@@ -3265,10 +3259,10 @@ fn fill_live_input(r: &mut AppRenderer, parent_id: &sicompass_sdk::ffon::IdArray
             _ => return,
         }
     };
-    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, parent_id) {
-        if let Some(FfonElement::Obj(o)) = arr.get_mut(pidx) {
-            o.key = new_key;
-        }
+    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, parent_id)
+        && let Some(FfonElement::Obj(o)) = arr.get_mut(pidx)
+    {
+        o.key = new_key;
     }
     // Persist on the provider so a tick()-driven re-fetch keeps the value.
     if let Some(p) = crate::provider::get_active_provider(r) {
@@ -3315,7 +3309,7 @@ fn try_handle_live_input_search_enter(
     } else {
         None
     };
-    let parent_is_slot = parent_key.map_or(false, |k| is_live_input_slot(r, &k));
+    let parent_is_slot = parent_key.is_some_and(|k| is_live_input_slot(r, &k));
     let child_of_slot =
         parent_is_slot && matches!(&elem, Some(FfonElement::Str(s)) if tags::has_button(s));
 
@@ -3543,10 +3537,9 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
                     let after = FfonElement::new_str(format!("<input>{name}</input>"));
                     if let Some(arr) =
                         crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id)
+                        && let Some(e) = arr.get_mut(idx)
                     {
-                        if let Some(e) = arr.get_mut(idx) {
-                            *e = after.clone();
-                        }
+                        *e = after.clone();
                     }
                     rewrite_last_text_chunk_after(r, &after);
                 }
@@ -3660,10 +3653,9 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
                     };
                     if let Some(arr) =
                         crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id)
+                        && let Some(e) = arr.get_mut(idx)
                     {
-                        if let Some(e) = arr.get_mut(idx) {
-                            *e = after.clone();
-                        }
+                        *e = after.clone();
                     }
                     rewrite_last_text_chunk_after(r, &after);
                 }
@@ -3744,12 +3736,11 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
         let mut parent_id = r.current_id.clone();
         parent_id.pop();
         let parent_idx = parent_id.last().unwrap_or(0);
-        if let Some(parent_slice) = crate::state::navigate_to_slice_pub(&mut r.ffon, &parent_id) {
-            if let Some(FfonElement::Obj(obj)) = parent_slice.get_mut(parent_idx) {
-                if remove_idx < obj.children.len() {
-                    obj.children.remove(remove_idx);
-                }
-            }
+        if let Some(parent_slice) = crate::state::navigate_to_slice_pub(&mut r.ffon, &parent_id)
+            && let Some(FfonElement::Obj(obj)) = parent_slice.get_mut(parent_idx)
+            && remove_idx < obj.children.len()
+        {
+            obj.children.remove(remove_idx);
         }
 
         // Reset filebrowser to root
@@ -3821,10 +3812,10 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
                         .unwrap_or(&item.label);
                     content == name
                 });
-                if let Some(i) = found {
-                    if let Some(id) = r.total_list.get(i).map(|it| it.id.clone()) {
-                        r.current_id = id;
-                    }
+                if let Some(i) = found
+                    && let Some(id) = r.total_list.get(i).map(|it| it.id.clone())
+                {
+                    r.current_id = id;
                 }
             }
             r.coordinate = Coordinate::General;
@@ -3867,10 +3858,10 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
                         .unwrap_or(&item.label);
                     content == name
                 });
-                if let Some(i) = found {
-                    if let Some(id) = r.total_list.get(i).map(|it| it.id.clone()) {
-                        r.current_id = id;
-                    }
+                if let Some(i) = found
+                    && let Some(id) = r.total_list.get(i).map(|it| it.id.clone())
+                {
+                    r.current_id = id;
                 }
             }
             r.coordinate = Coordinate::General;
@@ -3911,10 +3902,10 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
             // No provider handled it: update FFON element key directly.
             let new_key = tags::format_input(&new_content);
             let idx = r.current_id.last().unwrap_or(0);
-            if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id) {
-                if let Some(e) = arr.get_mut(idx) {
-                    *e = FfonElement::new_str(new_key);
-                }
+            if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id)
+                && let Some(e) = arr.get_mut(idx)
+            {
+                *e = FfonElement::new_str(new_key);
             }
             handle_escape(r);
             return;
@@ -4028,17 +4019,17 @@ pub fn handle_enter_insert(r: &mut AppRenderer) {
     // children of edited containers (e.g. an `+i input example <input></input>` Obj
     // whose only child is an I_PLACEHOLDER).
     let idx = r.current_id.last().unwrap_or(0);
-    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id) {
-        if let Some(elem) = arr.get_mut(idx) {
-            if is_obj {
-                if let FfonElement::Obj(o) = elem {
-                    o.key = new_elem_text;
-                } else {
-                    *elem = FfonElement::new_obj(new_elem_text);
-                }
+    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id)
+        && let Some(elem) = arr.get_mut(idx)
+    {
+        if is_obj {
+            if let FfonElement::Obj(o) = elem {
+                o.key = new_elem_text;
             } else {
-                *elem = FfonElement::new_str(new_elem_text);
+                *elem = FfonElement::new_obj(new_elem_text);
             }
+        } else {
+            *elem = FfonElement::new_str(new_elem_text);
         }
     }
 
@@ -4372,12 +4363,10 @@ pub fn handle_escape(r: &mut AppRenderer) {
                 let parent_idx = parent_id.last().unwrap_or(0);
                 if let Some(parent_slice) =
                     crate::state::navigate_to_slice_pub(&mut r.ffon, &parent_id)
+                    && let Some(FfonElement::Obj(obj)) = parent_slice.get_mut(parent_idx)
+                    && remove_idx < obj.children.len()
                 {
-                    if let Some(FfonElement::Obj(obj)) = parent_slice.get_mut(parent_idx) {
-                        if remove_idx < obj.children.len() {
-                            obj.children.remove(remove_idx);
-                        }
-                    }
+                    obj.children.remove(remove_idx);
                 }
                 // Reset filebrowser to root
                 let fb_idx = r.current_id.get(0).unwrap_or(0);
@@ -4739,8 +4728,7 @@ pub fn handle_backspace(r: &mut AppRenderer) {
                 let before = &r.search_string[..pos];
                 let new_pos = before
                     .char_indices()
-                    .rev()
-                    .next()
+                    .next_back()
                     .map(|(i, _)| i)
                     .unwrap_or(0);
                 r.search_string.replace_range(new_pos..pos, "");
@@ -4805,8 +4793,7 @@ pub fn handle_backspace(r: &mut AppRenderer) {
                 let before = &r.input_buffer[..r.cursor_position];
                 let new_end = before
                     .char_indices()
-                    .rev()
-                    .next()
+                    .next_back()
                     .map(|(i, _)| i)
                     .unwrap_or(0);
                 let deleted = r.input_buffer[new_end..r.cursor_position].chars().next();
@@ -4893,14 +4880,13 @@ pub fn handle_file_delete(r: &mut AppRenderer) {
         // If the directory is now empty, insert the `i` placeholder so the user
         // can create files by typing (renders as "i", not "-i").
         let provider_idx = r.current_id.get(0).unwrap_or(0);
-        if let Some(root) = r.ffon.get_mut(provider_idx) {
-            if let Some(obj) = root.as_obj_mut() {
-                if obj.children.is_empty() {
-                    obj.children
-                        .push(FfonElement::Str(I_PLACEHOLDER.to_owned()));
-                    r.current_id.set_last(0);
-                }
-            }
+        if let Some(root) = r.ffon.get_mut(provider_idx)
+            && let Some(obj) = root.as_obj_mut()
+            && obj.children.is_empty()
+        {
+            obj.children
+                .push(FfonElement::Str(I_PLACEHOLDER.to_owned()));
+            r.current_id.set_last(0);
         }
         // Clamp current_id to valid range after deletion + refresh
         let new_len = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &r.current_id)
@@ -4940,10 +4926,10 @@ pub fn handle_delete_body_element(r: &mut AppRenderer) {
                 arr.len() == 1 && matches!(&arr[0], FfonElement::Str(s) if s == "<input></input>")
             })
             .unwrap_or(false);
-        if is_bare {
-            if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.previous_id) {
-                arr[0] = FfonElement::Str(I_PLACEHOLDER.to_owned());
-            }
+        if is_bare
+            && let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.previous_id)
+        {
+            arr[0] = FfonElement::Str(I_PLACEHOLDER.to_owned());
         }
     }
 
@@ -4951,10 +4937,10 @@ pub fn handle_delete_body_element(r: &mut AppRenderer) {
     // r.previous_id is the id of the deleted element (set by update_ids inside update_state).
     let body_children =
         sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &r.previous_id).map(|arr| arr.to_vec());
-    if let (Some(children), Some(provider_idx)) = (body_children, r.previous_id.get(0)) {
-        if let Some(p) = r.providers.get_mut(provider_idx) {
-            p.sync_ffon_body_children(&children);
-        }
+    if let (Some(children), Some(provider_idx)) = (body_children, r.previous_id.get(0))
+        && let Some(p) = r.providers.get_mut(provider_idx)
+    {
+        p.sync_ffon_body_children(&children);
     }
 
     // Clamp cursor to new length.
@@ -5013,10 +4999,10 @@ pub fn invoke_provider_delete(r: &mut AppRenderer) {
 
     let mut error = String::new();
     let provider_idx = r.current_id.get(0);
-    if let Some(idx) = provider_idx {
-        if let Some(provider) = r.providers.get_mut(idx) {
-            provider.handle_command("delete", &element_key, element_type, &mut error);
-        }
+    if let Some(idx) = provider_idx
+        && let Some(provider) = r.providers.get_mut(idx)
+    {
+        provider.handle_command("delete", &element_key, element_type, &mut error);
     }
     if !error.is_empty() {
         r.error_message = error;
@@ -5323,11 +5309,11 @@ pub fn handle_save_as_provider_config(r: &mut AppRenderer) {
         let mut parent_id = r.current_id.clone();
         parent_id.pop();
         let parent_idx = parent_id.last().unwrap_or(0);
-        if let Some(parent_slice) = crate::state::navigate_to_slice_pub(&mut r.ffon, &parent_id) {
-            if let Some(FfonElement::Obj(obj)) = parent_slice.get_mut(parent_idx) {
-                obj.children
-                    .insert(0, FfonElement::Str("<input></input>".to_owned()));
-            }
+        if let Some(parent_slice) = crate::state::navigate_to_slice_pub(&mut r.ffon, &parent_id)
+            && let Some(FfonElement::Obj(obj)) = parent_slice.get_mut(parent_idx)
+        {
+            obj.children
+                .insert(0, FfonElement::Str("<input></input>".to_owned()));
         }
     }
 
@@ -5724,10 +5710,10 @@ pub(crate) fn apply_insert_session_chunk(r: &mut AppRenderer) {
     }
 
     // Mutate FFON in place.
-    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &session_id) {
-        if let Some(elem) = arr.get_mut(idx) {
-            *elem = after.clone();
-        }
+    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &session_id)
+        && let Some(elem) = arr.get_mut(idx)
+    {
+        *elem = after.clone();
     }
 
     crate::state::record_entry(
@@ -5800,10 +5786,10 @@ pub(crate) fn cancel_insert_session(r: &mut AppRenderer) {
         FfonElement::Obj(o) => Some(o.key.clone()),
         FfonElement::Str(s) => Some(s.clone()),
     };
-    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &session.original_id) {
-        if let Some(elem) = arr.get_mut(idx) {
-            *elem = session.original_element;
-        }
+    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &session.original_id)
+        && let Some(elem) = arr.get_mut(idx)
+    {
+        *elem = session.original_element;
     }
     // A provider that keeps its own copy of the pending input — a live prompt,
     // where `fetch()` rebuilds the slot from that copy rather than from the FFON
@@ -5835,7 +5821,7 @@ pub(crate) fn cancel_insert_session(r: &mut AppRenderer) {
 // ---------------------------------------------------------------------------
 
 pub fn has_selection(r: &AppRenderer) -> bool {
-    r.selection_anchor.map_or(false, |a| a != r.cursor_position)
+    r.selection_anchor.is_some_and(|a| a != r.cursor_position)
 }
 
 pub fn clear_selection(r: &mut AppRenderer) {
@@ -5872,13 +5858,11 @@ fn find_line_start(buf: &str, pos: usize) -> usize {
 }
 
 fn find_line_end(buf: &str, pos: usize) -> usize {
-    let bytes = buf.as_bytes();
-    for i in pos..bytes.len() {
-        if bytes[i] == b'\n' {
-            return i;
-        }
-    }
-    buf.len()
+    buf.bytes()
+        .enumerate()
+        .skip(pos)
+        .find(|(_, b)| *b == b'\n')
+        .map_or(buf.len(), |(i, _)| i)
 }
 
 /// Count UTF-8 characters in `buf[from..to]`.
@@ -6010,7 +5994,7 @@ pub fn handle_shift_left(r: &mut AppRenderer) {
     }
     let pos = r.cursor_position.min(active_text_buf(r).len());
     let before = &active_text_buf(r)[..pos];
-    if let Some((i, ch)) = before.char_indices().rev().next() {
+    if let Some((i, ch)) = before.char_indices().next_back() {
         r.cursor_position = i;
         announce_char(r, ch);
     } else {
@@ -6739,7 +6723,7 @@ pub fn handle_ctrl_x(r: &mut AppRenderer) {
             return;
         }
         if let Some((start, end)) = selection_range(r) {
-            sdl_set_clipboard(&active_text_buf(r)[start..end].to_owned());
+            sdl_set_clipboard(&active_text_buf(r)[start..end]);
         }
         delete_selection(r);
         r.caret.reset(sdl_ticks());
@@ -6763,12 +6747,11 @@ pub fn handle_ctrl_x(r: &mut AppRenderer) {
     }
     if r.coordinate.is_general() {
         // Cut FFON element into internal clipboard
-        if let Some(item) = r.current_list_item().cloned() {
-            if let Some(slice) = get_ffon_at_id(&r.ffon, &item.id) {
-                if let Some(idx) = item.id.last() {
-                    r.clipboard = slice.get(idx).cloned();
-                }
-            }
+        if let Some(item) = r.current_list_item().cloned()
+            && let Some(slice) = get_ffon_at_id(&r.ffon, &item.id)
+            && let Some(idx) = item.id.last()
+        {
+            r.clipboard = slice.get(idx).cloned();
         }
         crate::state::update_state(r, Task::Cut, History::None);
         r.needs_redraw = true;
@@ -6829,7 +6812,7 @@ pub fn handle_ctrl_c(r: &mut AppRenderer) {
             return;
         }
         if let Some((start, end)) = selection_range(r) {
-            sdl_set_clipboard(&active_text_buf(r)[start..end].to_owned());
+            sdl_set_clipboard(&active_text_buf(r)[start..end]);
         }
         r.needs_redraw = true;
         return;
@@ -7622,7 +7605,7 @@ pub fn handle_text_cursor_left(r: &mut AppRenderer) {
         r.needs_redraw = true;
     } else if r.cursor_position > 0 {
         let before = &r.input_buffer[..r.cursor_position];
-        if let Some((i, ch)) = before.char_indices().rev().next() {
+        if let Some((i, ch)) = before.char_indices().next_back() {
             r.cursor_position = i;
             announce_char(r, ch);
         } else {
@@ -7702,7 +7685,7 @@ pub fn handle_search_left(r: &mut AppRenderer) {
             &r.search_string
         };
         let before = &buf[..r.cursor_position.min(buf_len)];
-        if let Some((i, ch)) = before.char_indices().rev().next() {
+        if let Some((i, ch)) = before.char_indices().next_back() {
             r.cursor_position = i;
             announce_char(r, ch);
         } else {
@@ -8065,10 +8048,10 @@ fn replace_ffon_element(
     for d in 0..depth {
         let idx = parent_id.get(d).unwrap_or(0);
         if d + 1 == depth {
-            if let Some(sicompass_sdk::ffon::FfonElement::Obj(obj)) = current.get_mut(idx) {
-                if replace_idx < obj.children.len() {
-                    obj.children[replace_idx] = elem;
-                }
+            if let Some(sicompass_sdk::ffon::FfonElement::Obj(obj)) = current.get_mut(idx)
+                && replace_idx < obj.children.len()
+            {
+                obj.children[replace_idx] = elem;
             }
             return;
         }
@@ -8116,10 +8099,10 @@ fn insert_ffon_element(
         let idx = parent_id.get(d).unwrap_or(0);
         if d + 1 == depth {
             // `current[idx]` is the parent object — insert into its children
-            if let Some(sicompass_sdk::ffon::FfonElement::Obj(obj)) = current.get_mut(idx) {
-                if insert_idx <= obj.children.len() {
-                    obj.children.insert(insert_idx, elem);
-                }
+            if let Some(sicompass_sdk::ffon::FfonElement::Obj(obj)) = current.get_mut(idx)
+                && insert_idx <= obj.children.len()
+            {
+                obj.children.insert(insert_idx, elem);
             }
             return;
         }
@@ -10898,7 +10881,7 @@ mod tests {
         // passes it.
         fn wide(_: &str) -> Vec<FfonElement> {
             (0..SCROLL_PREFETCH_MAX_ELEMENTS - 1)
-                .map(|i| FfonElement::new_obj(&format!("folder {i}")))
+                .map(|i| FfonElement::new_obj(format!("folder {i}")))
                 .collect()
         }
         let (mut r, fetched) = lazy_renderer(wide, true);
@@ -12913,7 +12896,7 @@ mod tests {
         for i in 0..counts.len() {
             root.as_obj_mut()
                 .unwrap()
-                .push(FfonElement::new_str(&format!("item {i}")));
+                .push(FfonElement::new_str(format!("item {i}")));
         }
         let mut r = AppRenderer::new();
         r.ffon = vec![root];
@@ -13405,9 +13388,9 @@ mod tests {
         // Element should now be an Obj
         // After commit, cursor stays at same position; check FFON directly via depth-1 path.
         let arr = &r.ffon;
-        if let Some(FfonElement::Obj(provider)) = arr.get(0) {
+        if let Some(FfonElement::Obj(provider)) = arr.first() {
             // The first child should be an Obj with key "mydir"
-            let child = provider.children.get(0);
+            let child = provider.children.first();
             assert!(
                 matches!(child, Some(FfonElement::Obj(o)) if o.key == "mydir"),
                 "expected Obj(mydir), got {:?}",
@@ -13425,8 +13408,8 @@ mod tests {
         r.input_buffer = "section:".to_owned();
         handle_enter_insert(&mut r);
         let arr = &r.ffon;
-        if let Some(FfonElement::Obj(provider)) = arr.get(0) {
-            let child = provider.children.get(0);
+        if let Some(FfonElement::Obj(provider)) = arr.first() {
+            let child = provider.children.first();
             assert!(
                 matches!(child, Some(FfonElement::Obj(o)) if o.key == "section"),
                 "expected Obj(section), got {:?}",
@@ -13886,7 +13869,7 @@ mod tests {
                 ],
                 _ => {
                     let mut out: Vec<FfonElement> =
-                        self.sent.iter().map(|s| FfonElement::new_str(s)).collect();
+                        self.sent.iter().map(FfonElement::new_str).collect();
                     out.push(FfonElement::new_str("send to claude: <input></input>"));
                     out
                 }

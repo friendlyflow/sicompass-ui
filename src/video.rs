@@ -116,7 +116,8 @@ pub const THUMBNAIL_PREFIX: &str = "video-frame:";
 pub fn dimensions(path: &str) -> Option<(u32, u32)> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    static KNOWN: OnceLock<Mutex<HashMap<String, Option<(u32, u32)>>>> = OnceLock::new();
+    type Sizes = HashMap<String, Option<(u32, u32)>>;
+    static KNOWN: OnceLock<Mutex<Sizes>> = OnceLock::new();
     let backend = backend()?;
     let known = KNOWN.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(found) = known.lock().ok()?.get(path) {

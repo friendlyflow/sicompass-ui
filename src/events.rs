@@ -11,6 +11,298 @@ use crate::list;
 use sdl3::keyboard::{Keycode, Mod};
 use tracing;
 
+/// Dispatch a key event to the appropriate handler based on the current mode.
+///
+/// Returns `true` if the application should quit (Escape/Q in General),
+/// `false` otherwise.  The caller is responsible for acting on the quit signal.
+///
+/// Delegates to [`crate::shortcuts::dispatch_key`] which iterates the central
+/// SHORTCUTS table — one source of truth for both dispatch and hint display.
+///
+/// After dispatch, refresh the active tab's snapshot from the live navigation
+/// state so the tab band and persisted config follow root-level program changes
+/// and within-program navigation — not just explicit tab operations. Persistence
+/// is skipped when the handler itself changed `active_tab` / `tabs.len()` (tab
+/// switch/new/close handlers already call `persist_tabs` via `after_tab_change`).
+pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) -> bool {
+    tracing::debug!(
+        ?keycode,
+        ?keymod,
+        mode = r.coordinate.as_str(),
+        // `as_str` cannot separate Command from SessionCommand (same name, by
+        // design), so log the variant too.
+        coord = ?r.coordinate,
+        "dispatch_key"
+    );
+
+    let prior_active = r.active_tab;
+    let prior_len = r.tabs.len();
+
+    let result = crate::shortcuts::dispatch_key(r, keycode, keymod);
+
+    // Mirror the live navigation back into the active tab slot. Compare only
+    // the persisted nav fields — the slot's parked provider vectors are empty
+    // for the active tab and must stay untouched here.
+    let new_id = r.current_id.clone();
+    let new_path = crate::app_state::active_provider_path(r);
+    let snap_changed = r
+        .tabs
+        .get(r.active_tab)
+        .is_some_and(|s| s.current_id != new_id || s.provider_path != new_path);
+    if let Some(slot) = r.tabs.get_mut(r.active_tab) {
+        slot.current_id = new_id;
+        slot.provider_path = new_path;
+    }
+    let tab_structure_changed = r.active_tab != prior_active || r.tabs.len() != prior_len;
+    if snap_changed && !tab_structure_changed {
+        crate::handlers::persist_tabs(r);
+    }
+
+    result
+}
+
+/// Tick every provider once — draining their async/background work (terminal
+/// shell output, IMAP IDLE, OAuth) — and collect any dashboard requests.
+///
+/// Returns `(active_tick_update, dashboard_requests)`.
+///
+/// `active_tick_update` is `true` only when the **active** provider (the one
+/// at `current_id[0]`) reported a change. A background provider must NOT set
+/// it: an enabled-but-unfocused terminal polls its shell and ticks `true`
+/// every frame, and using that to refresh the *active* provider's view (via
+/// `refresh_current_directory` + `create_list_current_layer`) corrupts
+/// navigation in whatever the user is actually looking at — e.g. the settings
+/// list while toggling program checkboxes. Every provider is still ticked
+/// (the `p.tick()` side effects always run); only the refresh signal is
+/// scoped to the active provider.
+pub fn run_provider_ticks(
+    r: &mut AppRenderer,
+) -> (bool, Vec<(usize, sicompass_sdk::DashboardRequest)>) {
+    use sicompass_sdk::Provider;
+    let active_root = r.current_id.get(0);
+    // Put back any provider whose async undo/redo finished since last frame,
+    // before ticking, so it is ticked as itself rather than as the placeholder.
+    let mut active_tick_update = crate::state::drain_pending_provider_ops(r);
+    let mut dashboard_requests: Vec<(usize, sicompass_sdk::DashboardRequest)> = Vec::new();
+    for (i, p) in r.providers.iter_mut().enumerate() {
+        if p.tick() && Some(i) == active_root {
+            active_tick_update = true;
+        }
+        if let Some(req) = p.take_dashboard_request() {
+            dashboard_requests.push((i, req));
+        }
+    }
+    // Pages a browser plugin rendered for links, answered through its tick.
+    // Already rebuilt in place, so not reported as a tick update: a refresh
+    // of the provider's level would throw the page away again.
+    handlers::apply_rendered_pages(r);
+    (active_tick_update, dashboard_requests)
+}
+
+/// Clear the status line, then let the **active** provider re-assert its error.
+///
+/// Every provider is drained, so an error raised while a tab was in the
+/// background does not surface frames later when the user finally navigates
+/// there. Only the active provider may write the line: it is where the app's
+/// own messages appear, so a background provider putting text there — a
+/// sandboxed plugin included — would be able to spoof one.
+pub fn drain_provider_errors(r: &mut AppRenderer) {
+    use sicompass_sdk::Provider;
+    let active_root = r.current_id.get(0);
+    r.error_message.clear();
+    for (i, p) in r.providers.iter_mut().enumerate() {
+        if let Some(err) = p.take_error()
+            && Some(i) == active_root
+        {
+            r.error_message = err;
+        }
+    }
+}
+
+/// Speak whatever the **active** provider asked to have announced.
+///
+/// The same active-provider-only rule `drain_provider_errors` follows, for the
+/// same reason: a background provider — a sandboxed WASM plugin included — must
+/// never be able to talk over the view the user is reading. Background providers
+/// are still drained, so a line queued while a tab was in the background does not
+/// surface frames later when the user finally navigates there.
+///
+/// Called every frame, deliberately **not** behind `active_tick_update` the way
+/// `drain_provider_errors` is. An arrow key inside an interactive dashboard moves
+/// the provider's own cursor without producing a tick, and that cursor move is
+/// exactly what this exists to announce.
+pub fn drain_provider_announcements(r: &mut AppRenderer) {
+    use sicompass_sdk::Provider;
+    let active_root = r.current_id.get(0);
+    // Collected rather than spoken inside the loop: `announce_provider_line` is a
+    // method on the whole renderer, so calling it while `r.providers` is borrowed
+    // would be a second mutable borrow. (`drain_provider_errors` gets away with a
+    // bare field assignment because disjoint fields borrow independently.)
+    let mut spoken: Option<String> = None;
+    for (i, p) in r.providers.iter_mut().enumerate() {
+        if let Some(line) = p.take_announcement()
+            && Some(i) == active_root
+        {
+            spoken = Some(line);
+        }
+    }
+    if let Some(line) = spoken {
+        r.announce_provider_line(line);
+    }
+}
+
+/// Move any timeline entries the active provider emitted from its dashboard onto
+/// the tab's timeline.
+///
+/// A dashboard edit never passes through a handler, so nothing else drains it and
+/// Ctrl+Z would have nothing to undo. Only while a dashboard is open, and only
+/// for the active provider — the same gate every other per-frame drain uses.
+///
+/// A no-op for a provider that emits none, which is every dashboard provider that
+/// does not opt into `dashboard_uses_app_undo`.
+pub fn drain_dashboard_timeline_entries(r: &mut AppRenderer) {
+    if r.coordinate != Coordinate::Dashboard {
+        return;
+    }
+    let Some(idx) = r.current_id.get(0) else {
+        return;
+    };
+    crate::provider::drain_provider_entries(r, idx, None);
+}
+
+/// Apply the dashboard requests collected by [`run_provider_ticks`], honouring
+/// only the **active** provider's.
+///
+/// A background provider — including a sandboxed WASM plugin the user is not
+/// looking at — must never be able to pull the screen into its own fullscreen
+/// view. The index carried alongside each request is the host's, assigned in
+/// `run_provider_ticks`; a provider cannot name a different one.
+///
+/// Lives here rather than inline in the main loop so the gate has exactly one
+/// implementation: the loop and the test suite call this same function.
+pub fn apply_dashboard_requests(
+    r: &mut AppRenderer,
+    requests: Vec<(usize, sicompass_sdk::DashboardRequest)>,
+) {
+    for (i, req) in requests {
+        if r.current_id.get(0) != Some(i) {
+            continue;
+        }
+        match req {
+            sicompass_sdk::DashboardRequest::Enter if r.coordinate != Coordinate::Dashboard => {
+                // Reset the baseline to the at-rest mode before entering. The
+                // user typed a command at the input slot (likely in Insert
+                // mode); without this, auto-leave restores Insert and `i`/`a`
+                // would type literally instead of re-entering Insert. A
+                // dashboard is always launched from a session, so the baseline
+                // is that session's own label, not General. Bypass the
+                // manual-entry guard — the provider asked for this directly via
+                // take_dashboard_request.
+                r.coordinate = crate::handlers::rest_coordinate(r);
+                r.input_buffer.clear();
+                r.cursor_position = 0;
+                handlers::enter_dashboard_for_active(r);
+            }
+            sicompass_sdk::DashboardRequest::Leave => {
+                handlers::handle_dashboard_leave(r);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Drain every provider's pending cursor request and apply the **active**
+/// provider's, if any. Returns `true` when the cursor moved.
+///
+/// Must run *after* the tick-driven `refresh_current_directory`, so the move
+/// lands in the tree the background work just delivered rather than the stale
+/// one (the web browser asks to enter page content the frame its load
+/// completes).
+///
+/// Every provider is polled so a background provider's request is consumed
+/// rather than fired later when the user finally navigates there, but only the
+/// active one can move the cursor. Requests are dropped while the user is in
+/// insert mode — yanking the caret out of a half-typed line would lose it.
+pub fn apply_navigation_requests(r: &mut AppRenderer) -> bool {
+    use sicompass_sdk::{NavigationRequest, Provider};
+    let active_root = r.current_id.get(0);
+    let mut active_request = None;
+    for (i, p) in r.providers.iter_mut().enumerate() {
+        if let Some(req) = p.take_navigation_request()
+            && Some(i) == active_root
+        {
+            active_request = Some(req);
+        }
+    }
+    let Some(request) = active_request else {
+        return false;
+    };
+    // Yanking the caret out of a half-typed line would lose it.
+    if crate::view::is_insert_mode(r.coordinate) {
+        return false;
+    }
+    match request {
+        NavigationRequest::EnterChildren => {
+            // Only from the provider's own top level. Depth 1 is the root list of
+            // providers, where the move would enter a provider the user never
+            // opened; deeper than 2 the user is already inside the content the
+            // request is about, and descending again would bury them a level too
+            // far.
+            if r.current_id.depth() != 2 {
+                return false;
+            }
+            let before = r.current_id.clone();
+            // Same path as the Right key, so the descent records a Navigate entry
+            // and undo steps back out to the row the user came from.
+            crate::handlers::handle_right(r);
+            r.current_id != before
+        }
+        NavigationRequest::SelectPath(path) => apply_select_path(r, &path),
+    }
+}
+
+/// Walk the cursor to the element `path` names, one level at a time.
+///
+/// Every step goes through the same `handle_left` / `handle_right` the arrow keys
+/// use, so the provider's own path is pushed and popped in step with the cursor
+/// and each descent records its `Navigate` entry — a hand-built `IdArray` would
+/// leave both behind.
+fn apply_select_path(r: &mut AppRenderer, path: &[usize]) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let before = r.current_id.clone();
+    // Back up to the provider's own top level, wherever the cursor was.
+    while r.current_id.depth() > 2 {
+        crate::handlers::handle_left(r);
+    }
+    if r.current_id.depth() != 2 {
+        return false;
+    }
+    for (level, &want) in path.iter().enumerate() {
+        // Clamped, so a request built against a tree that has since shrunk lands
+        // on something real instead of off the end.
+        let len = r.active_list_len();
+        if len == 0 {
+            break;
+        }
+        let idx = want.min(len - 1);
+        r.current_id.set_last(idx);
+        r.list_index = idx;
+        if level + 1 < path.len() {
+            crate::handlers::handle_right(r);
+            // The row had no next level, so this is as far as the path goes.
+            if r.current_id.depth() != level + 3 {
+                break;
+            }
+        }
+    }
+    crate::list::create_list_current_layer(r);
+    r.list_index = r.current_id.last().unwrap_or(0);
+    r.speak_current_element();
+    r.current_id != before
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,295 +613,4 @@ mod tests {
         assert!(r.input_buffer.contains('\n'));
         assert!(r.needs_redraw);
     }
-}
-
-/// Dispatch a key event to the appropriate handler based on the current mode.
-///
-/// Returns `true` if the application should quit (Escape/Q in General),
-/// `false` otherwise.  The caller is responsible for acting on the quit signal.
-///
-/// Delegates to [`crate::shortcuts::dispatch_key`] which iterates the central
-/// SHORTCUTS table — one source of truth for both dispatch and hint display.
-///
-/// After dispatch, refresh the active tab's snapshot from the live navigation
-/// state so the tab band and persisted config follow root-level program changes
-/// and within-program navigation — not just explicit tab operations. Persistence
-/// is skipped when the handler itself changed `active_tab` / `tabs.len()` (tab
-/// switch/new/close handlers already call `persist_tabs` via `after_tab_change`).
-pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) -> bool {
-    tracing::debug!(
-        ?keycode,
-        ?keymod,
-        mode = r.coordinate.as_str(),
-        // `as_str` cannot separate Command from SessionCommand (same name, by
-        // design), so log the variant too.
-        coord = ?r.coordinate,
-        "dispatch_key"
-    );
-
-    let prior_active = r.active_tab;
-    let prior_len = r.tabs.len();
-
-    let result = crate::shortcuts::dispatch_key(r, keycode, keymod);
-
-    // Mirror the live navigation back into the active tab slot. Compare only
-    // the persisted nav fields — the slot's parked provider vectors are empty
-    // for the active tab and must stay untouched here.
-    let new_id = r.current_id.clone();
-    let new_path = crate::app_state::active_provider_path(r);
-    let snap_changed = r.tabs.get(r.active_tab).map_or(false, |s| {
-        s.current_id != new_id || s.provider_path != new_path
-    });
-    if let Some(slot) = r.tabs.get_mut(r.active_tab) {
-        slot.current_id = new_id;
-        slot.provider_path = new_path;
-    }
-    let tab_structure_changed = r.active_tab != prior_active || r.tabs.len() != prior_len;
-    if snap_changed && !tab_structure_changed {
-        crate::handlers::persist_tabs(r);
-    }
-
-    result
-}
-
-/// Tick every provider once — draining their async/background work (terminal
-/// shell output, IMAP IDLE, OAuth) — and collect any dashboard requests.
-///
-/// Returns `(active_tick_update, dashboard_requests)`.
-///
-/// `active_tick_update` is `true` only when the **active** provider (the one
-/// at `current_id[0]`) reported a change. A background provider must NOT set
-/// it: an enabled-but-unfocused terminal polls its shell and ticks `true`
-/// every frame, and using that to refresh the *active* provider's view (via
-/// `refresh_current_directory` + `create_list_current_layer`) corrupts
-/// navigation in whatever the user is actually looking at — e.g. the settings
-/// list while toggling program checkboxes. Every provider is still ticked
-/// (the `p.tick()` side effects always run); only the refresh signal is
-/// scoped to the active provider.
-pub fn run_provider_ticks(
-    r: &mut AppRenderer,
-) -> (bool, Vec<(usize, sicompass_sdk::DashboardRequest)>) {
-    use sicompass_sdk::Provider;
-    let active_root = r.current_id.get(0);
-    // Put back any provider whose async undo/redo finished since last frame,
-    // before ticking, so it is ticked as itself rather than as the placeholder.
-    let mut active_tick_update = crate::state::drain_pending_provider_ops(r);
-    let mut dashboard_requests: Vec<(usize, sicompass_sdk::DashboardRequest)> = Vec::new();
-    for (i, p) in r.providers.iter_mut().enumerate() {
-        if p.tick() && Some(i) == active_root {
-            active_tick_update = true;
-        }
-        if let Some(req) = p.take_dashboard_request() {
-            dashboard_requests.push((i, req));
-        }
-    }
-    // Pages a browser plugin rendered for links, answered through its tick.
-    // Already rebuilt in place, so not reported as a tick update: a refresh
-    // of the provider's level would throw the page away again.
-    handlers::apply_rendered_pages(r);
-    (active_tick_update, dashboard_requests)
-}
-
-/// Clear the status line, then let the **active** provider re-assert its error.
-///
-/// Every provider is drained, so an error raised while a tab was in the
-/// background does not surface frames later when the user finally navigates
-/// there. Only the active provider may write the line: it is where the app's
-/// own messages appear, so a background provider putting text there — a
-/// sandboxed plugin included — would be able to spoof one.
-pub fn drain_provider_errors(r: &mut AppRenderer) {
-    use sicompass_sdk::Provider;
-    let active_root = r.current_id.get(0);
-    r.error_message.clear();
-    for (i, p) in r.providers.iter_mut().enumerate() {
-        if let Some(err) = p.take_error()
-            && Some(i) == active_root
-        {
-            r.error_message = err;
-        }
-    }
-}
-
-/// Speak whatever the **active** provider asked to have announced.
-///
-/// The same active-provider-only rule `drain_provider_errors` follows, for the
-/// same reason: a background provider — a sandboxed WASM plugin included — must
-/// never be able to talk over the view the user is reading. Background providers
-/// are still drained, so a line queued while a tab was in the background does not
-/// surface frames later when the user finally navigates there.
-///
-/// Called every frame, deliberately **not** behind `active_tick_update` the way
-/// `drain_provider_errors` is. An arrow key inside an interactive dashboard moves
-/// the provider's own cursor without producing a tick, and that cursor move is
-/// exactly what this exists to announce.
-pub fn drain_provider_announcements(r: &mut AppRenderer) {
-    use sicompass_sdk::Provider;
-    let active_root = r.current_id.get(0);
-    // Collected rather than spoken inside the loop: `announce_provider_line` is a
-    // method on the whole renderer, so calling it while `r.providers` is borrowed
-    // would be a second mutable borrow. (`drain_provider_errors` gets away with a
-    // bare field assignment because disjoint fields borrow independently.)
-    let mut spoken: Option<String> = None;
-    for (i, p) in r.providers.iter_mut().enumerate() {
-        if let Some(line) = p.take_announcement()
-            && Some(i) == active_root
-        {
-            spoken = Some(line);
-        }
-    }
-    if let Some(line) = spoken {
-        r.announce_provider_line(line);
-    }
-}
-
-/// Move any timeline entries the active provider emitted from its dashboard onto
-/// the tab's timeline.
-///
-/// A dashboard edit never passes through a handler, so nothing else drains it and
-/// Ctrl+Z would have nothing to undo. Only while a dashboard is open, and only
-/// for the active provider — the same gate every other per-frame drain uses.
-///
-/// A no-op for a provider that emits none, which is every dashboard provider that
-/// does not opt into `dashboard_uses_app_undo`.
-pub fn drain_dashboard_timeline_entries(r: &mut AppRenderer) {
-    if r.coordinate != Coordinate::Dashboard {
-        return;
-    }
-    let Some(idx) = r.current_id.get(0) else {
-        return;
-    };
-    crate::provider::drain_provider_entries(r, idx, None);
-}
-
-/// Apply the dashboard requests collected by [`run_provider_ticks`], honouring
-/// only the **active** provider's.
-///
-/// A background provider — including a sandboxed WASM plugin the user is not
-/// looking at — must never be able to pull the screen into its own fullscreen
-/// view. The index carried alongside each request is the host's, assigned in
-/// `run_provider_ticks`; a provider cannot name a different one.
-///
-/// Lives here rather than inline in the main loop so the gate has exactly one
-/// implementation: the loop and the test suite call this same function.
-pub fn apply_dashboard_requests(
-    r: &mut AppRenderer,
-    requests: Vec<(usize, sicompass_sdk::DashboardRequest)>,
-) {
-    for (i, req) in requests {
-        if r.current_id.get(0) != Some(i) {
-            continue;
-        }
-        match req {
-            sicompass_sdk::DashboardRequest::Enter if r.coordinate != Coordinate::Dashboard => {
-                // Reset the baseline to the at-rest mode before entering. The
-                // user typed a command at the input slot (likely in Insert
-                // mode); without this, auto-leave restores Insert and `i`/`a`
-                // would type literally instead of re-entering Insert. A
-                // dashboard is always launched from a session, so the baseline
-                // is that session's own label, not General. Bypass the
-                // manual-entry guard — the provider asked for this directly via
-                // take_dashboard_request.
-                r.coordinate = crate::handlers::rest_coordinate(r);
-                r.input_buffer.clear();
-                r.cursor_position = 0;
-                handlers::enter_dashboard_for_active(r);
-            }
-            sicompass_sdk::DashboardRequest::Leave => {
-                handlers::handle_dashboard_leave(r);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Drain every provider's pending cursor request and apply the **active**
-/// provider's, if any. Returns `true` when the cursor moved.
-///
-/// Must run *after* the tick-driven `refresh_current_directory`, so the move
-/// lands in the tree the background work just delivered rather than the stale
-/// one (the web browser asks to enter page content the frame its load
-/// completes).
-///
-/// Every provider is polled so a background provider's request is consumed
-/// rather than fired later when the user finally navigates there, but only the
-/// active one can move the cursor. Requests are dropped while the user is in
-/// insert mode — yanking the caret out of a half-typed line would lose it.
-pub fn apply_navigation_requests(r: &mut AppRenderer) -> bool {
-    use sicompass_sdk::{NavigationRequest, Provider};
-    let active_root = r.current_id.get(0);
-    let mut active_request = None;
-    for (i, p) in r.providers.iter_mut().enumerate() {
-        if let Some(req) = p.take_navigation_request() {
-            if Some(i) == active_root {
-                active_request = Some(req);
-            }
-        }
-    }
-    let Some(request) = active_request else {
-        return false;
-    };
-    // Yanking the caret out of a half-typed line would lose it.
-    if crate::view::is_insert_mode(r.coordinate) {
-        return false;
-    }
-    match request {
-        NavigationRequest::EnterChildren => {
-            // Only from the provider's own top level. Depth 1 is the root list of
-            // providers, where the move would enter a provider the user never
-            // opened; deeper than 2 the user is already inside the content the
-            // request is about, and descending again would bury them a level too
-            // far.
-            if r.current_id.depth() != 2 {
-                return false;
-            }
-            let before = r.current_id.clone();
-            // Same path as the Right key, so the descent records a Navigate entry
-            // and undo steps back out to the row the user came from.
-            crate::handlers::handle_right(r);
-            r.current_id != before
-        }
-        NavigationRequest::SelectPath(path) => apply_select_path(r, &path),
-    }
-}
-
-/// Walk the cursor to the element `path` names, one level at a time.
-///
-/// Every step goes through the same `handle_left` / `handle_right` the arrow keys
-/// use, so the provider's own path is pushed and popped in step with the cursor
-/// and each descent records its `Navigate` entry — a hand-built `IdArray` would
-/// leave both behind.
-fn apply_select_path(r: &mut AppRenderer, path: &[usize]) -> bool {
-    if path.is_empty() {
-        return false;
-    }
-    let before = r.current_id.clone();
-    // Back up to the provider's own top level, wherever the cursor was.
-    while r.current_id.depth() > 2 {
-        crate::handlers::handle_left(r);
-    }
-    if r.current_id.depth() != 2 {
-        return false;
-    }
-    for (level, &want) in path.iter().enumerate() {
-        // Clamped, so a request built against a tree that has since shrunk lands
-        // on something real instead of off the end.
-        let len = r.active_list_len();
-        if len == 0 {
-            break;
-        }
-        let idx = want.min(len - 1);
-        r.current_id.set_last(idx);
-        r.list_index = idx;
-        if level + 1 < path.len() {
-            crate::handlers::handle_right(r);
-            // The row had no next level, so this is as far as the path goes.
-            if r.current_id.depth() != level + 3 {
-                break;
-            }
-        }
-    }
-    crate::list::create_list_current_layer(r);
-    r.list_index = r.current_id.last().unwrap_or(0);
-    r.speak_current_element();
-    r.current_id != before
 }

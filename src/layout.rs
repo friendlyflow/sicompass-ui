@@ -255,11 +255,13 @@ pub(crate) fn measure_row(
         let laid = crate::boxes::layout_row(
             markup,
             item.is_selected,
-            be.sheets,
-            be.env,
-            fr,
-            m.scale,
-            m.line_height,
+            crate::boxes::RowInputs {
+                sheets: be.sheets,
+                env: be.env,
+                fr,
+                scale: m.scale,
+                line_height: m.line_height,
+            },
             width,
             image_size,
         );

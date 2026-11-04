@@ -2561,11 +2561,11 @@ pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) 
         // when the program has bracketed-paste mode enabled. Plain Ctrl+V
         // keeps falling through to `dashboard_key` as the literal 0x16 byte.
         if ctrl && shift && k == Keycode::V {
-            if let Some(text) = handlers::sdl_get_clipboard() {
-                if let Some(p) = crate::provider::get_active_provider(r) {
-                    p.dashboard_paste(&text);
-                    r.needs_redraw = true;
-                }
+            if let Some(text) = handlers::sdl_get_clipboard()
+                && let Some(p) = crate::provider::get_active_provider(r)
+            {
+                p.dashboard_paste(&text);
+                r.needs_redraw = true;
             }
             return false;
         }
@@ -2693,10 +2693,10 @@ pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) 
                     return false;
                 }
             }
-            Coordinate::SimpleSearch | Coordinate::ExtendedSearch => {
-                if ctrl && matches!(k, Keycode::X | Keycode::V | Keycode::Z) {
-                    return false;
-                }
+            Coordinate::SimpleSearch | Coordinate::ExtendedSearch
+                if ctrl && matches!(k, Keycode::X | Keycode::V | Keycode::Z) =>
+            {
+                return false;
             }
             _ => {}
         }

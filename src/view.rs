@@ -259,18 +259,18 @@ pub fn main_loop(app: &mut AppState) {
                     if window_id != app.window.id() {
                         continue;
                     }
-                    if mouse_btn == MouseButton::Left {
-                        if let Some(idx) = crate::app_state::window_button_at(
+                    if mouse_btn == MouseButton::Left
+                        && let Some(idx) = crate::app_state::window_button_at(
                             &app.renderer.window_button_rects,
                             x,
                             y,
-                        ) {
-                            app.renderer.pending_window_action = Some(match idx {
-                                0 => WindowAction::Minimize,
-                                1 => WindowAction::MaximizeToggle,
-                                _ => WindowAction::Close,
-                            });
-                        }
+                        )
+                    {
+                        app.renderer.pending_window_action = Some(match idx {
+                            0 => WindowAction::Minimize,
+                            1 => WindowAction::MaximizeToggle,
+                            _ => WindowAction::Close,
+                        });
                     }
                 }
 
@@ -413,21 +413,20 @@ pub fn main_loop(app: &mut AppState) {
 
             crate::provider::refresh_current_directory(&mut app.renderer);
 
-            if was_on_input {
-                if let Some(arr) = sicompass_sdk::ffon::get_ffon_at_id(
+            if was_on_input
+                && let Some(arr) = sicompass_sdk::ffon::get_ffon_at_id(
                     &app.renderer.ffon,
                     &app.renderer.current_id,
-                ) {
-                    if let Some(idx) = arr.iter().rposition(|e| match e {
-                        sicompass_sdk::ffon::FfonElement::Str(s) => s.ends_with("<input></input>"),
-                        sicompass_sdk::ffon::FfonElement::Obj(o) => {
-                            on_live_input_provider && sicompass_sdk::tags::has_input(&o.key)
-                        }
-                    }) {
-                        app.renderer.current_id.set_last(idx);
-                        app.renderer.scroll_offset = -1;
+                )
+                && let Some(idx) = arr.iter().rposition(|e| match e {
+                    sicompass_sdk::ffon::FfonElement::Str(s) => s.ends_with("<input></input>"),
+                    sicompass_sdk::ffon::FfonElement::Obj(o) => {
+                        on_live_input_provider && sicompass_sdk::tags::has_input(&o.key)
                     }
-                }
+                })
+            {
+                app.renderer.current_id.set_last(idx);
+                app.renderer.scroll_offset = -1;
             }
             // Rebuild the rendered list from the updated ffon tree — same as
             // what handlers.rs does after notify_button_pressed.
@@ -464,10 +463,10 @@ pub fn main_loop(app: &mut AppState) {
 
             // Clear flag before rebuild so a signal that arrives *during*
             // rebuild (e.g. IDLE push arriving mid-frame) is preserved.
-            if let Some(i) = app.renderer.current_id.get(0) {
-                if let Some(p) = app.renderer.providers.get_mut(i) {
-                    p.clear_needs_refresh();
-                }
+            if let Some(i) = app.renderer.current_id.get(0)
+                && let Some(p) = app.renderer.providers.get_mut(i)
+            {
+                p.clear_needs_refresh();
             }
             crate::provider::refresh_current_directory(&mut app.renderer);
             crate::list::create_list_current_layer(&mut app.renderer);
@@ -927,7 +926,7 @@ fn update_view(app: &mut AppState) {
                 0.0,
             );
         }
-        let header_baseline = (ascender * scale + crate::text::TEXT_PADDING) as f32 + top_offset;
+        let header_baseline = (ascender * scale + crate::text::TEXT_PADDING) + top_offset;
         let chrome_w = (win_w - text_x - 10.0).min(max_content_w).max(1.0);
         let fr = app.font_renderer.as_mut().unwrap();
         let header_shown = fr.truncate_to_width(&header, scale, chrome_w).into_owned();
@@ -1135,8 +1134,7 @@ fn update_view(app: &mut AppState) {
                     0.0,
                 );
             }
-            let header_baseline =
-                (ascender * scale + crate::text::TEXT_PADDING) as f32 + top_offset;
+            let header_baseline = (ascender * scale + crate::text::TEXT_PADDING) + top_offset;
             app.font_renderer
                 .as_mut()
                 .unwrap()
@@ -1236,7 +1234,7 @@ fn update_view(app: &mut AppState) {
                     && app.renderer.caret.visible
                     && let Some((col, row)) = frame.cursor
                 {
-                    let pad = crate::text::TEXT_PADDING as f32;
+                    let pad = crate::text::TEXT_PADDING;
                     rr.prepare_rectangle(
                         (col as f32 * cell_w).round(),
                         row_y(row) + pad,
@@ -1253,7 +1251,7 @@ fn update_view(app: &mut AppState) {
             let fr = app.font_renderer.as_mut().unwrap();
             let mut utf8 = [0u8; 4];
             for row in 0..rows {
-                let baseline = row_y(row) + (ascender * scale + crate::text::TEXT_PADDING) as f32;
+                let baseline = row_y(row) + (ascender * scale + crate::text::TEXT_PADDING);
                 for col in 0..cols {
                     let cell = frame.cell(col, row);
                     if cell.ch == ' ' {
@@ -1297,8 +1295,7 @@ fn update_view(app: &mut AppState) {
                     0.0,
                 );
             }
-            let header_baseline =
-                (ascender * scale + crate::text::TEXT_PADDING) as f32 + top_offset;
+            let header_baseline = (ascender * scale + crate::text::TEXT_PADDING) + top_offset;
             app.font_renderer
                 .as_mut()
                 .unwrap()
@@ -1317,36 +1314,36 @@ fn update_view(app: &mut AppState) {
                     let area = [0.0, top, win_w, (win_h - top - line_height as f32).max(1.0)];
                     unsafe { ir.prepare_video(area, crate::style::ObjectFit::Contain, top, win_h) };
                 }
-            } else if !dashboard_path.is_empty() {
-                if let Some(ir) = app.image_renderer.as_mut() {
-                    let avail_w = if app.renderer.element_image_view {
-                        win_w - 20.0
-                    } else {
-                        win_w - 100.0
-                    };
-                    let avail_h = win_h - line_height as f32 * 2.0 - top_offset;
-                    if let Some((img_w, img_h)) = unsafe { ir.texture_size(&dashboard_path) } {
-                        let img_w = img_w as f32;
-                        let img_h = img_h as f32;
-                        let mut display_scale = 1.0_f32;
-                        if img_w > avail_w {
-                            display_scale = avail_w / img_w;
-                        }
-                        if img_h * display_scale > avail_h {
-                            display_scale = avail_h / img_h;
-                        }
-                        // A row's image was opened to see it big, so a small one
-                        // grows to the window too.
-                        if app.renderer.element_image_view {
-                            display_scale = (avail_w / img_w).min(avail_h / img_h);
-                        }
-                        let display_w = img_w * display_scale;
-                        let display_h = img_h * display_scale;
-                        let img_x = (win_w - display_w) / 2.0;
-                        let img_y = line_height as f32 + top_offset + (avail_h - display_h) / 2.0;
-                        unsafe {
-                            ir.prepare_image(&dashboard_path, img_x, img_y, display_w, display_h);
-                        }
+            } else if !dashboard_path.is_empty()
+                && let Some(ir) = app.image_renderer.as_mut()
+            {
+                let avail_w = if app.renderer.element_image_view {
+                    win_w - 20.0
+                } else {
+                    win_w - 100.0
+                };
+                let avail_h = win_h - line_height as f32 * 2.0 - top_offset;
+                if let Some((img_w, img_h)) = unsafe { ir.texture_size(&dashboard_path) } {
+                    let img_w = img_w as f32;
+                    let img_h = img_h as f32;
+                    let mut display_scale = 1.0_f32;
+                    if img_w > avail_w {
+                        display_scale = avail_w / img_w;
+                    }
+                    if img_h * display_scale > avail_h {
+                        display_scale = avail_h / img_h;
+                    }
+                    // A row's image was opened to see it big, so a small one
+                    // grows to the window too.
+                    if app.renderer.element_image_view {
+                        display_scale = (avail_w / img_w).min(avail_h / img_h);
+                    }
+                    let display_w = img_w * display_scale;
+                    let display_h = img_h * display_scale;
+                    let img_x = (win_w - display_w) / 2.0;
+                    let img_y = line_height as f32 + top_offset + (avail_h - display_h) / 2.0;
+                    unsafe {
+                        ir.prepare_image(&dashboard_path, img_x, img_y, display_w, display_h);
                     }
                 }
             }
@@ -1508,10 +1505,10 @@ fn update_view(app: &mut AppState) {
                     if let sicompass_sdk::ffon::FfonElement::Obj(obj) = elem {
                         if sicompass_sdk::tags::has_radio(&obj.key) {
                             let checked = obj.children.iter().find_map(|child| {
-                                if let sicompass_sdk::ffon::FfonElement::Str(s) = child {
-                                    if sicompass_sdk::tags::has_checked(s) {
-                                        return sicompass_sdk::tags::extract_checked(s);
-                                    }
+                                if let sicompass_sdk::ffon::FfonElement::Str(s) = child
+                                    && sicompass_sdk::tags::has_checked(s)
+                                {
+                                    return sicompass_sdk::tags::extract_checked(s);
                                 }
                                 None
                             });
@@ -1584,7 +1581,7 @@ fn update_view(app: &mut AppState) {
             list_has_indicators,
             is_flat_list,
             is_extended_search,
-            edited_row: renders_insert_buffer.then(|| crate::layout::EditedRow {
+            edited_row: renders_insert_buffer.then_some(crate::layout::EditedRow {
                 index: list_index,
                 prefix: insert_prefix.as_str(),
                 buffer: insert_buf.as_str(),
@@ -1671,10 +1668,10 @@ fn update_view(app: &mut AppState) {
         Some(f) => f,
         None => return,
     };
-    let mut rr_opt = app.rect_renderer.as_mut();
+    let rr_opt = app.rect_renderer.as_mut();
 
     fr.begin_text_rendering();
-    if let Some(rr) = rr_opt.as_deref_mut() {
+    if let Some(rr) = rr_opt {
         rr.begin_rect_rendering();
     }
     if let Some(ir) = app.image_renderer.as_mut() {
@@ -1703,7 +1700,7 @@ fn update_view(app: &mut AppState) {
     // elide instead. `chrome_w` is the content column, or the window edge when
     // that is nearer.
     let chrome_w = (win_w - text_x - 10.0).min(max_content_w).max(1.0);
-    let header_baseline = (ascender * scale + crate::text::TEXT_PADDING) as f32 + top_offset;
+    let header_baseline = (ascender * scale + crate::text::TEXT_PADDING) + top_offset;
     let header_shown = fr.truncate_to_width(&header, scale, chrome_w).into_owned();
     fr.prepare_text_for_rendering(&header_shown, text_x, header_baseline, scale, p.text);
 
@@ -1741,12 +1738,13 @@ fn update_view(app: &mut AppState) {
                 render_radio_indicator(
                     rr,
                     &RadioType::Checked,
-                    summary_x,
-                    summary_y,
-                    scale,
-                    ascender,
-                    line_height as f32,
-                    em_width,
+                    (summary_x, summary_y),
+                    LineMetrics {
+                        scale,
+                        ascender,
+                        line_h: line_height as f32,
+                        em_width,
+                    },
                     &p,
                 )
             } else {
@@ -1990,14 +1988,17 @@ fn update_view(app: &mut AppState) {
                 );
                 draw_box_row(
                     laid,
-                    (content_start_x, top),
-                    (chrome_bottom, win_h),
                     fr,
                     app.rect_renderer.as_mut(),
                     app.image_renderer.as_mut(),
                     &p,
-                    background,
-                    (ascender, selected_target),
+                    BoxRowPlace {
+                        origin: (content_start_x, top),
+                        clip: (chrome_bottom, win_h),
+                        row_background: background,
+                        ascender,
+                        selected_target,
+                    },
                 );
             }
             continue;
@@ -2013,29 +2014,31 @@ fn update_view(app: &mut AppState) {
                 render_radio_indicator(
                     rr,
                     &radio,
-                    item_prefix_x,
-                    item_y,
-                    scale,
-                    ascender,
-                    line_height as f32,
-                    em_width,
+                    (item_prefix_x, item_y),
+                    LineMetrics {
+                        scale,
+                        ascender,
+                        line_h: line_height as f32,
+                        em_width,
+                    },
                     &p,
                 );
             }
-        } else if checkbox != CheckboxType::None {
-            if let Some(rr) = app.rect_renderer.as_mut() {
-                render_checkbox_indicator(
-                    rr,
-                    &checkbox,
-                    item_prefix_x,
-                    item_y,
+        } else if checkbox != CheckboxType::None
+            && let Some(rr) = app.rect_renderer.as_mut()
+        {
+            render_checkbox_indicator(
+                rr,
+                &checkbox,
+                (item_prefix_x, item_y),
+                LineMetrics {
                     scale,
                     ascender,
-                    line_height as f32,
+                    line_h: line_height as f32,
                     em_width,
-                    &p,
-                );
-            }
+                },
+                &p,
+            );
         }
         let text_prefix_x = if list_has_indicators {
             item_prefix_x + indicator_width(line_height as f32, em_width)
@@ -2105,13 +2108,14 @@ fn update_view(app: &mut AppState) {
                         fr,
                         rr,
                         &label_for_display(prefix_text),
-                        label_x,
-                        label_y,
-                        scale,
-                        ascender,
-                        line_height as f32,
-                        p.text,
-                        p.scroll_search,
+                        (label_x, label_y),
+                        TextLook {
+                            scale,
+                            ascender,
+                            line_height: line_height as f32,
+                            text_color: p.text,
+                            highlight_color: p.scroll_search,
+                        },
                         &positions_for_display(prefix_text, &prefix_positions),
                         wrap,
                     );
@@ -2132,41 +2136,41 @@ fn update_view(app: &mut AppState) {
                     }
                 }
                 // Trailing text below the image.
-                if !suffix_text.is_empty() {
-                    if let (Some(fr), Some(layout)) = (app.font_renderer.as_mut(), layout) {
-                        let suffix_y = img_top_y + layout.image_lines as f32 * line_height as f32;
-                        let img_w = layout.img_w.max(1.0);
-                        if suffix_positions.is_empty() {
-                            fr.prepare_text_wrapped(
-                                suffix_text,
-                                text_prefix_x,
-                                suffix_y,
-                                scale,
-                                img_w,
-                                line_height as f32,
-                                p.text,
-                            );
-                        } else {
-                            let rr = app.rect_renderer.as_mut();
-                            render_with_highlights(
-                                fr,
-                                rr,
-                                suffix_text,
-                                text_prefix_x,
-                                suffix_y,
+                if !suffix_text.is_empty()
+                    && let (Some(fr), Some(layout)) = (app.font_renderer.as_mut(), layout)
+                {
+                    let suffix_y = img_top_y + layout.image_lines as f32 * line_height as f32;
+                    let img_w = layout.img_w.max(1.0);
+                    if suffix_positions.is_empty() {
+                        fr.prepare_text_wrapped(
+                            suffix_text,
+                            (text_prefix_x, suffix_y),
+                            scale,
+                            img_w,
+                            line_height as f32,
+                            p.text,
+                        );
+                    } else {
+                        let rr = app.rect_renderer.as_mut();
+                        render_with_highlights(
+                            fr,
+                            rr,
+                            suffix_text,
+                            (text_prefix_x, suffix_y),
+                            TextLook {
                                 scale,
                                 ascender,
-                                line_height as f32,
-                                p.text,
-                                p.scroll_search,
-                                &suffix_positions,
-                                Some(WrapLayout {
-                                    first_width: img_w,
-                                    rest_x: text_prefix_x,
-                                    rest_width: img_w,
-                                }),
-                            );
-                        }
+                                line_height: line_height as f32,
+                                text_color: p.text,
+                                highlight_color: p.scroll_search,
+                            },
+                            &suffix_positions,
+                            Some(WrapLayout {
+                                first_width: img_w,
+                                rest_x: text_prefix_x,
+                                rest_width: img_w,
+                            }),
+                        );
                     }
                 }
             } else if let Some(fr) = app.font_renderer.as_mut() {
@@ -2219,13 +2223,14 @@ fn update_view(app: &mut AppState) {
                     fr,
                     rr,
                     content,
-                    content_x,
-                    content_y,
-                    scale,
-                    ascender,
-                    line_height as f32,
-                    p.text,
-                    p.scroll_search,
+                    (content_x, content_y),
+                    TextLook {
+                        scale,
+                        ascender,
+                        line_height: line_height as f32,
+                        text_color: p.text,
+                        highlight_color: p.scroll_search,
+                    },
                     &content_positions,
                     Some(WrapLayout {
                         first_width: flow.first_w,
@@ -2273,8 +2278,7 @@ fn update_view(app: &mut AppState) {
                         if content_positions.is_empty() {
                             fr.prepare_text_wrapped(
                                 content,
-                                content_start_x,
-                                current_y,
+                                (content_start_x, current_y),
                                 scale,
                                 wrap_w,
                                 line_height as f32,
@@ -2286,13 +2290,14 @@ fn update_view(app: &mut AppState) {
                                 fr,
                                 rr,
                                 content,
-                                content_start_x,
-                                current_y,
-                                scale,
-                                ascender,
-                                line_height as f32,
-                                p.text,
-                                p.scroll_search,
+                                (content_start_x, current_y),
+                                TextLook {
+                                    scale,
+                                    ascender,
+                                    line_height: line_height as f32,
+                                    text_color: p.text,
+                                    highlight_color: p.scroll_search,
+                                },
                                 &content_positions,
                                 Some(WrapLayout {
                                     first_width: wrap_w,
@@ -2335,7 +2340,7 @@ fn update_view(app: &mut AppState) {
                         img_h - 2.0 * border,
                     );
                 }
-                current_y += (img_h / line_height as f32).ceil() as f32 * line_height as f32;
+                current_y += (img_h / line_height as f32).ceil() * line_height as f32;
             }
 
             // Render suffix text below image
@@ -2350,8 +2355,7 @@ fn update_view(app: &mut AppState) {
                     if suffix_positions.is_empty() {
                         fr.prepare_text_wrapped(
                             suffix_text,
-                            content_start_x,
-                            current_y,
+                            (content_start_x, current_y),
                             scale,
                             wrap_w,
                             line_height as f32,
@@ -2363,13 +2367,14 @@ fn update_view(app: &mut AppState) {
                             fr,
                             rr,
                             suffix_text,
-                            content_start_x,
-                            current_y,
-                            scale,
-                            ascender,
-                            line_height as f32,
-                            p.text,
-                            p.scroll_search,
+                            (content_start_x, current_y),
+                            TextLook {
+                                scale,
+                                ascender,
+                                line_height: line_height as f32,
+                                text_color: p.text,
+                                highlight_color: p.scroll_search,
+                            },
                             &suffix_positions,
                             Some(WrapLayout {
                                 first_width: wrap_w,
@@ -2480,8 +2485,7 @@ fn update_view(app: &mut AppState) {
                 if match_pos.is_empty() {
                     fr.prepare_text_wrapped(
                         &shown,
-                        text_prefix_x,
-                        item_y,
+                        (text_prefix_x, item_y),
                         scale,
                         wrap_w,
                         line_height as f32,
@@ -2495,14 +2499,15 @@ fn update_view(app: &mut AppState) {
                         fr,
                         rr,
                         &shown,
-                        text_prefix_x,
-                        item_y,
-                        scale,
-                        ascender,
-                        line_height as f32,
-                        p.text,
-                        p.scroll_search,
-                        &match_pos,
+                        (text_prefix_x, item_y),
+                        TextLook {
+                            scale,
+                            ascender,
+                            line_height: line_height as f32,
+                            text_color: p.text,
+                            highlight_color: p.scroll_search,
+                        },
+                        match_pos,
                         Some(WrapLayout {
                             first_width: wrap_w,
                             rest_x: text_prefix_x,
@@ -2586,8 +2591,7 @@ fn update_view(app: &mut AppState) {
                 } else if content_positions.is_empty() {
                     fr.prepare_text_wrapped(
                         content,
-                        content_start_x,
-                        item_y,
+                        (content_start_x, item_y),
                         row_scale,
                         wrap_w,
                         row_line_h,
@@ -2601,13 +2605,14 @@ fn update_view(app: &mut AppState) {
                         fr,
                         rr,
                         content,
-                        content_start_x,
-                        item_y,
-                        row_scale,
-                        ascender,
-                        row_line_h,
-                        text_color,
-                        p.scroll_search,
+                        (content_start_x, item_y),
+                        TextLook {
+                            scale: row_scale,
+                            ascender,
+                            line_height: row_line_h,
+                            text_color,
+                            highlight_color: p.scroll_search,
+                        },
                         &content_positions,
                         Some(WrapLayout {
                             first_width: wrap_w,
@@ -2678,79 +2683,69 @@ fn update_view(app: &mut AppState) {
     // ---- Selection highlight rectangles (behind text, rendered now) ----------
     // Selection highlights for search/command/insert modes.
     let has_sel = handlers::has_selection(&app.renderer);
-    if has_sel {
-        if let Some((sel_start, sel_end)) = handlers::selection_range(&app.renderer) {
-            // base_y is the cell-top Y (not the baseline) so selection rects align with glyphs
-            let (base_x, base_y) = if in_insert_mode {
-                (captured_elem_x, captured_elem_y - ascender * scale)
-            } else {
-                let prefix = match app.renderer.coordinate {
-                    Coordinate::ExtendedSearch => "ext search: ",
-                    // Must match the prefix actually drawn on the search line
-                    // above, or the selection rect sits a prefix-width off.
-                    Coordinate::SecondCommand => "insert: ",
-                    _ => "search: ",
+    if has_sel && let Some((sel_start, sel_end)) = handlers::selection_range(&app.renderer) {
+        // base_y is the cell-top Y (not the baseline) so selection rects align with glyphs
+        let (base_x, base_y) = if in_insert_mode {
+            (captured_elem_x, captured_elem_y - ascender * scale)
+        } else {
+            let prefix = match app.renderer.coordinate {
+                Coordinate::ExtendedSearch => "ext search: ",
+                // Must match the prefix actually drawn on the search line
+                // above, or the selection rect sits a prefix-width off.
+                Coordinate::SecondCommand => "insert: ",
+                _ => "search: ",
+            };
+            let pfx_w = app
+                .font_renderer
+                .as_ref()
+                .map(|fr| fr.measure_text_width(prefix, scale))
+                .unwrap_or(0.0);
+            // search baseline is (line_height + ascender*scale + TEXT_PADDING); shift to cell top
+            (
+                text_x + pfx_w,
+                line_height as f32 + crate::text::TEXT_PADDING + top_offset,
+            )
+        };
+        let sel_height = line_height as f32 - 2.0 * crate::text::TEXT_PADDING;
+        let search_buf;
+        let buf = if matches!(
+            app.renderer.coordinate,
+            Coordinate::SimpleSearch | Coordinate::InputSearch
+        ) {
+            search_buf = app.renderer.search_string.clone();
+            search_buf.as_str()
+        } else {
+            insert_buf.as_str()
+        };
+
+        // The edited field selects along the same wrapped lines it was
+        // drawn with; a search bar never wraps, so `\n` is all it needs.
+        let sel_lines = if in_insert_mode && !captured_lines.is_empty() {
+            std::mem::take(&mut captured_lines)
+        } else {
+            sicompass_sdk::input::hard_lines(buf)
+        };
+
+        if let Some(fr) = app.font_renderer.as_ref() {
+            for (line, clamp_start, clamp_end) in
+                sicompass_sdk::input::selection_spans(&sel_lines, sel_start, sel_end)
+            {
+                let line_start_off = sel_lines[line].start;
+                let line_x = if in_insert_mode && line > 0 {
+                    captured_elem_base_x
+                } else {
+                    base_x
                 };
-                let pfx_w = app
-                    .font_renderer
-                    .as_ref()
-                    .map(|fr| fr.measure_text_width(prefix, scale))
-                    .unwrap_or(0.0);
-                // search baseline is (line_height + ascender*scale + TEXT_PADDING); shift to cell top
-                (
-                    text_x + pfx_w,
-                    line_height as f32 + crate::text::TEXT_PADDING + top_offset,
-                )
-            };
-            let sel_height = line_height as f32 - 2.0 * crate::text::TEXT_PADDING;
-            let search_buf;
-            let buf = if matches!(
-                app.renderer.coordinate,
-                Coordinate::SimpleSearch | Coordinate::InputSearch
-            ) {
-                search_buf = app.renderer.search_string.clone();
-                search_buf.as_str()
-            } else {
-                insert_buf.as_str()
-            };
+                let line_y = base_y + line as f32 * line_height as f32;
 
-            // The edited field selects along the same wrapped lines it was
-            // drawn with; a search bar never wraps, so `\n` is all it needs.
-            let sel_lines = if in_insert_mode && !captured_lines.is_empty() {
-                std::mem::take(&mut captured_lines)
-            } else {
-                sicompass_sdk::input::hard_lines(buf)
-            };
-
-            if let Some(fr) = app.font_renderer.as_ref() {
-                for (line, clamp_start, clamp_end) in
-                    sicompass_sdk::input::selection_spans(&sel_lines, sel_start, sel_end)
+                let x_start =
+                    line_x + fr.measure_text_width(&buf[line_start_off..clamp_start], scale);
+                let x_end = line_x + fr.measure_text_width(&buf[line_start_off..clamp_end], scale);
+                let sel_w = x_end - x_start;
+                if sel_w > 0.0
+                    && let Some(rr) = app.rect_renderer.as_mut()
                 {
-                    let line_start_off = sel_lines[line].start;
-                    let line_x = if in_insert_mode && line > 0 {
-                        captured_elem_base_x
-                    } else {
-                        base_x
-                    };
-                    let line_y = base_y + line as f32 * line_height as f32;
-
-                    let x_start =
-                        line_x + fr.measure_text_width(&buf[line_start_off..clamp_start], scale);
-                    let x_end =
-                        line_x + fr.measure_text_width(&buf[line_start_off..clamp_end], scale);
-                    let sel_w = x_end - x_start;
-                    if sel_w > 0.0 {
-                        if let Some(rr) = app.rect_renderer.as_mut() {
-                            rr.prepare_rectangle(
-                                x_start,
-                                line_y,
-                                sel_w,
-                                sel_height,
-                                p.scroll_search,
-                                0.0,
-                            );
-                        }
-                    }
+                    rr.prepare_rectangle(x_start, line_y, sel_w, sel_height, p.scroll_search, 0.0);
                 }
             }
         }
@@ -2813,10 +2808,10 @@ fn update_view(app: &mut AppState) {
             let caret_top_y = search_y - ascender * scale;
             // Position comes from the windowed draw above, so the caret follows
             // the query when a long one elides from the front.
-            if let Some(caret_x) = search_caret_x {
-                if let Some(rr) = app.rect_renderer.as_mut() {
-                    rr.prepare_rectangle(caret_x, caret_top_y, 2.0, caret_h, p.text, 0.0);
-                }
+            if let Some(caret_x) = search_caret_x
+                && let Some(rr) = app.rect_renderer.as_mut()
+            {
+                rr.prepare_rectangle(caret_x, caret_top_y, 2.0, caret_h, p.text, 0.0);
             }
         }
     }
@@ -2998,7 +2993,7 @@ fn render_scroll_lines(
 #[allow(clippy::too_many_arguments)]
 fn render_scroll_item(
     fr: &mut crate::text::FontRenderer,
-    mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
+    rr: Option<&mut crate::rectangle::RectangleRenderer>,
     ir: Option<&mut crate::image::ImageRenderer>,
     label: &str,
     img_data: &Option<String>,
@@ -3033,16 +3028,34 @@ fn render_scroll_item(
             prefix_x
         };
         // Graphical radio/checkbox indicator (matches general mode).
-        if let Some(rr) = rr.as_deref_mut() {
+        if let Some(rr) = rr {
             let radio = get_radio_type(label);
             let checkbox = get_checkbox_type(label);
             if radio != RadioType::None {
                 render_radio_indicator(
-                    rr, &radio, prefix_x, baseline, scale, ascender, lh, em_width, p,
+                    rr,
+                    &radio,
+                    (prefix_x, baseline),
+                    LineMetrics {
+                        scale,
+                        ascender,
+                        line_h: lh,
+                        em_width,
+                    },
+                    p,
                 );
             } else if checkbox != CheckboxType::None {
                 render_checkbox_indicator(
-                    rr, &checkbox, prefix_x, baseline, scale, ascender, lh, em_width, p,
+                    rr,
+                    &checkbox,
+                    (prefix_x, baseline),
+                    LineMetrics {
+                        scale,
+                        ascender,
+                        line_h: lh,
+                        em_width,
+                    },
+                    p,
                 );
             }
         }
@@ -3075,22 +3088,25 @@ fn render_scroll_item(
             p.text,
         );
         let img_top = content_top + img.caption_prefix_lines as f32 * lh;
-        if img_top + img.img_h > clip_y && img_top < win_h {
-            if let Some(ir) = ir {
-                let border = 2.0_f32;
-                // Clip vertically so a scrolled image never bleeds over the
-                // header / tabs band (or below the window).
-                unsafe {
-                    ir.prepare_image_clipped(
-                        path,
+        if img_top + img.img_h > clip_y
+            && img_top < win_h
+            && let Some(ir) = ir
+        {
+            let border = 2.0_f32;
+            // Clip vertically so a scrolled image never bleeds over the
+            // header / tabs band (or below the window).
+            unsafe {
+                ir.prepare_image_clipped(
+                    path,
+                    [
                         content_x + border,
                         img_top + border,
                         img.img_w - 2.0 * border,
                         img.img_h - 2.0 * border,
-                        clip_y,
-                        win_h,
-                    );
-                }
+                    ],
+                    clip_y,
+                    win_h,
+                );
             }
         }
         // Caption text rendered below the image.
@@ -3646,16 +3662,29 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
 /// Paint a row of boxes: backgrounds and borders, text with its runs, pictures, and the
 /// frame round the target navigate mode is on. `origin` is the row's top left on the
 /// screen, `clip` the rows of the screen it may use.
+/// Where a box row goes on screen, and what it draws over.
+struct BoxRowPlace {
+    origin: (f32, f32),
+    /// The top and bottom of what may be drawn.
+    clip: (f32, f32),
+    row_background: u32,
+    ascender: f32,
+    selected_target: Option<usize>,
+}
+
 fn draw_box_row(
     laid: &crate::boxes::RowLayout,
-    origin: (f32, f32),
-    clip: (f32, f32),
     fr: &mut crate::text::FontRenderer,
     mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
     mut ir: Option<&mut crate::image::ImageRenderer>,
     p: &crate::app_state::ColorPalette,
-    row_background: u32,
-    (ascender, selected_target): (f32, Option<usize>),
+    BoxRowPlace {
+        origin,
+        clip,
+        row_background,
+        ascender,
+        selected_target,
+    }: BoxRowPlace,
 ) {
     use crate::boxes::PlacedContent;
     for placed in &laid.boxes {
@@ -3745,9 +3774,9 @@ fn draw_box_row(
                     (true, Some(poster)) => poster.to_owned(),
                     (true, None) => format!("{}{path}", crate::video::THUMBNAIL_PREFIX),
                 };
-                let shown = ir.as_deref_mut().is_some_and(|ir| unsafe {
-                    ir.prepare_picture(&source, inner, *fit, clip.0, clip.1)
-                });
+                let shown = ir
+                    .as_deref_mut()
+                    .is_some_and(|ir| ir.prepare_picture(&source, inner, *fit, clip.0, clip.1));
                 if !shown && let Some(rr) = rr.as_deref_mut() {
                     // Still on its way: a patch of the right size.
                     rr.prepare_rectangle(inner[0], inner[1], inner[2], inner[3], p.header_sep, 4.0);
@@ -3769,7 +3798,7 @@ fn draw_box_row(
             }
         }
     }
-    if let (Some(index), Some(rr)) = (selected_target, rr.as_deref_mut())
+    if let (Some(index), Some(rr)) = (selected_target, rr)
         && let Some(target) = laid.targets.get(index)
     {
         // The target navigate mode is on, framed just outside it: pictures are drawn
@@ -4024,6 +4053,15 @@ fn input_search_highlight_rects(
     rects
 }
 
+/// How the text of a row looks.
+struct TextLook {
+    scale: f32,
+    ascender: f32,
+    line_height: f32,
+    text_color: u32,
+    highlight_color: u32,
+}
+
 /// Render `text` at `(x, y)` with background highlight rectangles behind
 /// characters at `match_positions`, matching scroll-search style. Text is
 /// rendered in `text_color`; highlights use `highlight_color` as background.
@@ -4033,13 +4071,14 @@ fn render_with_highlights(
     fr: &mut crate::text::FontRenderer,
     mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
     text: &str,
-    x: f32,
-    y: f32,
-    scale: f32,
-    ascender: f32,
-    line_height: f32,
-    text_color: u32,
-    highlight_color: u32,
+    (x, y): (f32, f32),
+    TextLook {
+        scale,
+        ascender,
+        line_height,
+        text_color,
+        highlight_color,
+    }: TextLook,
     match_positions: &[u32],
     wrap: Option<WrapLayout>,
 ) {
@@ -4217,16 +4256,25 @@ pub(crate) fn indicator_width(line_h: f32, em_width: f32) -> f32 {
     line_h * 0.8 + em_width
 }
 
-/// Draw a radio indicator. Returns the x offset to add before drawing text.
-fn render_radio_indicator(
-    rr: &mut crate::rectangle::RectangleRenderer,
-    radio_type: &RadioType,
-    x: f32,
-    item_y: f32,
+/// The measures of a line, for drawing what sits at its start.
+struct LineMetrics {
     scale: f32,
     ascender: f32,
     line_h: f32,
     em_width: f32,
+}
+
+/// Draw a radio indicator. Returns the x offset to add before drawing text.
+fn render_radio_indicator(
+    rr: &mut crate::rectangle::RectangleRenderer,
+    radio_type: &RadioType,
+    (x, item_y): (f32, f32),
+    LineMetrics {
+        scale,
+        ascender,
+        line_h,
+        em_width,
+    }: LineMetrics,
     p: &crate::app_state::ColorPalette,
 ) -> f32 {
     let size = line_h * 0.8;
@@ -4259,12 +4307,13 @@ fn render_radio_indicator(
 fn render_checkbox_indicator(
     rr: &mut crate::rectangle::RectangleRenderer,
     checkbox_type: &CheckboxType,
-    x: f32,
-    item_y: f32,
-    scale: f32,
-    ascender: f32,
-    line_h: f32,
-    em_width: f32,
+    (x, item_y): (f32, f32),
+    LineMetrics {
+        scale,
+        ascender,
+        line_h,
+        em_width,
+    }: LineMetrics,
     p: &crate::app_state::ColorPalette,
 ) -> f32 {
     let size = line_h * 0.8;

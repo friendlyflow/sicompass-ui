@@ -471,10 +471,10 @@ pub(crate) fn rebuild_path_from_root(renderer: &mut AppRenderer) -> bool {
         let mut kids = renderer.providers[idx].fetch();
         seed_insert_placeholder(&mut kids);
         let last = id.last().unwrap_or(0);
-        if let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &id) {
-            if let Some(obj) = slice.get_mut(last).and_then(|e| e.as_obj_mut()) {
-                obj.children = kids;
-            }
+        if let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &id)
+            && let Some(obj) = slice.get_mut(last).and_then(|e| e.as_obj_mut())
+        {
+            obj.children = kids;
         }
         id.push(0);
     }
@@ -575,14 +575,13 @@ pub fn refresh_visible_path(renderer: &mut AppRenderer) {
                 sicompass_sdk::placeholders::I_PLACEHOLDER.to_owned(),
             ));
         }
-        if let Some((seg, kids)) = preserved {
-            if let Some(obj) = children
+        if let Some((seg, kids)) = preserved
+            && let Some(obj) = children
                 .iter_mut()
                 .find(|e| element_nav_name(elem_raw(e)) == seg)
                 .and_then(|e| e.as_obj_mut())
-            {
-                obj.children = kids;
-            }
+        {
+            obj.children = kids;
         }
 
         if let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &level_id) {
@@ -651,14 +650,14 @@ pub fn refresh_subtree_parent(renderer: &mut AppRenderer) -> bool {
     // At depth 1 the parent id is empty and resolves to no Obj — the caller
     // must then fall back to `refresh_current_directory`.
     let mut grafted = false;
-    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut renderer.ffon, &parent_id) {
-        if let Some(sicompass_sdk::ffon::FfonElement::Obj(obj)) = arr.get_mut(parent_obj_idx) {
-            obj.children = children;
-            if let Some(key) = new_key {
-                obj.key = key;
-            }
-            grafted = true;
+    if let Some(arr) = crate::state::navigate_to_slice_pub(&mut renderer.ffon, &parent_id)
+        && let Some(sicompass_sdk::ffon::FfonElement::Obj(obj)) = arr.get_mut(parent_obj_idx)
+    {
+        obj.children = children;
+        if let Some(key) = new_key {
+            obj.key = key;
         }
+        grafted = true;
     }
     grafted
 }
@@ -708,10 +707,8 @@ pub fn commit_edit(renderer: &mut AppRenderer, old: &str, new: &str) -> bool {
     };
     let ok = if let Some(p) = renderer.providers.get_mut(idx) {
         let ok = p.commit_edit(old, new);
-        if !ok {
-            if let Some(err) = p.take_error() {
-                renderer.error_message = err;
-            }
+        if !ok && let Some(err) = p.take_error() {
+            renderer.error_message = err;
         }
         ok
     } else {
@@ -731,10 +728,8 @@ pub fn delete_item_by_name(renderer: &mut AppRenderer, name: &str) -> bool {
     };
     let ok = if let Some(p) = renderer.providers.get_mut(idx) {
         let ok = p.delete_item(name);
-        if !ok {
-            if let Some(err) = p.take_error() {
-                renderer.error_message = err;
-            }
+        if !ok && let Some(err) = p.take_error() {
+            renderer.error_message = err;
         }
         ok
     } else {
@@ -762,10 +757,8 @@ pub fn copy_item(
     };
     if let Some(p) = renderer.providers.get_mut(idx) {
         let ok = p.copy_item(src_dir, src_name, dest_dir, dest_name);
-        if !ok {
-            if let Some(err) = p.take_error() {
-                renderer.error_message = err;
-            }
+        if !ok && let Some(err) = p.take_error() {
+            renderer.error_message = err;
         }
         ok
     } else {
@@ -781,10 +774,8 @@ pub fn create_file(renderer: &mut AppRenderer, name: &str) -> bool {
     };
     if let Some(p) = renderer.providers.get_mut(idx) {
         let ok = p.create_file(name);
-        if !ok {
-            if let Some(err) = p.take_error() {
-                renderer.error_message = err;
-            }
+        if !ok && let Some(err) = p.take_error() {
+            renderer.error_message = err;
         }
         ok
     } else {
@@ -800,10 +791,8 @@ pub fn create_directory(renderer: &mut AppRenderer, name: &str) -> bool {
     };
     if let Some(p) = renderer.providers.get_mut(idx) {
         let ok = p.create_directory(name);
-        if !ok {
-            if let Some(err) = p.take_error() {
-                renderer.error_message = err;
-            }
+        if !ok && let Some(err) = p.take_error() {
+            renderer.error_message = err;
         }
         ok
     } else {
@@ -1353,17 +1342,16 @@ pub fn notify_button_function(renderer: &mut AppRenderer, function_name: &str) {
                 let new_elem = renderer
                     .providers
                     .get_mut(provider_idx)
-                    .and_then(|p| p.create_element(&function_name));
+                    .and_then(|p| p.create_element(function_name));
 
                 if let Some(new_elem) = new_elem {
                     // Insert new_elem before "Add element:" in grandparent's children.
                     {
-                        if let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &grand_id) {
-                            if let Some(obj) = slice.get_mut(grand_idx).and_then(|e| e.as_obj_mut())
-                            {
-                                obj.children
-                                    .insert(insert_idx.min(obj.children.len()), new_elem);
-                            }
+                        if let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &grand_id)
+                            && let Some(obj) = slice.get_mut(grand_idx).and_then(|e| e.as_obj_mut())
+                        {
+                            obj.children
+                                .insert(insert_idx.min(obj.children.len()), new_elem);
                         }
                     }
 
@@ -1387,14 +1375,12 @@ pub fn notify_button_function(renderer: &mut AppRenderer, function_name: &str) {
                     if add_elem_pos < grand_child_count.saturating_sub(1) {
                         // Clone "Add element:": remove the clone at add_elem_pos.
                         {
-                            if let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &grand_id) {
-                                if let Some(obj) =
+                            if let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &grand_id)
+                                && let Some(obj) =
                                     slice.get_mut(grand_idx).and_then(|e| e.as_obj_mut())
-                                {
-                                    if add_elem_pos < obj.children.len() {
-                                        obj.children.remove(add_elem_pos);
-                                    }
-                                }
+                                && add_elem_pos < obj.children.len()
+                            {
+                                obj.children.remove(add_elem_pos);
                             }
                         }
                         // Remove matching one-opt button from the original "Add element:" (last child).
@@ -1411,7 +1397,7 @@ pub fn notify_button_function(renderer: &mut AppRenderer, function_name: &str) {
                                 &grand_id,
                                 grand_idx,
                                 last_idx,
-                                &function_name,
+                                function_name,
                             );
                         }
                     } else if is_one_opt {
@@ -1421,18 +1407,14 @@ pub fn notify_button_function(renderer: &mut AppRenderer, function_name: &str) {
                             &grand_id,
                             grand_idx,
                             add_elem_pos,
-                            &function_name,
+                            function_name,
                         );
-                        if removed_all {
-                            if let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &grand_id) {
-                                if let Some(obj) =
-                                    slice.get_mut(grand_idx).and_then(|e| e.as_obj_mut())
-                                {
-                                    if add_elem_pos < obj.children.len() {
-                                        obj.children.remove(add_elem_pos);
-                                    }
-                                }
-                            }
+                        if removed_all
+                            && let Some(slice) = get_ffon_at_id_mut(&mut renderer.ffon, &grand_id)
+                            && let Some(obj) = slice.get_mut(grand_idx).and_then(|e| e.as_obj_mut())
+                            && add_elem_pos < obj.children.len()
+                        {
+                            obj.children.remove(add_elem_pos);
                         }
                     }
                 }
@@ -1442,7 +1424,7 @@ pub fn notify_button_function(renderer: &mut AppRenderer, function_name: &str) {
 
     if !handled {
         if let Some(p) = renderer.providers.get_mut(provider_idx) {
-            p.on_button_press(&function_name);
+            p.on_button_press(function_name);
             if let Some(err) = p.take_error() {
                 renderer.error_message = err;
             }
@@ -1479,7 +1461,7 @@ fn remove_one_opt_button_and_maybe_section(
 
     if let Some(btn_idx) = add_elem_obj.children.iter().position(|e| {
         e.as_str()
-            .and_then(|s| tags::extract_button_function_name(s))
+            .and_then(tags::extract_button_function_name)
             .as_deref()
             == Some(function_name)
     }) {
@@ -1569,7 +1551,7 @@ pub fn navigate_to_path(
     // Walk each component of the absolute path (skip leading '/').
     // Split on both '/' and '\' to match C's strtok_r(start, "/\\").
     let path_stripped = absolute_dir.trim_start_matches('/');
-    for component in path_stripped.split(|c| c == '/' || c == '\\') {
+    for component in path_stripped.split(['/', '\\']) {
         if component.is_empty() {
             continue;
         }

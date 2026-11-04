@@ -14,7 +14,7 @@ use std::time::Instant;
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Commit a task into the FFON tree, record undo history, rebuild the list.
+// Commit a task into the FFON tree, record undo history, rebuild the list.
 
 /// Runtime used to drive the async `Provider` methods (`undo` / `redo`).
 ///
@@ -193,9 +193,7 @@ pub fn update_ids(r: &mut AppRenderer, is_key: bool, task: Task, history: Histor
         }
         Task::Append => {
             if r.coordinate.is_general() {
-                if !is_key {
-                    r.current_id.set_last(current_idx + 1);
-                } else if next_layer_exists(&r.ffon, &r.previous_id) {
+                if !is_key || next_layer_exists(&r.ffon, &r.previous_id) {
                     r.current_id.set_last(current_idx + 1);
                 } else {
                     r.current_id.push(0);
@@ -295,7 +293,7 @@ pub fn update_ffon(r: &mut AppRenderer, line: &str, is_key: bool, task: Task, hi
         let is_obj_at_prev = {
             let arr = navigate_to_slice(&r.ffon, &prev_id);
             arr.and_then(|a| a.get(prev_idx))
-                .map_or(false, |e| e.is_obj())
+                .is_some_and(|e| e.is_obj())
         };
 
         if matches!(task, Task::Delete | Task::Cut) {
@@ -469,69 +467,64 @@ pub fn record_entry(r: &mut AppRenderer, entry: TimelineEntry) {
     // "path tracking" (e.g. descending into filebrowser) must NOT swallow the
     // newer entry's `from_path`. Otherwise the merged entry's `from_path` is
     // `None`, and undo cannot restore the filebrowser's pre-descent path.
-    if !break_coalesce {
-        if let TimelineEntry::Navigate {
+    if !break_coalesce
+        && let TimelineEntry::Navigate {
             provider_idx,
             to_id,
             to_path,
             kind,
             ..
         } = &entry
+    {
+        // Coalesce same-provider Navigates only when no path change is
+        // happening: an idle scroll (same path before/after, or both `None`)
+        // collapses into one entry, but a Right-press that descends into a
+        // subdirectory (path changes) is always its own undo step.
+        let new_has_path = to_path.is_some();
+        let can_coalesce = matches!(
+            tl.entries.last(),
+            Some(TimelineEntry::Navigate {
+                provider_idx: tail_pidx,
+                to_path: tail_tp,
+                ..
+            }) if tail_pidx == provider_idx
+                && tail_tp.is_some() == new_has_path
+                && tail_tp.as_ref() == to_path.as_ref()
+        );
+        if can_coalesce
+            && let Some(TimelineEntry::Navigate {
+                to_id: tail_to_id,
+                to_path: tail_to_path,
+                kind: tail_kind,
+                ..
+            }) = tl.entries.last_mut()
         {
-            // Coalesce same-provider Navigates only when no path change is
-            // happening: an idle scroll (same path before/after, or both `None`)
-            // collapses into one entry, but a Right-press that descends into a
-            // subdirectory (path changes) is always its own undo step.
-            let new_has_path = to_path.is_some();
-            let can_coalesce = matches!(
-                tl.entries.last(),
-                Some(TimelineEntry::Navigate {
-                    provider_idx: tail_pidx,
-                    to_path: tail_tp,
-                    ..
-                }) if tail_pidx == provider_idx
-                    && tail_tp.is_some() == new_has_path
-                    && tail_tp.as_ref() == to_path.as_ref()
-            );
-            if can_coalesce {
-                if let Some(TimelineEntry::Navigate {
-                    to_id: tail_to_id,
-                    to_path: tail_to_path,
-                    kind: tail_kind,
-                    ..
-                }) = tl.entries.last_mut()
-                {
-                    *tail_to_id = to_id.clone();
-                    *tail_to_path = to_path.clone();
-                    *tail_kind = *kind;
-                    // Any navigation breaks an in-flight text-chunk run.
-                    tl.last_text_id = None;
-                    tl.last_text_edit_at = None;
-                    return;
-                }
-            }
+            *tail_to_id = to_id.clone();
+            *tail_to_path = to_path.clone();
+            *tail_kind = *kind;
+            // Any navigation breaks an in-flight text-chunk run.
+            tl.last_text_id = None;
+            tl.last_text_edit_at = None;
+            return;
         }
     }
 
     // TextChunk coalescing: same id within TEXT_CHUNK_IDLE_MS extends the tail.
-    if !break_coalesce {
-        if let TimelineEntry::TextChunk { id, after, .. } = &entry {
-            let now = Instant::now();
-            let coalesce = tl.last_text_id.as_ref() == Some(id)
-                && tl
-                    .last_text_edit_at
-                    .map(|t| (now - t).as_millis() as u64 <= TEXT_CHUNK_IDLE_MS)
-                    .unwrap_or(false);
-            if coalesce {
-                if let Some(TimelineEntry::TextChunk {
-                    after: tail_after, ..
-                }) = tl.entries.last_mut()
-                {
-                    *tail_after = after.clone();
-                    tl.last_text_edit_at = Some(now);
-                    return;
-                }
-            }
+    if !break_coalesce && let TimelineEntry::TextChunk { id, after, .. } = &entry {
+        let now = Instant::now();
+        let coalesce = tl.last_text_id.as_ref() == Some(id)
+            && tl
+                .last_text_edit_at
+                .map(|t| (now - t).as_millis() as u64 <= TEXT_CHUNK_IDLE_MS)
+                .unwrap_or(false);
+        if coalesce
+            && let Some(TimelineEntry::TextChunk {
+                after: tail_after, ..
+            }) = tl.entries.last_mut()
+        {
+            *tail_after = after.clone();
+            tl.last_text_edit_at = Some(now);
+            return;
         }
     }
 
@@ -797,10 +790,11 @@ fn apply_redo(r: &mut AppRenderer, entry: &TimelineEntry) {
                 upgrade_body_bare_placeholder(r, id);
                 sync_provider_children(r, id);
                 let count = get_parent_len(&r.ffon, id);
-                if let Some(idx) = r.current_id.last() {
-                    if idx >= count && count > 0 {
-                        r.current_id.set_last(count - 1);
-                    }
+                if let Some(idx) = r.current_id.last()
+                    && idx >= count
+                    && count > 0
+                {
+                    r.current_id.set_last(count - 1);
                 }
             }
             (StructuralOp::Paste, StructuralPayload::Pasted { after, .. }) => {
@@ -873,10 +867,10 @@ fn apply_fs_op_undo(
                 if parent_len == 0 {
                     insert_at(&mut r.ffon, id, 0, FfonElement::new_str("<input></input>"));
                     r.current_id.set_last(0);
-                } else if let Some(idx) = r.current_id.last() {
-                    if idx >= parent_len {
-                        r.current_id.set_last(parent_len - 1);
-                    }
+                } else if let Some(idx) = r.current_id.last()
+                    && idx >= parent_len
+                {
+                    r.current_id.set_last(parent_len - 1);
                 }
             }
         }
@@ -901,10 +895,10 @@ fn apply_fs_op_undo(
                 if parent_len == 0 {
                     insert_at(&mut r.ffon, id, 0, FfonElement::new_str("<input></input>"));
                     r.current_id.set_last(0);
-                } else if let Some(idx) = r.current_id.last() {
-                    if idx >= parent_len {
-                        r.current_id.set_last(parent_len - 1);
-                    }
+                } else if let Some(idx) = r.current_id.last()
+                    && idx >= parent_len
+                {
+                    r.current_id.set_last(parent_len - 1);
                 }
             }
         }
@@ -1019,10 +1013,9 @@ fn reposition_on_recreated_item(r: &mut AppRenderer, name: &str, is_dir: bool) {
             .map(|(_, c)| c)
             .unwrap_or(&item.label)
             == name
-    }) {
-        if let Some(id) = r.total_list.get(i).map(|it| it.id.clone()) {
-            r.current_id = id;
-        }
+    }) && let Some(id) = r.total_list.get(i).map(|it| it.id.clone())
+    {
+        r.current_id = id;
     }
     if is_dir {
         populate_recreated_dir(r, name);
@@ -1048,10 +1041,10 @@ fn populate_recreated_dir(r: &mut AppRenderer, name: &str) {
     }
     let dir_id = r.current_id.clone();
     let idx = dir_id.last().unwrap_or(0);
-    if let Some(slice) = navigate_to_slice_mut(&mut r.ffon, &dir_id) {
-        if let Some(FfonElement::Obj(obj)) = slice.get_mut(idx) {
-            obj.children = kids;
-        }
+    if let Some(slice) = navigate_to_slice_mut(&mut r.ffon, &dir_id)
+        && let Some(FfonElement::Obj(obj)) = slice.get_mut(idx)
+    {
+        obj.children = kids;
     }
 }
 
@@ -1238,11 +1231,7 @@ pub fn is_line_key(line: &str) -> bool {
 
 /// Strip a trailing `':'` from a string (for object key naming).
 pub fn strip_trailing_colon(s: &str) -> String {
-    if s.ends_with(':') {
-        s[..s.len() - 1].to_owned()
-    } else {
-        s.to_owned()
-    }
+    s.strip_suffix(':').unwrap_or(s).to_owned()
 }
 
 /// Get the element at `id` (immutable).
@@ -1310,10 +1299,10 @@ fn get_ffon_max_id_at_path(ffon: &[FfonElement], id: &IdArray) -> usize {
 
 /// Replace element at `(parent_id, idx)` with `new_elem`.
 fn replace_at(ffon: &mut Vec<FfonElement>, parent_id: &IdArray, idx: usize, new_elem: FfonElement) {
-    if let Some(arr) = navigate_to_slice_mut(ffon, parent_id) {
-        if idx < arr.len() {
-            arr[idx] = new_elem;
-        }
+    if let Some(arr) = navigate_to_slice_mut(ffon, parent_id)
+        && idx < arr.len()
+    {
+        arr[idx] = new_elem;
     }
 }
 
@@ -1337,10 +1326,10 @@ fn insert_at(ffon: &mut Vec<FfonElement>, parent_id: &IdArray, idx: usize, elem:
 
 /// Re-key an existing Obj at `(parent_id, idx)`.
 fn rekey_obj_at(ffon: &mut Vec<FfonElement>, parent_id: &IdArray, idx: usize, new_key: String) {
-    if let Some(arr) = navigate_to_slice_mut(ffon, parent_id) {
-        if let Some(FfonElement::Obj(obj)) = arr.get_mut(idx) {
-            obj.key = new_key;
-        }
+    if let Some(arr) = navigate_to_slice_mut(ffon, parent_id)
+        && let Some(FfonElement::Obj(obj)) = arr.get_mut(idx)
+    {
+        obj.key = new_key;
     }
 }
 
@@ -1402,18 +1391,16 @@ fn replace_element_at_id(r: &mut AppRenderer, id: &IdArray, elem: FfonElement) {
 /// back to `id` itself.
 fn cursor_inside_radio(id: &IdArray, elem: &FfonElement) -> IdArray {
     use sicompass_sdk::tags;
-    if let FfonElement::Obj(o) = elem {
-        if tags::has_radio(&o.key) {
-            if let Some(checked_idx) = o
-                .children
-                .iter()
-                .position(|c| c.as_str().map_or(false, |s| tags::has_checked(s)))
-            {
-                let mut cursor = id.clone();
-                cursor.push(checked_idx);
-                return cursor;
-            }
-        }
+    if let FfonElement::Obj(o) = elem
+        && tags::has_radio(&o.key)
+        && let Some(checked_idx) = o
+            .children
+            .iter()
+            .position(|c| c.as_str().is_some_and(tags::has_checked))
+    {
+        let mut cursor = id.clone();
+        cursor.push(checked_idx);
+        return cursor;
     }
     id.clone()
 }
@@ -1587,10 +1574,10 @@ pub fn sync_provider_children(r: &mut AppRenderer, id: &sicompass_sdk::ffon::IdA
     // list, which is what the provider is being told about.
     let children = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, id).map(|a| a.to_vec());
 
-    if let Some(children) = children {
-        if let Some(p) = r.providers.get_mut(provider_idx) {
-            p.sync_ffon_body_children(&children);
-        }
+    if let Some(children) = children
+        && let Some(p) = r.providers.get_mut(provider_idx)
+    {
+        p.sync_ffon_body_children(&children);
     }
 
     // Every rendered level of this provider is now stale, not just the one that
@@ -1618,10 +1605,10 @@ pub fn sync_compose_body_if_body_element(r: &mut AppRenderer, id: &sicompass_sdk
     // get_ffon_at_id returns the *parent* array of the element at `id`.
     // For id = [p, body_obj_idx, elem_idx], that is the body Obj's children slice.
     let body_children = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, id).map(|arr| arr.to_vec());
-    if let Some(children) = body_children {
-        if let Some(p) = r.providers.get_mut(provider_idx) {
-            p.sync_ffon_body_children(&children);
-        }
+    if let Some(children) = body_children
+        && let Some(p) = r.providers.get_mut(provider_idx)
+    {
+        p.sync_ffon_body_children(&children);
     }
 }
 

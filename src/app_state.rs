@@ -1496,13 +1496,14 @@ impl AppRenderer {
     /// e.g. a directory removed between sessions.
     pub fn rebuild_on_path(&mut self, path: &str, current_id: IdArray) {
         self.current_id = current_id;
-        if let Some(pi) = self.current_id.get(0) {
-            if pi < self.providers.len() && pi < self.ffon.len() {
-                self.providers[pi].set_current_path(path);
-                if crate::provider::rebuild_path_from_root(self) {
-                    self.list_index = self.current_id.last().unwrap_or(0);
-                    return;
-                }
+        if let Some(pi) = self.current_id.get(0)
+            && pi < self.providers.len()
+            && pi < self.ffon.len()
+        {
+            self.providers[pi].set_current_path(path);
+            if crate::provider::rebuild_path_from_root(self) {
+                self.list_index = self.current_id.last().unwrap_or(0);
+                return;
             }
         }
         let id = self.current_id.clone();
@@ -1516,41 +1517,37 @@ impl AppRenderer {
         // Rebuild the saved provider's FFON tree at full depth so a deep
         // `current_id` still resolves into it (see `deep_rebuild_provider_tree`).
         let mut current_id = current_id;
-        if let Some(provider_idx) = current_id.get(0) {
-            if provider_idx < self.providers.len()
-                && provider_idx < self.ffon.len()
-                && !provider_path.is_empty()
-                && self.providers[provider_idx].current_path() != provider_path
+        if let Some(provider_idx) = current_id.get(0)
+            && provider_idx < self.providers.len()
+            && provider_idx < self.ffon.len()
+            && !provider_path.is_empty()
+            && self.providers[provider_idx].current_path() != provider_path
+        {
+            let (rows, levels) =
+                self.deep_rebuild_provider_tree(provider_idx, provider_path, current_id.depth());
+            // Walk down by name, not by the saved row numbers. The descent
+            // found each folder by its name; the saved numbers are where
+            // those rows were when the tab was saved. A folder that gained
+            // an entry before one on the path (a new dot-folder in the home
+            // folder, a new checkout beside the project) shifts every number
+            // below it, and the clamp would then pop the cursor back to that
+            // folder, or all the way to "/".
+            for (k, row) in rows.into_iter().enumerate() {
+                current_id.set(1 + k, row);
+            }
+            // A cursor saved deeper than its path names levels for, where
+            // path segments are levels. Configs written while a reloaded
+            // plugin restarted at its root under a deep cursor have them.
+            // The levels past the path's are not in the tree, and counting
+            // them as levels the clamp drops would pop that many real
+            // segments off the path below, leaving the provider folders
+            // above the cursor. The path is the truth: keep its levels and
+            // the row the cursor was on in the deepest.
+            if let Some(levels) = levels
+                && self.providers[provider_idx].path_is_filesystem()
             {
-                let (rows, levels) = self.deep_rebuild_provider_tree(
-                    provider_idx,
-                    provider_path,
-                    current_id.depth(),
-                );
-                // Walk down by name, not by the saved row numbers. The descent
-                // found each folder by its name; the saved numbers are where
-                // those rows were when the tab was saved. A folder that gained
-                // an entry before one on the path (a new dot-folder in the home
-                // folder, a new checkout beside the project) shifts every number
-                // below it, and the clamp would then pop the cursor back to that
-                // folder, or all the way to "/".
-                for (k, row) in rows.into_iter().enumerate() {
-                    current_id.set(1 + k, row);
-                }
-                // A cursor saved deeper than its path names levels for, where
-                // path segments are levels. Configs written while a reloaded
-                // plugin restarted at its root under a deep cursor have them.
-                // The levels past the path's are not in the tree, and counting
-                // them as levels the clamp drops would pop that many real
-                // segments off the path below, leaving the provider folders
-                // above the cursor. The path is the truth: keep its levels and
-                // the row the cursor was on in the deepest.
-                if let Some(levels) = levels {
-                    if self.providers[provider_idx].path_is_filesystem() {
-                        while current_id.depth() > levels + 2 {
-                            current_id.pop();
-                        }
-                    }
+                while current_id.depth() > levels + 2 {
+                    current_id.pop();
                 }
             }
         }
@@ -1610,15 +1607,15 @@ impl AppRenderer {
         // rather than "the clamp popped something" — quitting while sitting on
         // the URL bar with a page open saves depth 2 with a stale path, which
         // `deep_rebuild_provider_tree` restores verbatim with nothing to pop.
-        if let Some(pi) = restored_provider {
-            if pi < self.providers.len() {
-                if self.providers[pi].path_is_filesystem() {
-                    for _ in 0..restored_depth.saturating_sub(current_id.depth()) {
-                        self.providers[pi].pop_path();
-                    }
-                } else if current_id.depth() <= 2 {
-                    self.providers[pi].set_current_path("/");
+        if let Some(pi) = restored_provider
+            && pi < self.providers.len()
+        {
+            if self.providers[pi].path_is_filesystem() {
+                for _ in 0..restored_depth.saturating_sub(current_id.depth()) {
+                    self.providers[pi].pop_path();
                 }
+            } else if current_id.depth() <= 2 {
+                self.providers[pi].set_current_path("/");
             }
         }
         if let Some(parent_slice) = sicompass_sdk::ffon::get_ffon_at_id(&self.ffon, &current_id) {
@@ -2109,10 +2106,10 @@ impl AppRenderer {
 
     /// Update `current_id.last()` to match the selected list item.
     pub fn sync_current_id_from_list(&mut self) {
-        if let Some(item_id) = self.current_list_item_id() {
-            if let Some(last_idx) = item_id.last() {
-                self.current_id.set_last(last_idx);
-            }
+        if let Some(item_id) = self.current_list_item_id()
+            && let Some(last_idx) = item_id.last()
+        {
+            self.current_id.set_last(last_idx);
         }
     }
 
@@ -2356,6 +2353,55 @@ pub(crate) fn locale_test_lock() -> std::sync::MutexGuard<'static, ()> {
     L.get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+}
+
+// ---------------------------------------------------------------------------
+// Async undo/redo: checked-out providers
+// ---------------------------------------------------------------------------
+
+/// A provider that has been moved out for an in-flight async undo/redo.
+pub struct PendingProviderOp {
+    /// Slot in `AppRenderer::providers` the provider came from.
+    pub idx: usize,
+    /// Whether this was an undo (false = redo), for the completion message.
+    pub is_undo: bool,
+    /// Display name captured before check-out, for the completion message.
+    pub provider_name: String,
+    /// Delivers the provider back, with whatever error it reported.
+    pub rx: std::sync::mpsc::Receiver<(Box<dyn Provider>, String)>,
+}
+
+/// Stands in for a provider while its undo/redo is running.
+///
+/// Only `name` and `fetch` are required by the trait; every other method keeps
+/// its default, which is exactly the inert behaviour wanted here.
+pub struct PlaceholderProvider {
+    name: String,
+    display: String,
+}
+
+impl PlaceholderProvider {
+    pub fn new(name: &str, display: &str) -> Self {
+        PlaceholderProvider {
+            name: name.to_owned(),
+            display: display.to_owned(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PlaceholderProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn display_name(&self) -> String {
+        self.display.clone()
+    }
+
+    fn fetch(&mut self) -> Vec<FfonElement> {
+        vec![FfonElement::new_str("Working…".to_owned())]
+    }
 }
 
 #[cfg(test)]
@@ -2870,54 +2916,5 @@ mod tests {
         r.error_message = "first".to_owned();
         r.error_message = "second".to_owned();
         assert_eq!(r.error_message, "second");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Async undo/redo: checked-out providers
-// ---------------------------------------------------------------------------
-
-/// A provider that has been moved out for an in-flight async undo/redo.
-pub struct PendingProviderOp {
-    /// Slot in `AppRenderer::providers` the provider came from.
-    pub idx: usize,
-    /// Whether this was an undo (false = redo), for the completion message.
-    pub is_undo: bool,
-    /// Display name captured before check-out, for the completion message.
-    pub provider_name: String,
-    /// Delivers the provider back, with whatever error it reported.
-    pub rx: std::sync::mpsc::Receiver<(Box<dyn Provider>, String)>,
-}
-
-/// Stands in for a provider while its undo/redo is running.
-///
-/// Only `name` and `fetch` are required by the trait; every other method keeps
-/// its default, which is exactly the inert behaviour wanted here.
-pub struct PlaceholderProvider {
-    name: String,
-    display: String,
-}
-
-impl PlaceholderProvider {
-    pub fn new(name: &str, display: &str) -> Self {
-        PlaceholderProvider {
-            name: name.to_owned(),
-            display: display.to_owned(),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Provider for PlaceholderProvider {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn display_name(&self) -> String {
-        self.display.clone()
-    }
-
-    fn fetch(&mut self) -> Vec<FfonElement> {
-        vec![FfonElement::new_str("Working…".to_owned())]
     }
 }
