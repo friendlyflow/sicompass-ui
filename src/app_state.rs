@@ -2006,11 +2006,18 @@ impl AppRenderer {
     pub fn speak_focus_position(&mut self) {
         let header = self.header_text();
         let path = self.focus_path();
-        let text = if path.is_empty() {
+        let mut text = if path.is_empty() {
             header
         } else {
             format!("{header}, {path}")
         };
+        // The same back arrow the parent line draws and entering a list says.
+        if crate::handlers::left_leaves_this_list(self) {
+            let parent = crate::list::parent_line_text(self);
+            if !parent.is_empty() {
+                text.push_str(&format!(", arrow left, {parent}"));
+            }
+        }
         self.announcement_parity = !self.announcement_parity;
         let sentinel = if self.announcement_parity {
             "\u{200B}"

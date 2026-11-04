@@ -852,17 +852,44 @@ pub fn handle_right(r: &mut AppRenderer) {
             kind: sicompass_sdk::timeline::NavKind::ArrowRight,
         };
         crate::state::record_entry(r, entry);
+        speak_back_arrow(r);
         r.needs_redraw = true;
+    }
+}
+
+/// The shallowest depth Left can reach. A launcher's world is its one provider:
+/// the list of providers above it is not something its user can do anything with.
+fn left_floor(r: &AppRenderer) -> usize {
+    if r.launcher_mode { 2 } else { 1 }
+}
+
+/// True when Left would leave the current list for its parent, which is what the
+/// back arrow on the parent line says. A session's own level is a dead end for a
+/// provider with no session list to step down to.
+pub(crate) fn left_leaves_this_list(r: &AppRenderer) -> bool {
+    if at_session_input_level(r) {
+        return session_list_available(r);
+    }
+    r.current_id.depth() > left_floor(r)
+}
+
+/// What the back arrow says when a list is entered, in either direction: the
+/// parent line is not in the accessibility tree, so without this a screen reader
+/// user would never hear what the list belongs to.
+fn speak_back_arrow(r: &mut AppRenderer) {
+    if !left_leaves_this_list(r) {
+        return;
+    }
+    let parent = list::parent_line_text(r);
+    if !parent.is_empty() {
+        r.announce_provider_line(format!("arrow left, {parent}"));
     }
 }
 
 /// Navigate out to the parent level without rebuilding the list.
 /// Returns `true` if navigation happened.
 pub fn navigate_left_raw(r: &mut AppRenderer) -> bool {
-    // A launcher's world is its one provider: the list of providers above it
-    // is not something its user can do anything with.
-    let floor = if r.launcher_mode { 2 } else { 1 };
-    if r.current_id.depth() <= floor {
+    if r.current_id.depth() <= left_floor(r) {
         return false; // already at root
     }
 
@@ -959,6 +986,7 @@ pub fn handle_left(r: &mut AppRenderer) {
             kind: sicompass_sdk::timeline::NavKind::ArrowLeft,
         };
         crate::state::record_entry(r, entry);
+        speak_back_arrow(r);
         r.needs_redraw = true;
     }
 }
@@ -8911,6 +8939,56 @@ mod tests {
         handle_right(&mut r);
         assert_eq!(r.current_id.depth(), 3);
         assert_eq!(r.total_list.len(), 1); // "child 0"
+    }
+
+    /// The parent line is not in the accessibility tree, so entering a list has
+    /// to say what it belongs to.
+    #[test]
+    fn entering_a_list_speaks_the_back_arrow() {
+        let mut r = make_renderer();
+        r.list_index = 3;
+        r.sync_current_id_from_list();
+        handle_right(&mut r);
+        assert_eq!(announced_text(&r).as_deref(), Some("arrow left, section"));
+    }
+
+    #[test]
+    fn leaving_a_list_speaks_the_back_arrow_of_the_one_it_lands_in() {
+        let mut r = make_renderer();
+        let root_name = match &r.ffon[0] {
+            FfonElement::Obj(o) => sicompass_sdk::tags::strip_display(&o.key),
+            FfonElement::Str(_) => unreachable!(),
+        };
+        r.list_index = 3;
+        r.sync_current_id_from_list();
+        handle_right(&mut r);
+        handle_left(&mut r);
+        assert_eq!(
+            announced_text(&r),
+            Some(format!("arrow left, {root_name}"))
+        );
+    }
+
+    /// At the top level there is nothing to go back to, so no arrow and no word.
+    #[test]
+    fn the_top_level_has_no_back_arrow() {
+        let mut r = make_renderer();
+        assert!(left_leaves_this_list(&r), "inside a provider");
+        r.current_id.pop();
+        assert!(!left_leaves_this_list(&r), "at the root");
+    }
+
+    /// A launcher's Left stops at its one provider, so the arrow must not promise
+    /// more.
+    #[test]
+    fn a_launcher_shows_no_back_arrow_at_its_floor() {
+        let mut r = make_renderer();
+        r.launcher_mode = true;
+        assert!(!left_leaves_this_list(&r));
+        r.list_index = 3;
+        r.sync_current_id_from_list();
+        handle_right(&mut r);
+        assert!(left_leaves_this_list(&r));
     }
 
     #[test]

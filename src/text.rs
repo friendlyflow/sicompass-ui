@@ -240,6 +240,23 @@ pub struct FontRenderer {
 // Safety: FontRenderer is only used from the main thread; raw FT pointers are opaque handles.
 unsafe impl Send for FontRenderer {}
 
+/// How far to lower a glyph from the icon face, the last of `faces`, in pixels.
+///
+/// Bootstrap Icons centres its glyphs on the middle of the em box, far above the
+/// middle of a letter. Its own stylesheet's `vertical-align: -.125em` is not enough
+/// here: that still leaves a dash above the middle of a capital. This lands the
+/// glyphs between the middle of a lowercase letter and of a capital, so an icon
+/// reads as centred on whichever letter follows it. Text faces need nothing.
+///
+/// # Safety
+/// `face` must be a live face with a size set.
+unsafe fn icon_drop(faces: &[ft::FT_Face], face: ft::FT_Face) -> f32 {
+    if faces.last() != Some(&face) {
+        return 0.0;
+    }
+    unsafe { (*(*face).size).metrics.y_ppem as f32 * 0.2 }
+}
+
 /// Rasterize codepoint `cp` from the first face in `faces` that contains it,
 /// pack it into the shelf described by (`pen_x`, `pen_y`, `row_height`), blit
 /// its coverage bitmap into `atlas_data`, and return its metrics + UVs. Returns
@@ -298,7 +315,10 @@ unsafe fn rasterize_glyph(
 
         let gi = GlyphInfo {
             size: [bw as f32, bh as f32],
-            bearing: [(*slot).bitmap_left as f32, (*slot).bitmap_top as f32],
+            bearing: [
+                (*slot).bitmap_left as f32,
+                (*slot).bitmap_top as f32 - icon_drop(faces, face),
+            ],
             advance: ((*slot).advance.x >> 6) as f32,
             uv_min: [
                 *pen_x as f32 / atlas_size as f32,
@@ -2429,6 +2449,67 @@ mod tests {
                 }
             }
             (lib, faces)
+        }
+    }
+
+    /// Fallback is first face wins, so a text face claiming an icon's code point
+    /// would draw some other glyph in its place. DejaVu Sans does claim parts of
+    /// the private use area.
+    #[test]
+    fn the_list_icons_come_from_the_icon_face() {
+        unsafe {
+            let (lib, faces) = load_test_faces();
+            let (icon_face, text_faces) = faces.split_last().expect("faces");
+            for icon in [
+                fonts::ICON_ARROW_RIGHT,
+                fonts::ICON_ARROW_LEFT,
+                fonts::ICON_DASH,
+            ] {
+                let cp = icon as ft::FT_ULong;
+                assert_ne!(ft::FT_Get_Char_Index(*icon_face, cp), 0, "{cp:X} is no icon");
+                for face in text_faces {
+                    assert_eq!(ft::FT_Get_Char_Index(*face, cp), 0, "{cp:X} in a text face");
+                }
+            }
+            for face in faces {
+                ft::FT_Done_Face(face);
+            }
+            ft::FT_Done_FreeType(lib);
+        }
+    }
+
+    /// An icon has to sit in the middle of the letter after it. Bootstrap's glyphs
+    /// ride high unless they are lowered, and the dash shows it most clearly.
+    #[test]
+    fn the_icons_sit_between_the_middle_of_a_small_letter_and_of_a_capital() {
+        unsafe {
+            let (lib, faces) = load_test_faces();
+            let atlas_size = 1024u32;
+            let mut atlas = vec![0u8; (atlas_size * atlas_size) as usize];
+            let (mut px, mut py, mut rh) = (0i32, 0i32, 0i32);
+            let mut glyph = |cp: u32| {
+                rasterize_glyph(&faces, &mut atlas, atlas_size, &mut px, &mut py, &mut rh, cp)
+                    .expect("glyph")
+            };
+            let middle = |g: &GlyphInfo| g.bearing[1] - g.size[1] / 2.0;
+            let small = middle(&glyph('x' as u32));
+            let capital = middle(&glyph('H' as u32));
+            for icon in [
+                fonts::ICON_DASH,
+                fonts::ICON_ARROW_RIGHT,
+                fonts::ICON_ARROW_LEFT,
+            ] {
+                let at = middle(&glyph(icon as u32));
+                assert!(
+                    small <= at && at <= capital,
+                    "{:X} at {at}, want between {small} and {capital}",
+                    icon as u32
+                );
+            }
+            for face in faces {
+                ft::FT_Done_Face(face);
+            }
+            ft::FT_Done_FreeType(lib);
         }
     }
 

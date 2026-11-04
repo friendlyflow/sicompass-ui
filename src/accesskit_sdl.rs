@@ -395,12 +395,12 @@ fn list_prefix_to_word(prefix: &str) -> Option<&'static str> {
         "-b" => Some("dash b"),
         "-i" => Some("dash i"),
         "-r" => Some("dash r"),
-        "+" => Some("plus"),
-        "+cc" => Some("plus cc"),
-        "+c" => Some("plus c"),
-        "+l" => Some("plus l"),
-        "+R" => Some("plus R"),
-        "+i" => Some("plus i"),
+        "+" => Some("arrow right"),
+        "+cc" => Some("arrow right cc"),
+        "+c" => Some("arrow right c"),
+        "+l" => Some("arrow right l"),
+        "+R" => Some("arrow right R"),
+        "+i" => Some("arrow right i"),
         // Timeline-view positioners, which follow the `-` list prefix
         // (e.g. "- > x" → "dash current x"). HEAD is the next ctrl-Z target;
         // redo-branch entries have already been undone. Without these mappings
@@ -903,7 +903,7 @@ mod tests {
 
     #[test]
     fn label_to_speech_plus_l() {
-        assert_eq!(label_to_speech("+l foo"), "plus l foo");
+        assert_eq!(label_to_speech("+l foo"), "arrow right l foo");
     }
 
     #[test]
@@ -957,7 +957,7 @@ mod tests {
         let mut r2 = make_renderer_with_list(&["-i newfile.txt", "+l dir"]);
         r2.list_index = 1;
         let tree2 = build_tree(&r2);
-        assert_eq!(tree2.nodes[1].1.label().as_deref(), Some("plus l dir"));
+        assert_eq!(tree2.nodes[1].1.label().as_deref(), Some("arrow right l dir"));
     }
 
     #[test]

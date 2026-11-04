@@ -815,7 +815,7 @@ fn update_view(app: &mut AppState) {
                 .iter()
                 .map(|(label, _, _, _, _)| {
                     let (p, _) = split_label(label);
-                    let text_w = fr.measure_text_width(p, scale);
+                    let text_w = fr.measure_text_width(&prefix_for_display(p), scale);
                     // When any item has an indicator, all items reserve the same indicator width
                     let indicator_w = if list_has_indicators {
                         indicator_width(line_height as f32, em_width)
@@ -1395,16 +1395,8 @@ fn update_view(app: &mut AppState) {
     // Always present (empty at root level), so list items are consistently
     // indented one level below the parent line.
     //
-    // At depth 2 (just inside a provider) the parent is always the provider's
-    // root Obj, whose key is unconditionally `display_name()`. For providers
-    // that pin their root key (`stable_root_key=true`, e.g. editor) that key
-    // never changes as the user navigates within the provider, so deriving the
-    // label from the active provider's `current_path()` basename gives a label
-    // that follows the list. Every provider that can be at depth 2 with a
-    // non-root path is a filesystem one; a non-filesystem provider at depth 2
-    // is by invariant at `"/"` (see `rebuild_and_clamp` and
-    // `sync_inmemory_provider_path_to_cursor`), so `at_root()` short-circuits
-    // the override and the label stays the provider's name.
+    // The text itself is `list::parent_line_text`, which the speech for entering
+    // a list reads too.
     let parent_info: ParentInfo = if app.renderer.current_id.depth() > 1 {
         let mut parent_id = app.renderer.current_id.clone();
         parent_id.pop();
@@ -1414,25 +1406,7 @@ fn update_view(app: &mut AppState) {
             .zip(parent_idx)
             .and_then(|(slice, idx)| {
                 let elem = slice.get(idx)?;
-                let raw_text = match elem {
-                    sicompass_sdk::ffon::FfonElement::Obj(obj) => obj.key.as_str(),
-                    sicompass_sdk::ffon::FfonElement::Str(s) => s.as_str(),
-                };
-                let mut display_text = sicompass_sdk::tags::strip_display(raw_text);
-                if app.renderer.current_id.depth() == 2 {
-                    let provider_idx = app.renderer.current_id.get(0).unwrap_or(0);
-                    if let Some(p) = app.renderer.providers.get(provider_idx) {
-                        if !p.at_root() {
-                            if let Some(name) = std::path::Path::new(p.current_path())
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .filter(|s| !s.is_empty())
-                            {
-                                display_text = name.to_owned();
-                            }
-                        }
-                    }
-                }
+                let display_text = crate::list::parent_line_text(&app.renderer);
                 let (is_radio, radio_summary) =
                     if let sicompass_sdk::ffon::FfonElement::Obj(obj) = elem {
                         if sicompass_sdk::tags::has_radio(&obj.key) {
@@ -1468,26 +1442,6 @@ fn update_view(app: &mut AppState) {
             is_radio: false,
             radio_summary: None,
         }
-    };
-
-    // A session view replaces the folder listing's level *in place*, so the
-    // element one level up — which is what everything above reads — is the
-    // folder the session runs in, not the session. That is right for the folder
-    // listing and for the session list, and wrong for a transcript: the line
-    // should name the session you are inside.
-    //
-    // The FFON cannot say it, so the app remembers it at the two moments it
-    // knows: the row Right was pressed on, and the prompt a new session was
-    // started with. Cleared on every way back out, so a stale name cannot
-    // outlive the session it described.
-    let parent_info = match &app.renderer.session_view_parent_label {
-        Some(label) if !label.is_empty() && crate::handlers::in_session_view(&app.renderer) => {
-            ParentInfo {
-                display_text: label.clone(),
-                ..parent_info
-            }
-        }
-        _ => parent_info,
     };
 
     // ---- Scroll-into-view: compute start_index from scroll_offset/list_index --
@@ -1606,7 +1560,7 @@ fn update_view(app: &mut AppState) {
                     let image_lines = ((img_h / line_height as f32).ceil() as usize).max(1);
                     let (prefix_text, suffix, _) = split_image_label(label, path);
                     let prefix_lines =
-                        ext_flow(fr, breadcrumb, "", prefix_text, scale, img_w, em_width)
+                        ext_flow(fr, breadcrumb, "", &label_for_display(prefix_text), scale, img_w, em_width)
                             .total_lines;
                     let suffix_lines = if suffix.is_empty() {
                         0
@@ -1616,7 +1570,7 @@ fn update_view(app: &mut AppState) {
                     return prefix_lines + image_lines + suffix_lines;
                 }
                 let (prefix_str, content) = split_label(label);
-                ext_flow(fr, breadcrumb, prefix_str, content, scale, rest_w, em_width).total_lines
+                ext_flow(fr, breadcrumb, &prefix_for_display(prefix_str), content, scale, rest_w, em_width).total_lines
             })
             .collect()
     };
@@ -1745,7 +1699,7 @@ fn update_view(app: &mut AppState) {
                     )
                 } else if is_flat_list {
                     // Command/Meta items: no prefix split — measure the full label
-                    (fr.count_wrapped_lines(label, scale, item_max_w), None)
+                    (fr.count_wrapped_lines(&label_for_display(label), scale, item_max_w), None)
                 } else {
                     let (_, content) = split_label(label);
                     (fr.count_wrapped_lines(content, scale, item_max_w), None)
@@ -1777,7 +1731,7 @@ fn update_view(app: &mut AppState) {
                     let image_lines = ((img_h / line_height as f32).ceil() as usize).max(1);
                     let (prefix_text, suffix, _) = split_image_label(label, path);
                     let prefix_lines =
-                        ext_flow(fr, breadcrumb, "", prefix_text, scale, img_w, em_width)
+                        ext_flow(fr, breadcrumb, "", &label_for_display(prefix_text), scale, img_w, em_width)
                             .total_lines;
                     let suffix_lines = if suffix.is_empty() {
                         0
@@ -1797,7 +1751,7 @@ fn update_view(app: &mut AppState) {
                 } else {
                     let (prefix_str, content) = split_label(label);
                     (
-                        ext_flow(fr, breadcrumb, prefix_str, content, scale, rest_w, em_width)
+                        ext_flow(fr, breadcrumb, &prefix_for_display(prefix_str), content, scale, rest_w, em_width)
                             .total_lines,
                         None,
                     )
@@ -1871,13 +1825,18 @@ fn update_view(app: &mut AppState) {
         } else {
             parent_info.display_text.clone()
         };
+        let parent_display = if crate::handlers::left_leaves_this_list(&app.renderer) {
+            format!("{} {parent_display}", crate::fonts::ICON_ARROW_LEFT)
+        } else {
+            parent_display
+        };
         let parent_shown = fr.truncate_to_width(&parent_display, scale, chrome_w);
         fr.prepare_text_for_rendering(&parent_shown, text_x, parent_y, scale, p.text);
         if let Some(ref summary) = parent_info.radio_summary {
             let indent = fr.measure_text_width("    ", scale);
             let summary_x = text_x + indent;
             let summary_y = parent_y + line_height as f32;
-            let display = format!("-rc {}", summary);
+            let display = format!("{} {}", prefix_for_display("-rc"), summary);
             let indicator_offset = if let Some(rr) = app.rect_renderer.as_mut() {
                 render_radio_indicator(
                     rr,
@@ -2085,7 +2044,7 @@ fn update_view(app: &mut AppState) {
                     // Same continuous flow as a text result: the breadcrumb
                     // wraps, then the caption resumes after its last line.
                     let breadcrumb = item_data.as_deref().unwrap_or("");
-                    let flow = ext_flow(fr, breadcrumb, "", prefix_text, scale, img_w, em_width);
+                    let flow = ext_flow(fr, breadcrumb, "", &label_for_display(prefix_text), scale, img_w, em_width);
                     for (n, (bc_line, _)) in flow.bc_lines.iter().enumerate() {
                         fr.prepare_text_for_rendering(
                             bc_line,
@@ -2106,7 +2065,7 @@ fn update_view(app: &mut AppState) {
                     render_with_highlights(
                         fr,
                         rr,
-                        prefix_text,
+                        &label_for_display(prefix_text),
                         label_x,
                         label_y,
                         scale,
@@ -2114,7 +2073,7 @@ fn update_view(app: &mut AppState) {
                         line_height as f32,
                         p.text,
                         p.scroll_search,
-                        &prefix_positions,
+                        &positions_for_display(prefix_text, &prefix_positions),
                         wrap,
                     );
                 }
@@ -2177,7 +2136,7 @@ fn update_view(app: &mut AppState) {
                 // content resume after its last line.
                 let rest_w = (right_edge - text_prefix_x).max(1.0);
                 let breadcrumb = item_data.as_deref().unwrap_or("");
-                let flow = ext_flow(fr, breadcrumb, prefix_str, content, scale, rest_w, em_width);
+                let flow = ext_flow(fr, breadcrumb, &prefix_for_display(prefix_str), content, scale, rest_w, em_width);
                 for (n, (bc_line, _)) in flow.bc_lines.iter().enumerate() {
                     fr.prepare_text_for_rendering(
                         bc_line,
@@ -2189,7 +2148,7 @@ fn update_view(app: &mut AppState) {
                 }
                 let content_y = item_y + flow.content_line as f32 * line_height as f32;
                 let prefix_x = text_prefix_x + flow.content_dx;
-                fr.prepare_text_for_rendering(prefix_str, prefix_x, content_y, scale, p.text);
+                fr.prepare_text_for_rendering(&prefix_for_display(prefix_str), prefix_x, content_y, scale, p.text);
                 let content_x = prefix_x + fr.measure_text_width(prefix_str, scale);
                 // Adjust match positions to be relative to content (subtract prefix char count)
                 let prefix_char_count = prefix_str.chars().count() as u32;
@@ -2246,7 +2205,7 @@ fn update_view(app: &mut AppState) {
                     .map(|&pp| pp - tag_char_count)
                     .collect();
                 if let Some(fr) = app.font_renderer.as_mut() {
-                    fr.prepare_text_for_rendering(tag, text_prefix_x, current_y, scale, p.text);
+                    fr.prepare_text_for_rendering(&prefix_for_display(tag), text_prefix_x, current_y, scale, p.text);
                     if !content.is_empty() {
                         // Wrap at the content column — `prefix_lines` above was
                         // reserved on that assumption.
@@ -2287,7 +2246,7 @@ fn update_view(app: &mut AppState) {
                 current_y += prefix_lines as f32 * line_height as f32;
             } else {
                 if let Some(fr) = app.font_renderer.as_mut() {
-                    fr.prepare_text_for_rendering("-p", text_prefix_x, current_y, scale, p.text);
+                    fr.prepare_text_for_rendering(&prefix_for_display("-p"), text_prefix_x, current_y, scale, p.text);
                 }
             }
 
@@ -2458,10 +2417,11 @@ fn update_view(app: &mut AppState) {
             } else if is_flat_list {
                 // Command/Meta: no prefix split — render the full label.
                 // Use fuzzy highlights when match positions are available.
+                let shown = label_for_display(label.as_str());
                 let wrap_w = max_content_w.max(1.0);
                 if match_pos.is_empty() {
                     fr.prepare_text_wrapped(
-                        label.as_str(),
+                        &shown,
                         text_prefix_x,
                         item_y,
                         scale,
@@ -2476,7 +2436,7 @@ fn update_view(app: &mut AppState) {
                     render_with_highlights(
                         fr,
                         rr,
-                        label.as_str(),
+                        &shown,
                         text_prefix_x,
                         item_y,
                         scale,
@@ -2495,7 +2455,7 @@ fn update_view(app: &mut AppState) {
             } else {
                 let (prefix, content) = split_label(label.as_str());
                 let prefix_char_count = prefix.chars().count() as u32;
-                fr.prepare_text_for_rendering(prefix, text_prefix_x, item_y, scale, p.text);
+                fr.prepare_text_for_rendering(&prefix_for_display(prefix), text_prefix_x, item_y, scale, p.text);
                 let content_positions: Vec<u32> = match_pos
                     .iter()
                     .filter(|&&p| p >= prefix_char_count)
@@ -2957,7 +2917,7 @@ fn render_scroll_item(
             }
         }
         if !list_prefix.is_empty() {
-            fr.prepare_text_for_rendering(&list_prefix, text_prefix_x, baseline, scale, p.text);
+            fr.prepare_text_for_rendering(&prefix_for_display(&list_prefix), text_prefix_x, baseline, scale, p.text);
         }
     }
 
@@ -3940,6 +3900,60 @@ fn render_checkbox_indicator(
     size + em_width
 }
 
+/// The list prefixes the app builds (`list::build_label_for_element`). Only these
+/// are drawn with an icon: a colon command's raw label can start with a `-` that
+/// is its own text.
+const LIST_PREFIXES: &[&str] = &[
+    "-", "-p", "-cc", "-c", "-rc", "-r", "-b", "-i", "-ci", "+", "+cc", "+c", "+l", "+R", "+i",
+    "+ci", "+di", "+fi",
+];
+
+/// A list prefix as it is drawn: the `+` or `-` becomes its Bootstrap icon, and
+/// the letters that say what kind of row it is stay, after a space (`+l` is
+/// arrow-right, space, `l`, `-b` is dash, space, `b`).
+///
+/// Drawing only. The label itself keeps `+` and `-`, because launcher search,
+/// speech and the rename parsing all read it. Anything not in [`LIST_PREFIXES`]
+/// comes back as it was. Keeps a trailing space.
+pub(crate) fn prefix_for_display(prefix: &str) -> std::borrow::Cow<'_, str> {
+    use crate::fonts::{ICON_ARROW_RIGHT, ICON_DASH};
+    if !LIST_PREFIXES.contains(&prefix.trim_end_matches(' ')) {
+        return prefix.into();
+    }
+    let icon = match prefix.as_bytes().first() {
+        Some(b'+') => ICON_ARROW_RIGHT,
+        Some(b'-') => ICON_DASH,
+        _ => return prefix.into(),
+    };
+    let rest = &prefix[1..];
+    if rest.trim_end_matches(' ').is_empty() {
+        format!("{icon}{rest}").into()
+    } else {
+        format!("{icon} {rest}").into()
+    }
+}
+
+/// A search match's character positions in `label`, moved to where those
+/// characters are in [`label_for_display`]: the space after the icon pushes
+/// everything behind the sign along by one.
+fn positions_for_display(label: &str, positions: &[u32]) -> Vec<u32> {
+    let added = label_for_display(label).chars().count() as u32 - label.chars().count() as u32;
+    positions
+        .iter()
+        .map(|&p| if p >= 1 { p + added } else { p })
+        .collect()
+}
+
+/// A whole label with its list prefix as it is drawn, for the lists that draw
+/// the label in one piece (meta, timeline, an image result's caption).
+pub(crate) fn label_for_display(label: &str) -> std::borrow::Cow<'_, str> {
+    let (prefix, content) = split_label(label);
+    match prefix_for_display(prefix) {
+        std::borrow::Cow::Borrowed(_) => label.into(),
+        std::borrow::Cow::Owned(shown) => format!("{shown}{content}").into(),
+    }
+}
+
 /// Split a list label at the first space into (prefix_with_space, content).
 /// E.g. `"-c My item"` -> `("-c ", "My item")`.
 fn split_label(label: &str) -> (&str, &str) {
@@ -3972,6 +3986,74 @@ struct ImageLayout {
     image_lines: usize,
     img_w: f32,
     img_h: f32,
+}
+
+#[cfg(test)]
+mod prefix_display_tests {
+    use super::{LIST_PREFIXES, label_for_display, positions_for_display, prefix_for_display};
+    use crate::fonts::{ICON_ARROW_RIGHT as ARROW, ICON_DASH as DASH};
+
+    /// Every prefix swaps its sign and keeps every letter after it, one space on.
+    #[test]
+    fn every_list_prefix_keeps_its_letters() {
+        for p in LIST_PREFIXES {
+            let sign = if p.starts_with('+') { ARROW } else { DASH };
+            let want = if p.len() == 1 {
+                sign.to_string()
+            } else {
+                format!("{sign} {}", &p[1..])
+            };
+            assert_eq!(prefix_for_display(p), want, "{p}");
+        }
+        assert_eq!(prefix_for_display("+l"), format!("{ARROW} l"));
+        assert_eq!(prefix_for_display("-b"), format!("{DASH} b"));
+        assert_eq!(prefix_for_display("-p"), format!("{DASH} p"));
+    }
+
+    #[test]
+    fn a_trailing_space_survives() {
+        assert_eq!(prefix_for_display("+ "), format!("{ARROW} "));
+        assert_eq!(prefix_for_display("+l "), format!("{ARROW} l "));
+    }
+
+    /// A raw colon-command label is not a list prefix.
+    #[test]
+    fn other_text_is_left_alone() {
+        assert_eq!(prefix_for_display("-force "), "-force ");
+        assert_eq!(prefix_for_display("plain "), "plain ");
+        assert_eq!(prefix_for_display(""), "");
+        assert_eq!(label_for_display("-force push"), "-force push");
+    }
+
+    /// Search highlights index the label by character, so a bare sign must not
+    /// move anything: the flat lists (meta, timeline) draw only those.
+    #[test]
+    fn a_bare_sign_keeps_the_character_count() {
+        for label in ["- x", "+ x", "- > undone"] {
+            let shown = label_for_display(label);
+            assert_eq!(shown.chars().count(), label.chars().count(), "{label}");
+        }
+    }
+
+    /// A highlight in `-p caption` stays on the same letter of the caption.
+    #[test]
+    fn highlights_follow_the_space_after_the_icon() {
+        let label = "-p cat";
+        let shown: Vec<char> = label_for_display(label).chars().collect();
+        let raw: Vec<char> = label.chars().collect();
+        for (p, q) in (0..raw.len() as u32).zip(positions_for_display(label, &(0..6).collect::<Vec<u32>>())) {
+            if p >= 1 {
+                assert_eq!(shown[q as usize], raw[p as usize], "position {p}");
+            }
+        }
+        assert_eq!(positions_for_display("- cat", &[0, 2]), vec![0, 2]);
+    }
+
+    /// Only the list prefix changes, not a dash inside the content.
+    #[test]
+    fn a_label_swaps_only_its_prefix() {
+        assert_eq!(label_for_display("- - bullet"), format!("{DASH} - bullet"));
+    }
 }
 
 #[cfg(test)]

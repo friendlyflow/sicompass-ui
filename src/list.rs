@@ -735,6 +735,58 @@ fn check_parent_has_radio(renderer: &AppRenderer) -> bool {
 // Command mode list building
 // ---------------------------------------------------------------------------
 
+/// The text of the parent line above the list: the name of the element the list
+/// belongs to, empty at the top level. Drawn after the back arrow, and spoken
+/// when a list is entered.
+///
+/// At depth 2 (just inside a provider) the parent is always the provider's root
+/// Obj, whose key is unconditionally `display_name()`. For providers that pin
+/// their root key (`stable_root_key=true`, e.g. editor) that key never changes as
+/// the user navigates within the provider, so deriving the label from the active
+/// provider's `current_path()` basename gives a label that follows the list.
+/// Every provider that can be at depth 2 with a non-root path is a filesystem one;
+/// a non-filesystem provider at depth 2 is by invariant at `"/"` (see
+/// `rebuild_and_clamp` and `sync_inmemory_provider_path_to_cursor`), so `at_root()`
+/// short-circuits the override and the label stays the provider's name.
+///
+/// A session view replaces the folder listing's level *in place*, so the element
+/// one level up is the folder the session runs in, not the session. That is right
+/// for the folder listing and for the session list, and wrong for a transcript:
+/// the line should name the session you are inside. The FFON cannot say it, so the
+/// app remembers it at the two moments it knows: the row Right was pressed on, and
+/// the prompt a new session was started with. Cleared on every way back out, so a
+/// stale name cannot outlive the session it described.
+pub fn parent_line_text(r: &AppRenderer) -> String {
+    if r.current_id.depth() <= 1 {
+        return String::new();
+    }
+    if let Some(label) = r.session_view_parent_label.as_deref().filter(|l| !l.is_empty())
+        && crate::handlers::in_session_view(r)
+    {
+        return label.to_owned();
+    }
+    if r.current_id.depth() == 2
+        && let Some(p) = r.current_id.get(0).and_then(|i| r.providers.get(i))
+        && !p.at_root()
+        && let Some(name) = std::path::Path::new(p.current_path())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|s| !s.is_empty())
+    {
+        return name.to_owned();
+    }
+    let mut parent_id = r.current_id.clone();
+    parent_id.pop();
+    parent_id
+        .last()
+        .and_then(|idx| get_ffon_at_id(&r.ffon, &parent_id)?.get(idx))
+        .map(|elem| match elem {
+            FfonElement::Obj(obj) => tags::strip_display(&obj.key),
+            FfonElement::Str(s) => tags::strip_display(s),
+        })
+        .unwrap_or_default()
+}
+
 /// Build the list for `Coordinate::Meta` — shortcut hints from the active provider.
 /// Build the list for `Coordinate::TimelineView` — per-tab undo timeline.
 ///
