@@ -258,7 +258,14 @@ impl MarkupScope {
 
     fn label(&self, id: &IdArray, elem: &FfonElement, parent_has_radio: bool) -> String {
         match elem {
-            FfonElement::Str(s) => build_str_label(&self.text(id, s), parent_has_radio),
+            FfonElement::Str(s) => {
+                let label = build_str_label(&self.text(id, s), parent_has_radio);
+                if self.covers(id) {
+                    with_video_letter(label, s)
+                } else {
+                    label
+                }
+            }
             FfonElement::Obj(obj) => {
                 let key = self.text(id, &obj.key);
                 if key == obj.key {
@@ -727,6 +734,26 @@ fn build_label_for_element(elem: &FfonElement, parent_has_radio: bool) -> String
     match elem {
         FfonElement::Str(s) => build_str_label(s, parent_has_radio),
         FfonElement::Obj(obj) => build_obj_label(obj),
+    }
+}
+
+/// A row of markup holding a video says so in its prefix, the way `p` says a picture:
+/// `-v`, or `-pv` when it holds both. Only markup can hold a video, so this reads the
+/// row as written. Other letters win (`-b`, `-i`): they say what Enter or `i` does.
+fn with_video_letter(label: String, row: &str) -> String {
+    if !row.contains("<video")
+        || !sicompass_sdk::markup::targets(row)
+            .iter()
+            .any(|t| t.kind == tags::TargetKind::Video)
+    {
+        return label;
+    }
+    match label.split_once(' ') {
+        Some(("-", rest)) => format!("-v {rest}"),
+        Some(("-p", rest)) => format!("-pv {rest}"),
+        None if label == "-" => "-v".to_owned(),
+        None if label == "-p" => "-pv".to_owned(),
+        _ => label,
     }
 }
 
@@ -2726,6 +2753,34 @@ mod markup_scope_tests {
 
     fn labels(r: &AppRenderer) -> Vec<&str> {
         r.total_list.iter().map(|i| i.label.as_str()).collect()
+    }
+
+    /// `v` says a video, like `p` says a picture.
+    #[test]
+    fn a_row_holding_a_video_says_v_in_its_prefix() {
+        let prefix = |row: &str, markup: bool| {
+            let r = renderer(markup, &[row], 0);
+            r.total_list[0]
+                .label
+                .split(' ')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(prefix(r#"<video src="a.mp4">Trip</video>"#, true), "-v");
+        assert_eq!(prefix(r#"<video>a.mp4</video>"#, true), "-v");
+        assert_eq!(
+            prefix(
+                r#"<div><img src="a.jpg" alt="A"><video src="b.mp4">B</video></div>"#,
+                true
+            ),
+            "-pv"
+        );
+        assert_eq!(prefix(r#"<img src="a.jpg" alt="A">"#, true), "-p");
+        assert_eq!(prefix(r#"<button>go</button><video src="b.mp4">B</video>"#, true), "-b");
+        // Not markup, and an escaped one is only text.
+        assert_eq!(prefix(r#"<video src="a.mp4">Trip</video>"#, false), "-");
+        assert_eq!(prefix(&tags::escape(r#"<video src="a.mp4">"#), true), "-");
     }
 
     /// A `<b>` typed into a list of markup is text. It must not turn the row bold while

@@ -4357,7 +4357,7 @@ fn render_checkbox_indicator(
 /// are drawn with an icon: a colon command's raw label can start with a `-` that
 /// is its own text.
 const LIST_PREFIXES: &[&str] = &[
-    "-", "-p", "-cc", "-c", "-rc", "-r", "-b", "-i", "-ci", "+", "+cc", "+c", "+l", "+R", "+i",
+    "-", "-p", "-v", "-pv", "-cc", "-c", "-rc", "-r", "-b", "-i", "-ci", "+", "+cc", "+c", "+l", "+R", "+i",
     "+ci", "+di", "+fi",
 ];
 
@@ -4452,6 +4452,8 @@ mod prefix_display_tests {
         assert_eq!(prefix_for_display("+l"), format!("{ARROW} l"));
         assert_eq!(prefix_for_display("-b"), format!("{DASH} b"));
         assert_eq!(prefix_for_display("-p"), format!("{DASH} p"));
+        assert_eq!(prefix_for_display("-v"), format!("{DASH} v"));
+        assert_eq!(prefix_for_display("-pv"), format!("{DASH} pv"));
     }
 
     #[test]
