@@ -133,11 +133,11 @@ hint-enter-insert = Enter  Insérer
 insert-palette-empty = rien à insérer
 escape-command-mode-first = appuyez sur Échap pour quitter d'abord { $mode }
 
-# Mode navigation
-mode-navigate = mode navigation
-hint-i-navigate = I      Naviguer
-hint-a-navigate-from-last = A      Naviguer depuis le dernier
-hint-esc-leave-navigate = Esc    Quitter la navigation
+# Mode dans l'élément
+mode-in-element = mode dans l'élément
+hint-i-in-element = I      Dans l'élément
+hint-a-in-element-from-last = A      Dans l'élément depuis le dernier
+hint-esc-leave-element = Esc    Quitter l'élément
 hint-right-next-target = Right  Cible suivante
 hint-left-previous-target = Left   Cible précédente
 hint-up-line-above = Up     Ligne au-dessus

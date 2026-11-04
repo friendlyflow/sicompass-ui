@@ -1,4 +1,4 @@
-//! Navigate mode: moving between the images, links and buttons in one row.
+//! In element mode: moving between the images, links and buttons in one row.
 //!
 //! Entered from General with `i` (first target) or `a` (last), like insert mode.
 //! Left and Right go target by target, skipping plain text, and Up and Down go to
@@ -38,8 +38,8 @@ fn focused_counts(r: &AppRenderer) -> TargetCounts {
         .unwrap_or_default()
 }
 
-/// `i` and `a` start navigate mode on this row.
-pub(crate) fn can_navigate(r: &AppRenderer) -> bool {
+/// `i` and `a` start in element mode on this row.
+pub(crate) fn can_enter(r: &AppRenderer) -> bool {
     r.current_id.depth() > 1 && focused_counts(r).total() > 0
 }
 
@@ -132,18 +132,18 @@ fn enter(r: &mut AppRenderer, last: bool) {
     r.nav_targets = targets;
     r.nav_positions.clear();
     r.nav_return = r.coordinate;
-    r.coordinate = Coordinate::Navigate;
+    r.coordinate = Coordinate::InElement;
     let phrase = target_phrase(&r.nav_targets, r.nav_index);
     r.speak_mode_change(Some(phrase));
     r.needs_redraw = true;
 }
 
-/// `i`: navigate mode on the row's first target.
+/// `i`: in element mode on the row's first target.
 pub fn handle_first(r: &mut AppRenderer) {
     enter(r, false);
 }
 
-/// `a`: navigate mode on the row's last target.
+/// `a`: in element mode on the row's last target.
 pub fn handle_last(r: &mut AppRenderer) {
     enter(r, true);
 }
@@ -193,7 +193,7 @@ pub fn handle_down(r: &mut AppRenderer) {
 /// The list was rebuilt under the mode, by a provider refresh say. Stay on the same
 /// target if it still exists, and leave if the row has none any more.
 pub(crate) fn after_list_rebuild(r: &mut AppRenderer) {
-    if r.coordinate != Coordinate::Navigate {
+    if r.coordinate != Coordinate::InElement {
         return;
     }
     let targets = focused_targets(r);
@@ -220,7 +220,7 @@ pub(crate) fn highlight_positions(r: &AppRenderer, label: &str) -> Vec<u32> {
 
 /// The selected target is an image, which gets a frame instead of a text highlight.
 pub(crate) fn selected_is_image(r: &AppRenderer) -> bool {
-    r.coordinate == Coordinate::Navigate
+    r.coordinate == Coordinate::InElement
         && r.nav_targets
             .get(r.nav_index)
             .is_some_and(|t| t.kind == TargetKind::Image)
@@ -241,7 +241,7 @@ pub fn handle_enter(r: &mut AppRenderer) {
             } else {
                 // Nothing there: stay on it and say so again.
                 r.current_id = id;
-                r.coordinate = Coordinate::Navigate;
+                r.coordinate = Coordinate::InElement;
                 announce_target(r);
             }
         }
@@ -269,7 +269,7 @@ fn press_button(r: &mut AppRenderer, target: &Target) {
     }
     r.needs_redraw = true;
     if r.coordinate == return_to && r.current_id == row && !focused_targets(r).is_empty() {
-        r.coordinate = Coordinate::Navigate;
+        r.coordinate = Coordinate::InElement;
         after_list_rebuild(r);
     }
 }
@@ -515,7 +515,7 @@ mod tests {
     fn i_starts_on_the_first_target_and_says_so() {
         let mut r = renderer(&[THREE_LINKS], 0);
         press(&mut r, Keycode::I);
-        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert_eq!(r.coordinate, Coordinate::InElement);
         assert_eq!(r.nav_index, 0);
         let said = announced(&r);
         assert!(said.contains("1"), "{said}");
@@ -526,7 +526,7 @@ mod tests {
     fn a_starts_on_the_last_target() {
         let mut r = renderer(&[THREE_LINKS], 0);
         press(&mut r, Keycode::A);
-        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert_eq!(r.coordinate, Coordinate::InElement);
         assert_eq!(r.nav_index, 2);
     }
 
@@ -622,7 +622,7 @@ mod tests {
         *r.ffon[0].as_obj_mut().unwrap().children.get_mut(0).unwrap() =
             FfonElement::new_str("Only <link>u</link>");
         list::create_list_current_layer(&mut r);
-        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert_eq!(r.coordinate, Coordinate::InElement);
         assert_eq!(r.nav_index, 0);
         assert_eq!(r.nav_targets.len(), 1);
     }
@@ -758,7 +758,7 @@ mod tests {
         let mut r = renderer(&[row], 0);
         press(&mut r, Keycode::I);
         press(&mut r, Keycode::Return);
-        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert_eq!(r.coordinate, Coordinate::InElement);
         assert_eq!(r.current_id.depth(), 2);
     }
 
@@ -816,7 +816,7 @@ mod tests {
     #[test]
     fn a_video_with_no_backend_says_so_and_stays_put() {
         let r = open_video(r#"<video src="/clips/v.mp4"></video>"#, false, false);
-        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert_eq!(r.coordinate, Coordinate::InElement);
         assert!(r.video_request.is_none() && r.video_open.is_none());
         assert!(!r.error_message.is_empty());
     }
@@ -894,7 +894,7 @@ mod tests {
     fn a_rows_only_video_opens_from_general_with_enter_or_d() {
         let mut r = open_video(r#"<video src="/clips/v.mp4"></video>"#, false, true);
         press(&mut r, Keycode::Escape);
-        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert_eq!(r.coordinate, Coordinate::InElement);
         assert!(focused_is_only_an_image(&r));
     }
 
@@ -921,7 +921,7 @@ mod tests {
         press(&mut r, Keycode::Right);
         assert_eq!(r.dashboard_image_path, "b.jpg", "stops at the last");
         press(&mut r, Keycode::Escape);
-        assert_eq!(r.coordinate, Coordinate::Navigate);
+        assert_eq!(r.coordinate, Coordinate::InElement);
         assert!(!r.element_image_view);
         assert_eq!(r.nav_index, 2);
         press(&mut r, Keycode::Escape);

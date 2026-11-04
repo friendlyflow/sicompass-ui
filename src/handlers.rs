@@ -1457,7 +1457,7 @@ pub fn handle_enter_scroll(r: &mut AppRenderer) {
 
 /// Navigate into the meta hint screen. M is only bound in General mode.
 pub fn handle_meta(r: &mut AppRenderer) {
-    if !r.coordinate.is_general() && r.coordinate != Coordinate::Navigate {
+    if !r.coordinate.is_general() && r.coordinate != Coordinate::InElement {
         return;
     }
     r.previous_coordinate = r.coordinate;

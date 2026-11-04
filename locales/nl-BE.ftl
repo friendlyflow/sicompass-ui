@@ -133,11 +133,11 @@ hint-enter-insert = Enter  Invoegen
 insert-palette-empty = niets om in te voegen
 escape-command-mode-first = druk op Escape om eerst { $mode } te verlaten
 
-# Navigatiemodus
-mode-navigate = navigatiemodus
-hint-i-navigate = I      Navigeren
-hint-a-navigate-from-last = A      Navigeren vanaf het laatste
-hint-esc-leave-navigate = Esc    Navigeren verlaten
+# In-elementmodus
+mode-in-element = in-elementmodus
+hint-i-in-element = I      In element
+hint-a-in-element-from-last = A      In element vanaf het laatste
+hint-esc-leave-element = Esc    Element verlaten
 hint-right-next-target = Right  Volgend doel
 hint-left-previous-target = Left   Vorig doel
 hint-up-line-above = Up     Regel erboven

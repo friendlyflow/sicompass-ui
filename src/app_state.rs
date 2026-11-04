@@ -188,8 +188,8 @@ pub enum Coordinate {
     #[default]
     General,
     Insert,
-    /// Moving between the images, links and buttons in one row (`navigate.rs`).
-    Navigate,
+    /// Moving between the images, links and buttons in one row (`in_element.rs`).
+    InElement,
     Normal,
     Visual,
     SimpleSearch,
@@ -299,7 +299,7 @@ impl Coordinate {
     pub const ALL: [Coordinate; 20] = [
         Coordinate::General,
         Coordinate::Insert,
-        Coordinate::Navigate,
+        Coordinate::InElement,
         Coordinate::Normal,
         Coordinate::Visual,
         Coordinate::SimpleSearch,
@@ -333,7 +333,7 @@ impl Coordinate {
     pub fn as_str(self) -> &'static str {
         match self {
             Coordinate::General => "general mode",
-            Coordinate::Navigate => "navigate mode",
+            Coordinate::InElement => "in element mode",
             Coordinate::Insert => "insert mode",
             Coordinate::Normal => "normal mode",
             Coordinate::Visual => "visual mode",
@@ -363,7 +363,7 @@ impl Coordinate {
         crate::shortcuts::register_translations();
         let key = match self {
             Coordinate::General => "mode-general",
-            Coordinate::Navigate => "mode-navigate",
+            Coordinate::InElement => "mode-in-element",
             Coordinate::Insert => "mode-insert",
             Coordinate::Normal => "mode-normal",
             Coordinate::Visual => "mode-visual",
@@ -721,7 +721,7 @@ pub struct AppRenderer {
     /// Currently selected item in the active list.
     pub list_index: usize,
 
-    // ---- Navigate mode (`navigate.rs`) -------------------------------------
+    // ---- In element mode (`in_element.rs`) -------------------------------------
     /// The focused row's images, links and buttons.
     pub nav_targets: Vec<sicompass_sdk::tags::Target>,
     /// The selected one of `nav_targets`.
@@ -729,12 +729,12 @@ pub struct AppRenderer {
     /// Where `nav_targets` are on screen, published by the view each frame, for
     /// Up and Down.
     pub nav_positions: Vec<crate::layout::TargetPos>,
-    /// The mode navigate mode returns to. Its own, because the big view it opens
+    /// The mode in element mode returns to. Its own, because the big view it opens
     /// uses `previous_coordinate` and has to come back here.
     pub nav_return: Coordinate,
     /// The dashboard is showing a row's image, not the provider's dashboard.
     pub element_image_view: bool,
-    /// How far navigate mode has scrolled the row it is in, for a row of boxes taller
+    /// How far in element mode has scrolled the row it is in, for a row of boxes taller
     /// than the window.
     pub row_scroll: f32,
     /// What the key handlers want done with the playing video, taken by the frame loop.

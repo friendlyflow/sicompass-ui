@@ -379,7 +379,7 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
     match renderer.coordinate.base() {
         Coordinate::General
         | Coordinate::Insert
-        | Coordinate::Navigate
+        | Coordinate::InElement
         | Coordinate::SimpleSearch => prepare_list_style(renderer),
         Coordinate::ExtendedSearch => {
             create_list_extended_search(renderer);
@@ -501,7 +501,7 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
     if !search.is_empty() {
         populate_list_current_layer(renderer, &search);
     }
-    crate::navigate::after_list_rebuild(renderer);
+    crate::in_element::after_list_rebuild(renderer);
 }
 
 /// Filter `total_list` by `search_string` using fuzzy matching and store

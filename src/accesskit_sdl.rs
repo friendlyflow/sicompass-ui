@@ -574,7 +574,7 @@ fn current_element(renderer: &AppRenderer) -> (String, String) {
     let counts = focused_row_counts(renderer, item);
     if counts.total() > 0 {
         spoken.push_str(", ");
-        spoken.push_str(&crate::navigate::counts_phrase(counts));
+        spoken.push_str(&crate::in_element::counts_phrase(counts));
     }
     (spoken, speech_content(raw_label).to_owned())
 }
@@ -589,7 +589,7 @@ fn focused_row_counts(
     let from_tree = matches!(
         renderer.coordinate.base(),
         Coordinate::General
-            | Coordinate::Navigate
+            | Coordinate::InElement
             | Coordinate::SimpleSearch
             | Coordinate::ExtendedSearch
     );

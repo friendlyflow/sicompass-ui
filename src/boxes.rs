@@ -7,7 +7,7 @@
 //! the cascade, and [`layout`] gives every box a place through `taffy`, the CSS grid and
 //! flexbox engine. [`RowLayout`] is the result: boxes to paint, in paint order, and where
 //! each of the row's targets (images, videos, links, buttons) sits, which is what
-//! navigate mode moves between.
+//! in element mode moves between.
 //!
 //! The tree is made of three things. Block elements (`div`, `p`, `h1`...) make
 //! containers. Runs of text, with the inline elements in them (`b`, `span`, `a`), make

@@ -1626,13 +1626,13 @@ fn update_view(app: &mut AppState) {
         ascender * scale + crate::text::TEXT_PADDING,
     );
 
-    if app.renderer.coordinate != Coordinate::Navigate {
+    if app.renderer.coordinate != Coordinate::InElement {
         app.renderer.row_scroll = 0.0;
     }
 
-    // Navigate mode's Up and Down ask where the targets are. In a row of boxes that is
+    // In element mode's Up and Down ask where the targets are. In a row of boxes that is
     // where its boxes are.
-    if app.renderer.coordinate == Coordinate::Navigate
+    if app.renderer.coordinate == Coordinate::InElement
         && let Some(laid) = shapes.get(list_index).and_then(|s| s.boxes.as_ref())
     {
         app.renderer.nav_positions = laid
@@ -1640,7 +1640,7 @@ fn update_view(app: &mut AppState) {
             .iter()
             .map(|t| crate::layout::TargetPos { x: t.x, y: t.y })
             .collect();
-    } else if app.renderer.coordinate == Coordinate::Navigate
+    } else if app.renderer.coordinate == Coordinate::InElement
         && let (Some(fr), Some(item)) = (app.font_renderer.as_ref(), list_items.get(list_index))
     {
         let (_, content) = split_label(&item.label);
@@ -1781,7 +1781,7 @@ fn update_view(app: &mut AppState) {
     }
 
     // ---- List items — selection highlight rectangles ----------------------
-    let selected_image_frame = crate::navigate::selected_is_image(&app.renderer);
+    let selected_image_frame = crate::in_element::selected_is_image(&app.renderer);
     let list_background = ul_style.background.unwrap_or(p.background);
     // The `ul`'s background, behind the column.
     if let (Some(color), Some(rr)) = (ul_style.background, app.rect_renderer.as_mut()) {
@@ -1873,7 +1873,7 @@ fn update_view(app: &mut AppState) {
             let bg_h = bg_bottom - bg_top;
             if let Some(rr) = app.rect_renderer.as_mut() {
                 rr.prepare_rectangle(bg_left, bg_top, bg_w, bg_h, p.selected, 5.0);
-                // Navigate mode's selected image: its frame shows in the 2 px the
+                // In element mode's selected image: its frame shows in the 2 px the
                 // image is inset by.
                 if selected_image_frame {
                     rr.prepare_rectangle(
@@ -1959,7 +1959,8 @@ fn update_view(app: &mut AppState) {
             } else {
                 item_prefix_x
             };
-            let selected_target = (app.renderer.coordinate == Coordinate::Navigate && *is_selected)
+            let selected_target = (app.renderer.coordinate == Coordinate::InElement
+                && *is_selected)
                 .then_some(app.renderer.nav_index);
             // A row taller than the window scrolls inside itself to keep the target on
             // screen.
@@ -3602,7 +3603,7 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
         && matches!(
             r.coordinate.base(),
             Coordinate::General
-                | Coordinate::Navigate
+                | Coordinate::InElement
                 | Coordinate::Insert
                 | Coordinate::Normal
                 | Coordinate::Visual
@@ -3645,8 +3646,8 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
                 is_selected: focus,
                 match_pos: if boxed {
                     Vec::new()
-                } else if r.coordinate == Coordinate::Navigate && focus {
-                    crate::navigate::highlight_positions(r, &item.label)
+                } else if r.coordinate == Coordinate::InElement && focus {
+                    crate::in_element::highlight_positions(r, &item.label)
                 } else {
                     positions
                 },
@@ -3660,7 +3661,7 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
 }
 
 /// Paint a row of boxes: backgrounds and borders, text with its runs, pictures, and the
-/// frame round the target navigate mode is on. `origin` is the row's top left on the
+/// frame round the target in element mode is on. `origin` is the row's top left on the
 /// screen, `clip` the rows of the screen it may use.
 /// Where a box row goes on screen, and what it draws over.
 struct BoxRowPlace {
@@ -3801,7 +3802,7 @@ fn draw_box_row(
     if let (Some(index), Some(rr)) = (selected_target, rr)
         && let Some(target) = laid.targets.get(index)
     {
-        // The target navigate mode is on, framed just outside it: pictures are drawn
+        // The target in element mode is on, framed just outside it: pictures are drawn
         // after rectangles, so a frame on its edge would be covered by the picture.
         let t = 4.0;
         let (x, y) = (origin.0 + target.x - t, origin.1 + target.y - t);
