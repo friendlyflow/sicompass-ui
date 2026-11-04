@@ -734,6 +734,9 @@ pub struct AppRenderer {
     pub nav_return: Coordinate,
     /// The dashboard is showing a row's image, not the provider's dashboard.
     pub element_image_view: bool,
+    /// How far navigate mode has scrolled the row it is in, for a row of boxes taller
+    /// than the window.
+    pub row_scroll: f32,
 
     /// The stylesheets in force.
     pub sheets: crate::style::Sheets,
@@ -1181,6 +1184,7 @@ impl AppRenderer {
             nav_positions: Vec::new(),
             nav_return: Coordinate::General,
             element_image_view: false,
+            row_scroll: 0.0,
             sheets: crate::style::Sheets::default(),
             input_buffer: String::new(),
             cursor_position: 0,

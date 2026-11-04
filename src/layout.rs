@@ -29,6 +29,9 @@ pub struct RowStyle {
     pub unfocused_background: Option<u32>,
     /// What `<b>` and `<span>` change inside the row's text.
     pub runs: Vec<TextRun>,
+    /// The row is a tree of boxes (a grid, several pictures, a video), laid out by
+    /// `boxes`, not a run of text.
+    pub boxed: bool,
 }
 
 /// A stretch of a row's text, by character, that looks different from the rest.
@@ -80,6 +83,8 @@ pub struct ListItem {
     /// In extended search, the path of the image this result shows.
     pub ext_prefix: Option<String>,
     pub style: Option<std::sync::Arc<RowStyle>>,
+    /// The row's markup, for a row of boxes.
+    pub markup: Option<String>,
 }
 
 /// A row's box in pixels: what its style adds around its text, on all four sides,
@@ -171,6 +176,14 @@ pub(crate) struct ListMetrics<'a> {
     pub is_flat_list: bool,
     pub is_extended_search: bool,
     pub edited_row: Option<EditedRow<'a>>,
+    /// What rows of boxes are laid out with.
+    pub boxes: Option<BoxEnv<'a>>,
+}
+
+/// The stylesheets and units a row of boxes is laid out with.
+pub(crate) struct BoxEnv<'a> {
+    pub sheets: &'a crate::style::Sheets,
+    pub env: &'a crate::style::StyleEnv,
 }
 
 /// How an image row divides its height, in lines, around the image.
@@ -184,17 +197,19 @@ pub(crate) struct ImageLayout {
 }
 
 /// The size one row needs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RowShape {
     pub lines: usize,
     /// In pixels: its lines, at its font size, and what its style adds around them.
     pub height: f32,
     pub image: Option<ImageLayout>,
     pub style: RowBoxStyle,
+    /// The boxes of a row of boxes, placed.
+    pub boxes: Option<std::sync::Arc<crate::boxes::RowLayout>>,
 }
 
 /// One row, placed.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RowBox {
     /// Baseline of the row's first line.
     pub y: f32,
@@ -209,6 +224,7 @@ pub(crate) struct RowBox {
     pub highlight_w: f32,
     pub image: Option<ImageLayout>,
     pub style: RowBoxStyle,
+    pub boxes: Option<std::sync::Arc<crate::boxes::RowLayout>>,
 }
 
 /// Height of an image shown `w` wide, keeping its proportions. Without a usable
@@ -229,6 +245,33 @@ pub(crate) fn measure_row(
     style: &RowBoxStyle,
     image_size: &mut dyn FnMut(&str) -> Option<(u32, u32)>,
 ) -> RowShape {
+    let editing_this = m.edited_row.as_ref().is_some_and(|e| e.index == index);
+    if let (Some(be), Some(markup), Some(row_style)) = (&m.boxes, &item.markup, &item.style)
+        && row_style.boxed
+        && !editing_this
+        && !m.is_extended_search
+    {
+        let width = (m.max_content_w - style.extra_width()).max(1.0);
+        let laid = crate::boxes::layout_row(
+            markup,
+            item.is_selected,
+            be.sheets,
+            be.env,
+            fr,
+            m.scale,
+            m.line_height,
+            width,
+            image_size,
+        );
+        let lines = ((laid.height / m.line_height).ceil() as usize).max(1);
+        return RowShape {
+            lines,
+            height: laid.height.max(m.line_height) + style.extra_height(),
+            image: None,
+            style: *style,
+            boxes: Some(laid),
+        };
+    }
     let (lines, image) = measure_lines(fr, m, index, item, style, image_size);
     let body = match image {
         // An image's own height is not the font's.
@@ -240,6 +283,7 @@ pub(crate) fn measure_row(
         height: body + style.extra_height(),
         image,
         style: *style,
+        boxes: None,
     }
 }
 
@@ -440,6 +484,7 @@ pub(crate) fn place_rows(
             highlight_w: highlight_w - s.margin[1] - s.margin[3],
             image: shape.image,
             style: *s,
+            boxes: shape.boxes.clone(),
         });
         y += shape.height;
     }
@@ -542,6 +587,7 @@ mod tests {
             is_flat_list: false,
             is_extended_search: false,
             edited_row: None,
+            boxes: None,
         }
     }
 
@@ -577,6 +623,7 @@ mod tests {
             height: lines as f32 * LH,
             image: None,
             style: RowBoxStyle::default(),
+            boxes: None,
         }
     }
 
@@ -631,8 +678,17 @@ mod tests {
             height: LH + styled().extra_height(),
             image: None,
             style: styled(),
+            boxes: None,
         };
-        let rows = place_rows(&[shape, shape], 0, 100.0, 1000.0, 7.0, 500.0, 16.0);
+        let rows = place_rows(
+            &[shape.clone(), shape.clone()],
+            0,
+            100.0,
+            1000.0,
+            7.0,
+            500.0,
+            16.0,
+        );
         assert_eq!(rows[0].y, 100.0 + 10.0 + 5.0 + 1.0);
         assert_eq!(rows[0].box_y, 100.0 - 16.0 + 10.0);
         assert_eq!(rows[0].box_h, LH + 5.0 + 5.0 + 1.0 + 3.0);
@@ -644,7 +700,7 @@ mod tests {
     /// The row every list had before stylesheets, unchanged to the pixel.
     #[test]
     fn no_style_adds_nothing() {
-        let row = place_rows(&[shape(3)], 0, 100.0, 1000.0, 7.0, 500.0, 16.0)[0];
+        let row = place_rows(&[shape(3)], 0, 100.0, 1000.0, 7.0, 500.0, 16.0).remove(0);
         assert_eq!((row.y, row.content_x, row.left), (100.0, 7.0, 0.0));
         assert_eq!(
             (row.box_y, row.box_h, row.highlight_w),
@@ -980,7 +1036,7 @@ mod tests {
     /// One row may start below the fold's last line, so nothing is cut off early.
     #[test]
     fn placing_stops_past_the_bottom_of_the_window() {
-        let shapes = [shape(1); 10];
+        let shapes = vec![shape(1); 10];
         let rows = place_rows(&shapes, 0, 0.0, 2.0 * LH, 0.0, 0.0, 16.0);
         assert_eq!(rows.len(), 3, "rows at 0, one line and exactly the edge");
     }

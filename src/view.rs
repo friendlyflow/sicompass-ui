@@ -1522,13 +1522,13 @@ fn update_view(app: &mut AppState) {
                 prefix: insert_prefix.as_str(),
                 buffer: insert_buf.as_str(),
             }),
+            boxes: Some(crate::layout::BoxEnv {
+                sheets: &app.renderer.sheets,
+                env: &style_env,
+            }),
         };
-        let image_renderer = &mut app.image_renderer;
-        let mut image_size = |path: &str| {
-            image_renderer
-                .as_mut()
-                .and_then(|ir| unsafe { ir.texture_size(path) })
-        };
+        // From the file's header, so laying a list out never decodes a photo.
+        let mut image_size = |path: &str| crate::image::dimensions(path);
         list_items
             .iter()
             .enumerate()
@@ -1561,8 +1561,21 @@ fn update_view(app: &mut AppState) {
         ascender * scale + crate::text::TEXT_PADDING,
     );
 
-    // Navigate mode's Up and Down ask where the targets are.
+    if app.renderer.coordinate != Coordinate::Navigate {
+        app.renderer.row_scroll = 0.0;
+    }
+
+    // Navigate mode's Up and Down ask where the targets are. In a row of boxes that is
+    // where its boxes are.
     if app.renderer.coordinate == Coordinate::Navigate
+        && let Some(laid) = shapes.get(list_index).and_then(|s| s.boxes.as_ref())
+    {
+        app.renderer.nav_positions = laid
+            .targets
+            .iter()
+            .map(|t| crate::layout::TargetPos { x: t.x, y: t.y })
+            .collect();
+    } else if app.renderer.coordinate == Coordinate::Navigate
         && let (Some(fr), Some(item)) = (app.font_renderer.as_ref(), list_items.get(list_index))
     {
         let (_, content) = split_label(&item.label);
@@ -1598,6 +1611,11 @@ fn update_view(app: &mut AppState) {
     }
     if let Some(ir) = app.image_renderer.as_mut() {
         ir.begin_image_rendering();
+        // Pictures a decoder thread has finished, a few a frame. Keep drawing while any
+        // are still on their way.
+        if unsafe { ir.pump_loads() } {
+            app.renderer.needs_redraw = true;
+        }
     }
 
     // ---- Header separator line (between header and content) --------------
@@ -1851,6 +1869,7 @@ fn update_view(app: &mut AppState) {
             match_pos,
             ext_prefix,
             style,
+            ..
         },
     ) in list_items[start_index..]
         .iter()
@@ -1858,6 +1877,63 @@ fn update_view(app: &mut AppState) {
         .enumerate()
     {
         let (item_y, content_start_x) = (rows[i].y, rows[i].content_x);
+        if let Some(laid) = rows[i].boxes.as_ref() {
+            let background = style
+                .as_ref()
+                .and_then(|s| row_background(s, *is_selected, list_background, &p))
+                .unwrap_or(if *is_selected {
+                    p.selected
+                } else {
+                    list_background
+                });
+            let top = item_y - ascender * scale - crate::text::TEXT_PADDING;
+            let chrome_bottom = first_item_y - ascender * scale - crate::text::TEXT_PADDING;
+            let prefix_x = if list_has_indicators {
+                item_prefix_x + indicator_width(line_height as f32, em_width)
+            } else {
+                item_prefix_x
+            };
+            let selected_target = (app.renderer.coordinate == Coordinate::Navigate && *is_selected)
+                .then_some(app.renderer.nav_index);
+            // A row taller than the window scrolls inside itself to keep the target on
+            // screen.
+            let scroll = match selected_target.and_then(|n| laid.targets.get(n)) {
+                Some(t) => crate::boxes::scroll_to_show(
+                    app.renderer.row_scroll,
+                    t.y,
+                    t.h,
+                    win_h - top,
+                    laid.height,
+                ),
+                None => 0.0,
+            };
+            app.renderer.row_scroll = scroll;
+            let top = top - scroll;
+            if let Some(fr) = app.font_renderer.as_mut() {
+                let (prefix, _) = split_label(label.as_str());
+                let marker = style.as_ref().and_then(|s| s.marker_color);
+                let marker = crate::style::readable_color(marker, background, p.text);
+                fr.prepare_text_for_rendering(
+                    &prefix_for_display(prefix),
+                    prefix_x,
+                    item_y,
+                    scale,
+                    marker,
+                );
+                draw_box_row(
+                    laid,
+                    (content_start_x, top),
+                    (chrome_bottom, win_h),
+                    fr,
+                    app.rect_renderer.as_mut(),
+                    app.image_renderer.as_mut(),
+                    &p,
+                    background,
+                    (ascender, selected_target),
+                );
+            }
+            continue;
+        }
 
         // Draw graphical indicator (radio/checkbox) and compute x shift.
         // When any item has an indicator, all items shift their text right by the
@@ -3469,30 +3545,180 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
             } else {
                 Vec::new()
             };
+            let focus = i == r.list_index;
+            let markup = (styled && markup_here)
+                .then(|| crate::list::text_at(&r.ffon, &item.id))
+                .flatten()
+                .filter(|row| sicompass_sdk::markup::has_markup(row));
+            let style = styled
+                .then(|| r.sheets.row_style(markup.as_deref(), focus, env))
+                .filter(|_| !(editing && focus));
+            let boxed = style.as_ref().is_some_and(|s| s.boxed);
             out.push(ListItem {
                 label: item.label.clone(),
-                data: item.data.clone(),
-                is_selected: i == r.list_index,
-                match_pos: if r.coordinate == Coordinate::Navigate && i == r.list_index {
+                // A row of boxes draws its own pictures.
+                data: if boxed { None } else { item.data.clone() },
+                is_selected: focus,
+                match_pos: if boxed {
+                    Vec::new()
+                } else if r.coordinate == Coordinate::Navigate && focus {
                     crate::navigate::highlight_positions(r, &item.label)
                 } else {
                     positions
                 },
                 ext_prefix: item.ext_prefix.clone(),
-                style: styled
-                    .then(|| {
-                        let focus = i == r.list_index;
-                        let markup = markup_here
-                            .then(|| crate::list::text_at(&r.ffon, &item.id))
-                            .flatten()
-                            .filter(|row| sicompass_sdk::markup::has_markup(row));
-                        r.sheets.row_style(markup.as_deref(), focus, env)
-                    })
-                    .filter(|_| !(editing && i == r.list_index)),
+                style,
+                markup: if boxed { markup } else { None },
             });
         }
     }
     out
+}
+
+/// Paint a row of boxes: backgrounds and borders, text with its runs, pictures, and the
+/// frame round the target navigate mode is on. `origin` is the row's top left on the
+/// screen, `clip` the rows of the screen it may use.
+fn draw_box_row(
+    laid: &crate::boxes::RowLayout,
+    origin: (f32, f32),
+    clip: (f32, f32),
+    fr: &mut crate::text::FontRenderer,
+    mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
+    mut ir: Option<&mut crate::image::ImageRenderer>,
+    p: &crate::app_state::ColorPalette,
+    row_background: u32,
+    (ascender, selected_target): (f32, Option<usize>),
+) {
+    use crate::boxes::PlacedContent;
+    for placed in &laid.boxes {
+        let (x, y) = (origin.0 + placed.x, origin.1 + placed.y);
+        if y > clip.1 || y + placed.h < clip.0 {
+            continue;
+        }
+        let behind = placed.backdrop.unwrap_or(row_background);
+        if let Some(rr) = rr.as_deref_mut() {
+            if placed.border > 0.0 {
+                let color = placed
+                    .style
+                    .border_color
+                    .or(placed.style.color)
+                    .unwrap_or(p.text);
+                rr.prepare_rectangle(x, y, placed.w, placed.h, color, placed.radius);
+                rr.prepare_rectangle(
+                    x + placed.border,
+                    y + placed.border,
+                    (placed.w - 2.0 * placed.border).max(0.0),
+                    (placed.h - 2.0 * placed.border).max(0.0),
+                    behind,
+                    (placed.radius - placed.border).max(0.0),
+                );
+            } else if let Some(color) = placed.style.background {
+                rr.prepare_rectangle(x, y, placed.w, placed.h, color, placed.radius);
+            }
+        }
+        match &placed.content {
+            PlacedContent::Container => {}
+            PlacedContent::Text {
+                lines,
+                runs,
+                scale: box_scale,
+                line_height,
+            } => {
+                let color = crate::style::readable_color(placed.style.color, behind, p.text);
+                let top = y + placed.inset[0];
+                let bold = placed.style.bold;
+                for (n, (line, first)) in lines.iter().enumerate() {
+                    let baseline = top
+                        + ascender * box_scale
+                        + crate::text::TEXT_PADDING
+                        + n as f32 * line_height;
+                    let mut at = crate::boxes::line_x(placed, fr, line, *box_scale) + origin.0;
+                    let chars: Vec<char> = line.chars().collect();
+                    for (from, to, run) in
+                        crate::layout::split_at_runs(*first, first + chars.len(), runs)
+                    {
+                        let piece: String = chars[from - first..to - first].iter().collect();
+                        let piece_color = run.map_or(color, |run| {
+                            crate::style::readable_color(
+                                run.color.or(placed.style.color),
+                                behind,
+                                p.text,
+                            )
+                        });
+                        fr.set_bold(run.map_or(bold, |run| run.bold));
+                        fr.prepare_text_for_rendering(
+                            &piece,
+                            at,
+                            baseline,
+                            *box_scale,
+                            piece_color,
+                        );
+                        at += fr.measure_text_width(&piece, *box_scale);
+                    }
+                }
+                fr.set_bold(false);
+            }
+            PlacedContent::Media {
+                path,
+                is_video,
+                poster,
+                fit,
+                ..
+            } => {
+                let inner = [
+                    x + placed.inset[3],
+                    y + placed.inset[0],
+                    (placed.w - placed.inset[1] - placed.inset[3]).max(0.0),
+                    (placed.h - placed.inset[0] - placed.inset[2]).max(0.0),
+                ];
+                let source = if *is_video {
+                    poster.as_deref()
+                } else {
+                    Some(path.as_str())
+                };
+                let shown = source.is_some_and(|source| {
+                    ir.as_deref_mut().is_some_and(|ir| unsafe {
+                        ir.prepare_picture(source, inner, *fit, clip.0, clip.1)
+                    })
+                });
+                if !shown && let Some(rr) = rr.as_deref_mut() {
+                    // Still on its way: a patch of the right size.
+                    rr.prepare_rectangle(inner[0], inner[1], inner[2], inner[3], p.header_sep, 4.0);
+                }
+                if *is_video {
+                    // The icon over the middle of it.
+                    let size = (inner[2].min(inner[3]) / 3.0).clamp(12.0, 96.0);
+                    let icon_scale = size / fr.get_width_em(1.0).max(1.0);
+                    let icon = crate::fonts::ICON_PLAY.to_string();
+                    let at = inner[0] + (inner[2] - fr.measure_text_width(&icon, icon_scale)) / 2.0;
+                    fr.prepare_text_for_rendering(
+                        &icon,
+                        at,
+                        inner[1] + inner[3] / 2.0 + size / 3.0,
+                        icon_scale,
+                        p.text,
+                    );
+                }
+            }
+        }
+    }
+    if let (Some(index), Some(rr)) = (selected_target, rr.as_deref_mut())
+        && let Some(target) = laid.targets.get(index)
+    {
+        // The target navigate mode is on, framed just outside it: pictures are drawn
+        // after rectangles, so a frame on its edge would be covered by the picture.
+        let t = 4.0;
+        let (x, y) = (origin.0 + target.x - t, origin.1 + target.y - t);
+        let (w, h) = (target.w + 2.0 * t, target.h + 2.0 * t);
+        for (fx, fy, fw, fh) in [
+            (x, y, w, t),
+            (x, y + h - t, w, t),
+            (x, y, t, h),
+            (x + w - t, y, t, h),
+        ] {
+            rr.prepare_rectangle(fx, fy, fw, fh, p.text, 0.0);
+        }
+    }
 }
 
 /// What a styled row has behind it, `None` for nothing. The cursor's row always has

@@ -320,6 +320,11 @@ pub(crate) fn follow_link(r: &mut AppRenderer, url: &str) -> bool {
 /// Enter on a row in General that shows "Enter Follow link".
 pub fn handle_enter_link(r: &mut AppRenderer) {
     let raw = handlers::focused_element_raw(r).unwrap_or_default();
+    let raw = if r.sheets.markup_here() {
+        sicompass_sdk::markup::plain(&raw)
+    } else {
+        raw
+    };
     let is_plain_link = !tags::has_button(&raw)
         && !tags::has_checkbox(&raw)
         && !tags::has_checkbox_checked(&raw)
@@ -676,6 +681,35 @@ mod tests {
         let mut r = renderer(&[row.as_str()], 0);
         press(&mut r, Keycode::Return);
         assert_eq!(r.current_id.depth(), 3);
+        assert!(r.total_list[0].label.contains("the page"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A real `<a href>` is followed just like the older tag.
+    #[test]
+    fn enter_follows_a_real_anchor_in_a_markup_row() {
+        struct Markup;
+        impl sicompass_sdk::provider::Provider for Markup {
+            fn name(&self) -> &str {
+                "markup"
+            }
+            fn fetch(&mut self) -> Vec<FfonElement> {
+                Vec::new()
+            }
+            fn markup(&self) -> bool {
+                true
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("nav-anchor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = dir.join("p.json");
+        std::fs::write(&page, r#"["the page"]"#).unwrap();
+        let row = format!(r#"Go <a href="{}">there</a>"#, page.display());
+        let mut r = renderer(&[row.as_str()], 0);
+        r.providers.push(Box::new(Markup));
+        list::create_list_current_layer(&mut r);
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.current_id.depth(), 3, "inside the page");
         assert!(r.total_list[0].label.contains("the page"));
         std::fs::remove_dir_all(&dir).ok();
     }

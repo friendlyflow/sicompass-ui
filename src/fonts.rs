@@ -63,6 +63,8 @@ pub const ICON_ARROW_LEFT: char = '\u{F12F}';
 /// Bootstrap Icons `dash-lg`, drawn for the `-` of a list prefix. The large one,
 /// because it is as long as the arrow; plain `dash` is two thirds of that.
 pub const ICON_DASH: char = '\u{F63B}';
+/// Bootstrap Icons `play-circle`, drawn over a video that is not playing.
+pub const ICON_PLAY: char = '\u{F4F3}';
 
 /// Color emoji face, rasterised into the separate RGBA atlas.
 ///

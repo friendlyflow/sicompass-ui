@@ -418,16 +418,14 @@ fn focused_is_button(r: &AppRenderer) -> bool {
 
 /// True when the focused element is a hyperlink.
 fn focused_is_link(r: &AppRenderer) -> bool {
-    let Some(slice) = get_ffon_at_id(&r.ffon, &r.current_id) else {
-        return false;
-    };
-    let idx = r.current_id.last().unwrap_or(0);
-    slice.get(idx).is_some_and(|e| {
-        let k = match e {
-            sicompass_sdk::ffon::FfonElement::Str(s) => s.as_str(),
-            sicompass_sdk::ffon::FfonElement::Obj(o) => o.key.as_str(),
+    // A real `<a href>` in a markup row is a link too.
+    handlers::focused_element_raw(r).is_some_and(|raw| {
+        let text = if r.sheets.markup_here() {
+            sicompass_sdk::markup::plain(&raw)
+        } else {
+            raw
         };
-        tags::has_link(k)
+        tags::has_link(&text)
     })
 }
 

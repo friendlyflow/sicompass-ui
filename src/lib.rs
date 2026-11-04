@@ -29,6 +29,7 @@ pub mod view;
 
 pub mod accessibility;
 pub mod accesskit_sdl;
+pub mod boxes;
 pub mod caret;
 pub mod checkmark;
 pub mod events;

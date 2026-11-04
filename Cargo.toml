@@ -46,7 +46,7 @@ bundled-sdl3 = ["sdl3/build-from-source-static"]
 # was split out. Keep them in step with sicompass's `[workspace.dependencies]`,
 # or cargo builds two copies of a crate into the app.
 [dependencies]
-sicompass-sdk = "0.9.10"
+sicompass-sdk = "0.9.11"
 async-trait = "0.1"
 
 serde = { version = "1", features = ["derive"] }
@@ -89,6 +89,10 @@ nucleo-matcher = "0.3"
 cssparser = "0.37"
 selectors = "0.38"
 precomputed-hash = "0.1"
+
+# CSS grid and flexbox for rows that hold boxes. Three small pure-Rust crates (taffy,
+# slotmap, grid), and the layout-only features: no serde, no calc.
+taffy = { version = "0.9", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout"] }
 
 tokio = { version = "1", features = ["full"] }
 

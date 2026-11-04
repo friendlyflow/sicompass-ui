@@ -194,7 +194,7 @@ impl Default for Style {
 
 impl Style {
     /// What a child starts from: CSS's inherited properties, and nothing else.
-    fn inherited(&self) -> Style {
+    pub(crate) fn inherited(&self) -> Style {
         Style {
             color: self.color,
             font_scale: self.font_scale,
@@ -1073,6 +1073,8 @@ pub struct Sheets {
     /// Computed row styles, by the row's text and whether the cursor is on it. Rows
     /// that look alike share one, so a long list costs a few lookups a frame.
     cache: RefCell<HashMap<(String, bool), Arc<RowStyle>>>,
+    /// Rows of boxes already laid out, see `boxes::layout_row`.
+    pub(crate) box_cache: RefCell<HashMap<crate::boxes::BoxKey, Arc<crate::boxes::RowLayout>>>,
 }
 
 impl Default for Sheets {
@@ -1086,6 +1088,7 @@ impl Default for Sheets {
             ul_classes: Vec::new(),
             markup_here: false,
             cache: RefCell::new(HashMap::new()),
+            box_cache: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -1161,6 +1164,24 @@ fn collect_runs(
                 }
                 *at += len;
             }
+            // These three are drawn from what they stand for, so they take up what
+            // `markup::plain` writes for them, not their children.
+            markup::Node::Element(element) if matches!(element.tag, "img" | "a" | "video") => {
+                path.push(node_of(element));
+                let style = compute(sheets, path, env);
+                path.pop();
+                let shown = markup::plain_nodes(std::slice::from_ref(node));
+                let len = tags::strip_display(&shown).chars().count();
+                if element.tag == "a" && (style.color.is_some() || style.bold) && len > 0 {
+                    runs.push(TextRun {
+                        start: *at,
+                        end: *at + len,
+                        color: style.color,
+                        bold: style.bold,
+                    });
+                }
+                *at += len;
+            }
             markup::Node::Element(element) => {
                 path.push(node_of(element));
                 let style = compute(sheets, path, env);
@@ -1183,7 +1204,12 @@ impl Sheets {
     /// The user's `user.css`, which comes last so it wins.
     pub fn set_user(&mut self, css: Option<&str>) {
         self.user = css.map(Stylesheet::parse).filter(|s| !s.is_empty());
+        self.clear_caches();
+    }
+
+    fn clear_caches(&self) {
         self.cache.borrow_mut().clear();
+        self.box_cache.borrow_mut().clear();
     }
 
     /// Remember the sheet of a `<style>` row found in the list under `root`.
@@ -1196,7 +1222,7 @@ impl Sheets {
             if found.css != css {
                 found.sheet = Arc::new(Stylesheet::parse(&css));
                 found.css = css;
-                self.cache.borrow_mut().clear();
+                self.clear_caches();
             }
             return;
         }
@@ -1251,7 +1277,7 @@ impl Sheets {
                 .any(|(a, b)| !Arc::ptr_eq(a, b))
             || ul_classes != self.ul_classes;
         if changed {
-            self.cache.borrow_mut().clear();
+            self.clear_caches();
         }
         self.active = active;
         self.ul_classes = ul_classes;
@@ -1281,6 +1307,36 @@ impl Sheets {
             classes: self.ul_classes.clone(),
             ..StyleNode::new("ul")
         }
+    }
+
+    /// The style of the element at the end of `path`, which starts at the `ul`.
+    pub(crate) fn style_for(&self, path: &[StyleNode], env: &StyleEnv) -> Style {
+        compute(&self.all(), path, env)
+    }
+
+    /// Where inline elements colour or embolden the text of `nodes`, which sit under the
+    /// element at the end of `parent_path`.
+    pub(crate) fn runs_for(
+        &self,
+        parent_path: &[StyleNode],
+        nodes: &[markup::Node],
+        env: &StyleEnv,
+    ) -> Vec<TextRun> {
+        let mut path = parent_path.to_vec();
+        let mut runs = Vec::new();
+        collect_runs(&self.all(), nodes, &mut path, None, env, &mut 0, &mut runs);
+        runs
+    }
+
+    /// The `li` node of a row, which the box tree of a row hangs from.
+    pub(crate) fn row_path(&self, focus: bool) -> Vec<StyleNode> {
+        vec![
+            self.ul_node(),
+            StyleNode {
+                focus,
+                ..StyleNode::new("li")
+            },
+        ]
     }
 
     /// The `ul` of the current list.
@@ -1328,7 +1384,10 @@ impl Sheets {
         }
         collect_runs(&sheets, inner, &mut path, None, env, &mut at, &mut runs);
         let marker = StyleNode::new(MARKER_TAG);
+        let boxed =
+            row.is_some() && crate::boxes::needs_boxes(&nodes, self, env, &[ul.clone(), li(focus)]);
         RowStyle {
+            boxed,
             li: style,
             marker_color: compute(&sheets, &[ul.clone(), li(focus), marker], env).color,
             unfocused_background: focus
@@ -1861,6 +1920,30 @@ mod tests {
         let style = sheets.row_style(Some(row), false, &StyleEnv::default());
         assert_eq!((style.runs[0].start, style.runs[0].end), (3, 6));
         assert_eq!(tags::strip_display(&markup::plain(row)), "Go now");
+    }
+
+    /// An `<img>` shows its alt and its path, which is what the runs after it count past.
+    #[test]
+    fn runs_count_past_a_real_img_and_a() {
+        let sheets = Sheets::default();
+        let row = r#"<img src="a.jpg" alt="Cat"> x <b>bold</b>"#;
+        let style = sheets.row_style(Some(row), false, &StyleEnv::default());
+        let shown = tags::strip_display(&markup::plain(row));
+        let bold: String = shown
+            .chars()
+            .skip(style.runs[0].start)
+            .take(style.runs[0].end - style.runs[0].start)
+            .collect();
+        assert_eq!(bold, "bold", "{shown:?} {:?}", style.runs);
+        let row = r#"<a href="u">Home</a> then <b>this</b>"#;
+        let style = sheets.row_style(Some(row), false, &StyleEnv::default());
+        let shown = tags::strip_display(&markup::plain(row));
+        let bold: String = shown
+            .chars()
+            .skip(style.runs[0].start)
+            .take(style.runs[0].end - style.runs[0].start)
+            .collect();
+        assert_eq!(bold, "this", "{shown:?}");
     }
 
     #[test]
