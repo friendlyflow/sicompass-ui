@@ -408,23 +408,11 @@ pub fn navigate_right_raw(r: &mut AppRenderer) -> bool {
     if let Some(url) = link_url {
         // Fragment-only link: jump the cursor to the matching <id> tag in the current page.
         if let Some(frag) = url.strip_prefix('#') {
-            if !frag.is_empty() {
-                let provider_idx = item_id.get(0).unwrap_or(0);
-                if let Some(FfonElement::Obj(provider_root)) = r.ffon.get(provider_idx) {
-                    let mut base = IdArray::new();
-                    base.push(provider_idx);
-                    base.push(0); // dummy slot; set_last overwrites it at each level
-                    if let Some(target_path) = find_id_path(&provider_root.children, &base, frag) {
-                        r.current_id = target_path;
-                        return true;
-                    }
-                }
-            }
-            return false; // unresolved or empty fragment — stay put
+            return jump_to_fragment(r, &item_id, frag);
         }
 
         if !has_children {
-            let children = resolve_link_to_elements(&url);
+            let (children, is_document) = resolve_link(&url);
             if children.is_empty() {
                 return false;
             }
@@ -434,6 +422,9 @@ pub fn navigate_right_raw(r: &mut AppRenderer) -> bool {
                 if let Some(FfonElement::Obj(obj)) = siblings.get_mut(last_idx) {
                     obj.children = children;
                 }
+            }
+            if is_document {
+                mark_document(r, &item_id);
             }
         }
         let mut new_id = item_id;
@@ -559,6 +550,16 @@ pub fn apply_rendered_pages(r: &mut AppRenderer) -> bool {
     false
 }
 
+/// Every link's URL in one row. A row can hold several, and only the page that was
+/// asked for comes back, so which one it was needs no remembering.
+fn links_in(key: &str) -> Vec<String> {
+    tags::targets(key)
+        .into_iter()
+        .filter(|t| t.kind == tags::TargetKind::Link)
+        .map(|t| t.value)
+        .collect()
+}
+
 /// The URLs of every `<link>` still showing [`LINK_LOADING`].
 fn collect_waiting_links(elems: &[FfonElement], out: &mut Vec<String>) {
     for e in elems {
@@ -566,9 +567,11 @@ fn collect_waiting_links(elems: &[FfonElement], out: &mut Vec<String>) {
             continue;
         };
         let waiting = matches!(o.children.as_slice(), [FfonElement::Str(s)] if s == LINK_LOADING);
-        match tags::extract_link(&o.key) {
-            Some(url) if waiting => out.push(url),
-            _ => collect_waiting_links(&o.children, out),
+        let links = links_in(&o.key);
+        if waiting && !links.is_empty() {
+            out.extend(links);
+        } else {
+            collect_waiting_links(&o.children, out);
         }
     }
 }
@@ -588,7 +591,7 @@ fn fill_waiting_links(
         };
         id.push(i);
         let waiting = matches!(o.children.as_slice(), [FfonElement::Str(s)] if s == LINK_LOADING);
-        if waiting && tags::extract_link(&o.key).as_deref() == Some(url) {
+        if waiting && links_in(&o.key).iter().any(|link| link == url) {
             o.children = page.to_vec();
             filled.push(id.clone());
         } else {
@@ -600,15 +603,35 @@ fn fill_waiting_links(
 
 /// Resolve a link URL (provider asset, local file, or HTTP) into FFON elements.
 /// Mirrors C's `resolveLinkToElements`.
-fn resolve_link_to_elements(url: &str) -> Vec<FfonElement> {
+pub(crate) fn resolve_link_to_elements(url: &str) -> Vec<FfonElement> {
+    resolve_link(url).0
+}
+
+/// The rows a link leads to, and whether they are an FFON document, written as such:
+/// its HTML-named tags and `<style>` rows mean what they say. A web page converted to
+/// rows is not one.
+pub(crate) fn resolve_link(url: &str) -> (Vec<FfonElement>, bool) {
     if sicompass_sdk::assets::is_uri(url) {
-        resolve_asset_link(url)
+        (resolve_asset_link(url), true)
     } else if url.starts_with("http://") || url.starts_with("https://") {
         resolve_http_link(url)
     } else if url.ends_with(".ffon") {
-        sicompass_sdk::ffon::load_ffon_file(std::path::Path::new(url)).unwrap_or_default()
+        (
+            sicompass_sdk::ffon::load_ffon_file(std::path::Path::new(url)).unwrap_or_default(),
+            true,
+        )
     } else {
-        sicompass_sdk::ffon::load_json_file(std::path::Path::new(url)).unwrap_or_default()
+        (
+            sicompass_sdk::ffon::load_json_file(std::path::Path::new(url)).unwrap_or_default(),
+            true,
+        )
+    }
+}
+
+/// Note that the row at `row` now holds an FFON document.
+pub(crate) fn mark_document(r: &mut AppRenderer, row: &IdArray) {
+    if let Some(text) = list::text_at(&r.ffon, row) {
+        r.sheets.mark_document(row, &text);
     }
 }
 
@@ -647,16 +670,21 @@ fn resolve_asset_link(uri: &str) -> Vec<FfonElement> {
 /// Otherwise it is treated as an HTML page and rendered through the
 /// headless-Chromium fetcher. A real network error is reported in place — the
 /// browser would not do better — so the link node still renders.
-fn resolve_http_link(url: &str) -> Vec<FfonElement> {
+fn resolve_http_link(url: &str) -> (Vec<FfonElement>, bool) {
     let body = match crate::http::fetch_body(url) {
         Ok(b) => b,
-        Err(e) => return vec![FfonElement::new_str(format!("Error loading {url}: {e}"))],
+        Err(e) => {
+            return (
+                vec![FfonElement::new_str(format!("Error loading {url}: {e}"))],
+                false,
+            );
+        }
     };
     // A JSON FFON document is a server-hosted tier tree — parse it directly.
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
         if sicompass_sdk::ffon::is_ffon(&value) {
             if let Ok(elems) = serde_json::from_value::<Vec<FfonElement>>(value) {
-                return elems;
+                return (elems, true);
             }
         }
     }
@@ -665,17 +693,20 @@ fn resolve_http_link(url: &str) -> Vec<FfonElement> {
     // app answers at once. Without either, the page's plain HTML is what there
     // is: no script runs, so a page built by JavaScript shows little.
     if sicompass_sdk::url_fetcher::request_render(url) {
-        return vec![FfonElement::new_str(LINK_LOADING.to_owned())];
+        return (vec![FfonElement::new_str(LINK_LOADING.to_owned())], false);
     }
     let rendered = sicompass_sdk::fetch_url_to_ffon(url);
     if !rendered.is_empty() {
-        return rendered;
+        return (rendered, false);
     }
     let page = sicompass_sdk::ffon::html_to_ffon(&body, url);
     if page.is_empty() {
-        vec![FfonElement::new_str(format!("{url} has no content"))]
+        (
+            vec![FfonElement::new_str(format!("{url} has no content"))],
+            false,
+        )
     } else {
-        page
+        (page, false)
     }
 }
 
@@ -825,36 +856,41 @@ pub fn handle_right(r: &mut AppRenderer) {
     };
     r.current_id = item_id;
     if navigate_right_raw(r) {
-        // Reset the viewport to the top of the child listing — mirrors
-        // `handle_left`. Without this, a scrolled-down position carried over
-        // from a long parent folder leaves a shorter child list scrolled
-        // entirely out of view, rendering as a blank list.
-        r.scroll_offset = 0;
-        list::create_list_current_layer(r);
-        r.sync_current_id_from_list();
-        r.caret.reset(sdl_ticks());
-        // Emit a TimelineEntry::Navigate for the unified undo stack.
-        let provider_idx = r.current_id.get(0).unwrap_or(0);
-        // Gate to_path on destination depth too: after navigate_right_raw,
-        // the cursor may sit at depth >= 2 even when origin was at depth 1,
-        // so the descent into the provider is reflected as `None → /<path>`.
-        let to_path = if r.current_id.depth() >= 2 {
-            Some(crate::provider::current_path(r).to_owned())
-        } else {
-            None
-        };
-        let entry = sicompass_sdk::timeline::TimelineEntry::Navigate {
-            provider_idx,
-            from_id: pre_nav_id,
-            to_id: r.current_id.clone(),
-            from_path: path_before.clone(),
-            to_path,
-            kind: sicompass_sdk::timeline::NavKind::ArrowRight,
-        };
-        crate::state::record_entry(r, entry);
-        speak_back_arrow(r);
-        r.needs_redraw = true;
+        finish_right(r, pre_nav_id, path_before);
     }
+}
+
+/// What every step into a level ends with, once `current_id` is inside it.
+pub(crate) fn finish_right(r: &mut AppRenderer, pre_nav_id: IdArray, path_before: Option<String>) {
+    // Reset the viewport to the top of the child listing — mirrors
+    // `handle_left`. Without this, a scrolled-down position carried over
+    // from a long parent folder leaves a shorter child list scrolled
+    // entirely out of view, rendering as a blank list.
+    r.scroll_offset = 0;
+    list::create_list_current_layer(r);
+    r.sync_current_id_from_list();
+    r.caret.reset(sdl_ticks());
+    // Emit a TimelineEntry::Navigate for the unified undo stack.
+    let provider_idx = r.current_id.get(0).unwrap_or(0);
+    // Gate to_path on destination depth too: after navigate_right_raw,
+    // the cursor may sit at depth >= 2 even when origin was at depth 1,
+    // so the descent into the provider is reflected as `None → /<path>`.
+    let to_path = if r.current_id.depth() >= 2 {
+        Some(crate::provider::current_path(r).to_owned())
+    } else {
+        None
+    };
+    let entry = sicompass_sdk::timeline::TimelineEntry::Navigate {
+        provider_idx,
+        from_id: pre_nav_id,
+        to_id: r.current_id.clone(),
+        from_path: path_before,
+        to_path,
+        kind: sicompass_sdk::timeline::NavKind::ArrowRight,
+    };
+    crate::state::record_entry(r, entry);
+    speak_back_arrow(r);
+    r.needs_redraw = true;
 }
 
 /// The shallowest depth Left can reach. A launcher's world is its one provider:
@@ -884,6 +920,26 @@ fn speak_back_arrow(r: &mut AppRenderer) {
     if !parent.is_empty() {
         r.announce_provider_line(format!("arrow left, {parent}"));
     }
+}
+
+/// Move the cursor to the element with `<id>fragment</id>` in the provider `from`
+/// is in. An unresolved or empty fragment stays put.
+pub(crate) fn jump_to_fragment(r: &mut AppRenderer, from: &IdArray, fragment: &str) -> bool {
+    if fragment.is_empty() {
+        return false;
+    }
+    let provider_idx = from.get(0).unwrap_or(0);
+    let Some(FfonElement::Obj(provider_root)) = r.ffon.get(provider_idx) else {
+        return false;
+    };
+    let mut base = IdArray::new();
+    base.push(provider_idx);
+    base.push(0); // dummy slot; set_last overwrites it at each level
+    let Some(target_path) = find_id_path(&provider_root.children, &base, fragment) else {
+        return false;
+    };
+    r.current_id = target_path;
+    true
 }
 
 /// Navigate out to the parent level without rebuilding the list.
@@ -1383,10 +1439,7 @@ fn prefetch_scroll_subtree(r: &mut AppRenderer) {
 /// keep `list_index` on the current match so this works uniformly across plain
 /// scroll mode and both search sub-modes.
 pub fn handle_enter_scroll(r: &mut AppRenderer) {
-    if !matches!(
-        r.coordinate,
-        Coordinate::Scroll | Coordinate::ScrollSearch
-    ) {
+    if !matches!(r.coordinate, Coordinate::Scroll | Coordinate::ScrollSearch) {
         return;
     }
     let target = r.total_list.get(r.list_index).map(|it| it.id.clone());
@@ -1412,7 +1465,7 @@ pub fn handle_enter_scroll(r: &mut AppRenderer) {
 
 /// Navigate into the meta hint screen. M is only bound in General mode.
 pub fn handle_meta(r: &mut AppRenderer) {
-    if !r.coordinate.is_general() {
+    if !r.coordinate.is_general() && r.coordinate != Coordinate::Navigate {
         return;
     }
     r.previous_coordinate = r.coordinate;
@@ -6206,7 +6259,7 @@ fn maybe_update_search(r: &mut AppRenderer) {
 // Clipboard — Ctrl+X / Ctrl+C / Ctrl+V
 // ---------------------------------------------------------------------------
 
-fn sdl_set_clipboard(text: &str) {
+pub(crate) fn sdl_set_clipboard(text: &str) {
     use std::ffi::CString;
     if let Ok(c) = CString::new(text) {
         unsafe {
@@ -7145,9 +7198,10 @@ pub fn handle_ctrl_f(r: &mut AppRenderer) {
 /// dashboard. Assumes `dashboard_kind()` is stable for the duration of a
 /// dashboard session, which is how every existing provider behaves.
 pub(crate) fn active_dashboard_is_interactive(r: &AppRenderer) -> bool {
-    crate::provider::get_active_provider_ref(r)
-        .map(|p| p.dashboard_kind() == sicompass_sdk::DashboardKind::Interactive)
-        .unwrap_or(false)
+    !r.element_image_view
+        && crate::provider::get_active_provider_ref(r)
+            .map(|p| p.dashboard_kind() == sicompass_sdk::DashboardKind::Interactive)
+            .unwrap_or(false)
 }
 
 /// Manual `d`-keypress entry into the dashboard. Honors
@@ -7238,6 +7292,10 @@ pub fn handle_dashboard_leave(r: &mut AppRenderer) {
         r.dashboard_cell_size = (0, 0);
     }
     r.dashboard_last_ctrl_c = 0;
+    if r.element_image_view {
+        r.element_image_view = false;
+        r.dashboard_image_path.clear();
+    }
     // Never back into the dashboard we are leaving. `previous_coordinate` is a
     // single slot that several modes write, so anything entered *from* the
     // dashboard -- the colon palette, a search -- can leave it naming Dashboard
@@ -8455,6 +8513,10 @@ pub fn settle_mode_for_tab_action(r: &mut AppRenderer) -> bool {
     if editing && commit_would_send(r) {
         return false;
     }
+    // A row's big view is not the tab's dashboard, so it does not travel with it.
+    if r.element_image_view {
+        handle_dashboard_leave(r);
+    }
     // Normal and Visual step down to Insert and InputSearch back up to it before
     // the commit, so a few rounds are needed. The bound only guards against a
     // mode whose Escape leads nowhere.
@@ -8963,10 +9025,7 @@ mod tests {
         r.sync_current_id_from_list();
         handle_right(&mut r);
         handle_left(&mut r);
-        assert_eq!(
-            announced_text(&r),
-            Some(format!("arrow left, {root_name}"))
-        );
+        assert_eq!(announced_text(&r), Some(format!("arrow left, {root_name}")));
     }
 
     /// At the top level there is nothing to go back to, so no arrow and no word.

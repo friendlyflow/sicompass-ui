@@ -46,7 +46,7 @@ bundled-sdl3 = ["sdl3/build-from-source-static"]
 # was split out. Keep them in step with sicompass's `[workspace.dependencies]`,
 # or cargo builds two copies of a crate into the app.
 [dependencies]
-sicompass-sdk = "0.9.6"
+sicompass-sdk = "0.9.10"
 async-trait = "0.1"
 
 serde = { version = "1", features = ["derive"] }
@@ -83,6 +83,12 @@ unicode-normalization = "0.1"
 zeroize = "1"
 
 nucleo-matcher = "0.3"
+
+# The stylesheet parser. The versions `scraper` uses in the SDK, so this adds no
+# crate to anything that links the SDK, the greeter included. Keep them in step.
+cssparser = "0.37"
+selectors = "0.38"
+precomputed-hash = "0.1"
 
 tokio = { version = "1", features = ["full"] }
 

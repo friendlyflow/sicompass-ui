@@ -61,6 +61,12 @@ pub trait HostHooks: Send {
         (Vec::new(), Vec::new())
     }
 
+    /// The user's own stylesheet, which applies over everything else. Read once at
+    /// startup. Something with no user files, like a login screen, has none.
+    fn user_stylesheet(&self) -> Option<String> {
+        None
+    }
+
     /// Remember that the window was maximised or restored.
     fn write_maximized(&self, _maximized: bool) {}
 

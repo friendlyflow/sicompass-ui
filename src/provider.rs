@@ -1278,20 +1278,13 @@ pub fn notify_radio_changed(
 ///
 /// Mirrors C `providerNotifyButtonPressed` in `provider.c`.
 pub fn notify_button_pressed(renderer: &mut AppRenderer) {
-    use sicompass_sdk::ffon::{FfonElement, get_ffon_at_id};
+    use sicompass_sdk::ffon::get_ffon_at_id;
     use sicompass_sdk::tags;
-
-    let current_id = renderer.current_id.clone();
-    let depth = current_id.depth();
-    let provider_idx = match current_id.get(0) {
-        Some(i) => i,
-        None => return,
-    };
 
     // Extract button function name from the current string element.
     let function_name: String = {
-        let arr = get_ffon_at_id(&renderer.ffon, &current_id);
-        let idx = current_id.last().unwrap_or(0);
+        let arr = get_ffon_at_id(&renderer.ffon, &renderer.current_id);
+        let idx = renderer.current_id.last().unwrap_or(0);
         let text = match arr.and_then(|a| a.get(idx)).and_then(|e| e.as_str()) {
             Some(s) => s.to_owned(),
             None => return,
@@ -1300,6 +1293,20 @@ pub fn notify_button_pressed(renderer: &mut AppRenderer) {
             Some(n) => n,
             None => return,
         }
+    };
+    notify_button_function(renderer, &function_name);
+}
+
+/// Press the button with this function on the focused row, which can hold several.
+pub fn notify_button_function(renderer: &mut AppRenderer, function_name: &str) {
+    use sicompass_sdk::ffon::{FfonElement, get_ffon_at_id};
+    use sicompass_sdk::tags;
+
+    let current_id = renderer.current_id.clone();
+    let depth = current_id.depth();
+    let provider_idx = match current_id.get(0) {
+        Some(i) => i,
+        None => return,
     };
 
     let mut handled = false;

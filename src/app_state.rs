@@ -188,6 +188,8 @@ pub enum Coordinate {
     #[default]
     General,
     Insert,
+    /// Moving between the images, links and buttons in one row (`navigate.rs`).
+    Navigate,
     Normal,
     Visual,
     SimpleSearch,
@@ -294,9 +296,10 @@ impl Coordinate {
     /// Every variant. Exists so the locale-coverage test can assert that each
     /// mode resolves in all four bundles without a hand-maintained list that
     /// silently misses a new variant.
-    pub const ALL: [Coordinate; 19] = [
+    pub const ALL: [Coordinate; 20] = [
         Coordinate::General,
         Coordinate::Insert,
+        Coordinate::Navigate,
         Coordinate::Normal,
         Coordinate::Visual,
         Coordinate::SimpleSearch,
@@ -330,6 +333,7 @@ impl Coordinate {
     pub fn as_str(self) -> &'static str {
         match self {
             Coordinate::General => "general mode",
+            Coordinate::Navigate => "navigate mode",
             Coordinate::Insert => "insert mode",
             Coordinate::Normal => "normal mode",
             Coordinate::Visual => "visual mode",
@@ -359,6 +363,7 @@ impl Coordinate {
         crate::shortcuts::register_translations();
         let key = match self {
             Coordinate::General => "mode-general",
+            Coordinate::Navigate => "mode-navigate",
             Coordinate::Insert => "mode-insert",
             Coordinate::Normal => "mode-normal",
             Coordinate::Visual => "mode-visual",
@@ -715,6 +720,23 @@ pub struct AppRenderer {
     pub fuzzy_match_positions: Vec<Vec<u32>>,
     /// Currently selected item in the active list.
     pub list_index: usize,
+
+    // ---- Navigate mode (`navigate.rs`) -------------------------------------
+    /// The focused row's images, links and buttons.
+    pub nav_targets: Vec<sicompass_sdk::tags::Target>,
+    /// The selected one of `nav_targets`.
+    pub nav_index: usize,
+    /// Where `nav_targets` are on screen, published by the view each frame, for
+    /// Up and Down.
+    pub nav_positions: Vec<crate::layout::TargetPos>,
+    /// The mode navigate mode returns to. Its own, because the big view it opens
+    /// uses `previous_coordinate` and has to come back here.
+    pub nav_return: Coordinate,
+    /// The dashboard is showing a row's image, not the provider's dashboard.
+    pub element_image_view: bool,
+
+    /// The stylesheets in force.
+    pub sheets: crate::style::Sheets,
 
     // ---- Input editing state -----------------------------------------------
     /// Text being edited (UTF-8).
@@ -1154,6 +1176,12 @@ impl AppRenderer {
             filtered_list_indices: Vec::new(),
             fuzzy_match_positions: Vec::new(),
             list_index: 0,
+            nav_targets: Vec::new(),
+            nav_index: 0,
+            nav_positions: Vec::new(),
+            nav_return: Coordinate::General,
+            element_image_view: false,
+            sheets: crate::style::Sheets::default(),
             input_buffer: String::new(),
             cursor_position: 0,
             selection_anchor: None,
@@ -1484,8 +1512,11 @@ impl AppRenderer {
                 && !provider_path.is_empty()
                 && self.providers[provider_idx].current_path() != provider_path
             {
-                let (rows, levels) =
-                    self.deep_rebuild_provider_tree(provider_idx, provider_path, current_id.depth());
+                let (rows, levels) = self.deep_rebuild_provider_tree(
+                    provider_idx,
+                    provider_path,
+                    current_id.depth(),
+                );
                 // Walk down by name, not by the saved row numbers. The descent
                 // found each folder by its name; the saved numbers are where
                 // those rows were when the tab was saved. A folder that gained
@@ -1996,7 +2027,12 @@ impl AppRenderer {
     /// with no descended segment). Uses the same builder the tab switcher and
     /// extended search render with, so the spoken path matches what is shown.
     pub(crate) fn focus_path(&self) -> String {
-        crate::list::tab_breadcrumb(&self.ffon, &self.current_id)
+        let path = crate::list::tab_breadcrumb(&self.ffon, &self.current_id);
+        if self.sheets.markup_here() {
+            sicompass_sdk::markup::plain(&path)
+        } else {
+            path
+        }
     }
 
     /// Announce the position of the focus: the header line followed by the
@@ -2263,6 +2299,10 @@ impl AppState {
         hooks: Box<dyn crate::registry::HostHooks>,
     ) -> Result<Self, SiError> {
         let mut state = Self::init_stack(cfg)?;
+        state
+            .renderer
+            .sheets
+            .set_user(hooks.user_stylesheet().as_deref());
         state.renderer.hooks = hooks;
         for p in providers {
             crate::registry::register_provider(&mut state.renderer, p);
@@ -2484,7 +2524,7 @@ mod tests {
             assert!(!seen.contains(&c), "{c:?} listed twice");
             seen.push(c);
         }
-        assert_eq!(Coordinate::ALL.len(), 19);
+        assert_eq!(Coordinate::ALL.len(), 20);
     }
 
     #[test]

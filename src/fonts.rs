@@ -29,6 +29,13 @@ pub const PRIMARY: &[u8] = include_bytes!(concat!(
     "/fonts/DejaVuSansMono.ttf"
 ));
 
+/// The bold of [`PRIMARY`], for `<b>` and `font-weight`. Under the same license, and
+/// every glyph has the same advance, so bold never changes where a line wraps.
+pub const PRIMARY_BOLD: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fonts/DejaVuSansMono-Bold.ttf"
+));
+
 /// Faces tried, in order, for any codepoint [`PRIMARY`] lacks.
 ///
 /// DejaVu Sans is proportional but covers Latin Extended, Greek, Cyrillic,
@@ -127,6 +134,10 @@ mod tests {
     #[test]
     fn every_embedded_font_parses_as_a_font() {
         assert!(is_font(PRIMARY), "PRIMARY is not a TrueType/OpenType file");
+        assert!(
+            is_font(PRIMARY_BOLD),
+            "PRIMARY_BOLD is not a TrueType/OpenType file"
+        );
         assert!(
             is_font(COLOR_EMOJI),
             "COLOR_EMOJI is not a TrueType/OpenType file"

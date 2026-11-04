@@ -37,7 +37,9 @@ pub mod handlers;
 pub mod http;
 pub mod icon;
 pub mod image;
+pub mod layout;
 pub mod list;
+pub mod navigate;
 pub mod provider;
 pub mod rectangle;
 pub mod registry;
@@ -45,6 +47,7 @@ pub mod session_mode;
 pub mod shaders;
 pub mod shortcuts;
 pub mod state;
+pub mod style;
 pub mod text;
 pub mod unicode_search;
 

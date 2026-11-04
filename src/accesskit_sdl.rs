@@ -18,7 +18,7 @@
 //!   from the current [`AppRenderer`] state, but only when an assistive
 //!   technology is actually listening (zero overhead otherwise).
 
-use crate::app_state::AppRenderer;
+use crate::app_state::{AppRenderer, Coordinate};
 use accesskit::{Live, Node, NodeId, Role, TreeId, TreeInfo, TreeUpdate};
 
 // ---------------------------------------------------------------------------
@@ -537,11 +537,49 @@ fn current_element(renderer: &AppRenderer) -> (String, String) {
             .unwrap_or(0)
             .min(renderer.total_list.len() - 1)
     };
-    let raw_label = &renderer.total_list[raw_idx].label;
-    (
-        label_to_speech(raw_label),
-        speech_content(raw_label).to_owned(),
-    )
+    let item = &renderer.total_list[raw_idx];
+    let raw_label = &item.label;
+    let mut spoken = label_to_speech(raw_label);
+    let counts = focused_row_counts(renderer, item);
+    if counts.total() > 0 {
+        spoken.push_str(", ");
+        spoken.push_str(&crate::navigate::counts_phrase(counts));
+    }
+    (spoken, speech_content(raw_label).to_owned())
+}
+
+/// How many images, links and buttons a row in the tree holds. Only the lists built
+/// from the tree: a meta or timeline row's id means something else.
+fn focused_row_counts(
+    renderer: &AppRenderer,
+    item: &crate::app_state::RenderListItem,
+) -> sicompass_sdk::tags::TargetCounts {
+    use sicompass_sdk::ffon::{FfonElement, get_ffon_at_id};
+    let from_tree = matches!(
+        renderer.coordinate.base(),
+        Coordinate::General
+            | Coordinate::Navigate
+            | Coordinate::SimpleSearch
+            | Coordinate::ExtendedSearch
+    );
+    if !from_tree {
+        return Default::default();
+    }
+    item.id
+        .last()
+        .and_then(|i| get_ffon_at_id(&renderer.ffon, &item.id)?.get(i))
+        .map(|e| {
+            let text = match e {
+                FfonElement::Str(s) => s,
+                FfonElement::Obj(o) => &o.key,
+            };
+            if renderer.sheets.markup_here() {
+                sicompass_sdk::markup::target_counts(text)
+            } else {
+                sicompass_sdk::tags::target_counts(text)
+            }
+        })
+        .unwrap_or_default()
 }
 
 /// Convert the current AppRenderer visible list into a flat AccessKit tree.
@@ -957,7 +995,10 @@ mod tests {
         let mut r2 = make_renderer_with_list(&["-i newfile.txt", "+l dir"]);
         r2.list_index = 1;
         let tree2 = build_tree(&r2);
-        assert_eq!(tree2.nodes[1].1.label().as_deref(), Some("arrow right l dir"));
+        assert_eq!(
+            tree2.nodes[1].1.label().as_deref(),
+            Some("arrow right l dir")
+        );
     }
 
     #[test]

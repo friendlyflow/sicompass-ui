@@ -26,6 +26,7 @@ pub fn create_list_extended_search(renderer: &mut AppRenderer) {
 
     // Recursively walk the in-memory FFON tree.
     let base_id = renderer.current_id.clone();
+    let scope = markup_scope(renderer);
     let ffon = &renderer.ffon;
     let arr = match get_ffon_at_id(ffon, &base_id) {
         Some(a) => a,
@@ -33,7 +34,7 @@ pub fn create_list_extended_search(renderer: &mut AppRenderer) {
     };
 
     let mut items: Vec<crate::app_state::RenderListItem> = Vec::new();
-    collect_items_recursive(arr, &base_id, "", false, &mut items);
+    collect_items_recursive(arr, &base_id, "", false, &scope, &mut items);
     renderer.total_list = items;
     renderer.list_index = renderer
         .list_index
@@ -46,13 +47,17 @@ fn collect_items_recursive(
     base_id: &sicompass_sdk::ffon::IdArray,
     breadcrumb: &str,
     parent_has_radio: bool,
+    scope: &MarkupScope,
     out: &mut Vec<crate::app_state::RenderListItem>,
 ) {
     for (i, elem) in arr.iter().enumerate() {
         let mut item_id = base_id.clone();
         item_id.set_last(i);
+        if scope.hides(&item_id, elem) {
+            continue;
+        }
 
-        let label = build_label_for_element(elem, parent_has_radio);
+        let label = scope.label(&item_id, elem, parent_has_radio);
         // Image elements carry their path in `ext_prefix` — the `data` slot is
         // taken by the breadcrumb — so general-mode search can render the image.
         let ext_prefix = match elem {
@@ -88,6 +93,7 @@ fn collect_items_recursive(
                     &child_id,
                     &new_bc,
                     child_parent_has_radio,
+                    scope,
                     out,
                 );
             }
@@ -107,6 +113,7 @@ pub fn create_list_scroll(renderer: &mut AppRenderer) {
     renderer.error_message.clear();
 
     let base_id = renderer.current_id.clone();
+    let scope = markup_scope(renderer);
     let arr = match get_ffon_at_id(&renderer.ffon, &base_id) {
         Some(a) => a,
         None => {
@@ -117,7 +124,7 @@ pub fn create_list_scroll(renderer: &mut AppRenderer) {
 
     let parent_has_radio = check_parent_has_radio(renderer);
     let mut items: Vec<RenderListItem> = Vec::new();
-    collect_scroll_items_recursive(arr, &base_id, parent_has_radio, &mut items);
+    collect_scroll_items_recursive(arr, &base_id, parent_has_radio, &scope, &mut items);
 
     // Highlight the element the cursor was on when scroll mode was entered.
     let new_index = items
@@ -147,13 +154,17 @@ fn collect_scroll_items_recursive(
     arr: &[FfonElement],
     base_id: &IdArray,
     parent_has_radio: bool,
+    scope: &MarkupScope,
     out: &mut Vec<RenderListItem>,
 ) {
     for (i, elem) in arr.iter().enumerate() {
         let mut item_id = base_id.clone();
         item_id.set_last(i);
+        if scope.hides(&item_id, elem) {
+            continue;
+        }
 
-        let label = build_label_for_element(elem, parent_has_radio);
+        let label = scope.label(&item_id, elem, parent_has_radio);
         let data = match elem {
             FfonElement::Str(s) if tags::has_image(s) => tags::extract_image(s),
             _ => None,
@@ -176,6 +187,7 @@ fn collect_scroll_items_recursive(
                     &obj.children,
                     &child_id,
                     child_parent_has_radio,
+                    scope,
                     out,
                 );
             }
@@ -203,6 +215,136 @@ pub fn open_flow_hides(elem: &FfonElement) -> bool {
         }
         FfonElement::Obj(_) => false,
     }
+}
+
+/// Which rows of the tree are markup: the rows of a provider that said so, and those
+/// of an FFON document a `<link>` brought in. Anything else keeps every `<` it has.
+pub(crate) struct MarkupScope {
+    providers: Vec<bool>,
+    documents: Vec<IdArray>,
+}
+
+impl MarkupScope {
+    /// Whether the row at `id` is markup. Depth 1 is the list of programs, which is
+    /// the app's own.
+    pub(crate) fn covers(&self, id: &IdArray) -> bool {
+        id.depth() > 1
+            && (id
+                .get(0)
+                .and_then(|i| self.providers.get(i))
+                .copied()
+                .unwrap_or(false)
+                || self
+                    .documents
+                    .iter()
+                    .any(|root| crate::style::id_covers(root, id)))
+    }
+
+    /// A `<style>` row is no row at all. The list the cursor is on has already lost
+    /// its own, but a walk over the levels below meets them.
+    fn hides(&self, id: &IdArray, elem: &FfonElement) -> bool {
+        matches!(elem, FfonElement::Str(s) if sicompass_sdk::markup::style_sheet(s).is_some())
+            && self.covers(id)
+    }
+
+    /// The row's text as the rest of the app reads it.
+    pub(crate) fn text<'a>(&self, id: &IdArray, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.covers(id) {
+            sicompass_sdk::markup::plain(text).into()
+        } else {
+            text.into()
+        }
+    }
+
+    fn label(&self, id: &IdArray, elem: &FfonElement, parent_has_radio: bool) -> String {
+        match elem {
+            FfonElement::Str(s) => build_str_label(&self.text(id, s), parent_has_radio),
+            FfonElement::Obj(obj) => {
+                let key = self.text(id, &obj.key);
+                if key == obj.key {
+                    return build_obj_label(obj);
+                }
+                // The children only say whether a radio has a checked one.
+                build_obj_label(&FfonObject {
+                    key: key.into_owned(),
+                    children: obj.children.clone(),
+                })
+            }
+        }
+    }
+}
+
+/// The element at `id` in the tree: its text.
+pub(crate) fn text_at(ffon: &[FfonElement], id: &IdArray) -> Option<String> {
+    let index = id.last()?;
+    get_ffon_at_id(ffon, id)?.get(index).map(|e| match e {
+        FfonElement::Str(s) => s.clone(),
+        FfonElement::Obj(o) => o.key.clone(),
+    })
+}
+
+pub(crate) fn markup_scope(r: &mut AppRenderer) -> MarkupScope {
+    let ffon = &r.ffon;
+    let documents = r.sheets.live_documents(|id| text_at(ffon, id));
+    MarkupScope {
+        providers: r.providers.iter().map(|p| p.markup()).collect(),
+        documents,
+    }
+}
+
+/// Work out the current list's styling, and take its `<style>` rows out of the tree:
+/// from here on the row number is the element number again, which so much relies on.
+fn prepare_list_style(r: &mut AppRenderer) {
+    if r.current_id.depth() < 2 {
+        let ffon = &r.ffon;
+        let root = IdArray::new();
+        r.sheets
+            .enter_list(&root, false, Vec::new(), |id| text_at(ffon, id));
+        return;
+    }
+    let scope = markup_scope(r);
+    let here = scope.covers(&r.current_id);
+    let mut parent = r.current_id.clone();
+    parent.pop();
+    let parent_text = text_at(&r.ffon, &parent).unwrap_or_default();
+    if here && r.coordinate.base() != Coordinate::Insert {
+        let cursor = r.current_id.last().unwrap_or(0);
+        let mut css = String::new();
+        let mut removed_before = 0;
+        if let Some(rows) = crate::provider::get_ffon_at_id_mut(&mut r.ffon, &r.current_id) {
+            let mut index = 0;
+            rows.retain(|row| {
+                let sheet = row.as_str().and_then(sicompass_sdk::markup::style_sheet);
+                if let Some(sheet) = sheet {
+                    css.push_str(sheet);
+                    css.push('\n');
+                    if index < cursor {
+                        removed_before += 1;
+                    }
+                }
+                index += 1;
+                sheet.is_none()
+            });
+            let last = rows.len().saturating_sub(1);
+            r.current_id
+                .set_last(cursor.saturating_sub(removed_before).min(last));
+        }
+        if !css.is_empty() {
+            r.sheets.set_scoped(&parent, &parent_text, css);
+        }
+    }
+    // A list takes the classes of the row it belongs to, when that row is markup too.
+    let ul_classes = if scope.covers(&parent) {
+        let nodes = sicompass_sdk::markup::parse(&parent_text);
+        sicompass_sdk::markup::whole_row_element(&nodes)
+            .map(|e| e.classes.clone())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let ffon = &r.ffon;
+    r.sheets
+        .enter_list(&parent, here, ul_classes, |id| text_at(ffon, id));
 }
 
 /// Rebuild `total_list` from the FFON tree at `current_id`, and restore
@@ -235,7 +377,10 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
     // Command, and the `_` arm below zeroes `list_index` without building
     // anything — so without this a second-layer palette would come up empty.
     match renderer.coordinate.base() {
-        Coordinate::General | Coordinate::Insert | Coordinate::SimpleSearch => {}
+        Coordinate::General
+        | Coordinate::Insert
+        | Coordinate::Navigate
+        | Coordinate::SimpleSearch => prepare_list_style(renderer),
         Coordinate::ExtendedSearch => {
             create_list_extended_search(renderer);
             return;
@@ -270,6 +415,7 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
         }
     }
 
+    let scope = markup_scope(renderer);
     let ffon_slice = match get_ffon_at_id(&renderer.ffon, &renderer.current_id) {
         Some(s) => s,
         None => {
@@ -296,7 +442,7 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
         let mut item_id = base_id.clone();
         item_id.set_last(i);
 
-        let label = build_label_for_element(elem, parent_has_radio);
+        let label = scope.label(&item_id, elem, parent_has_radio);
 
         let data = match elem {
             FfonElement::Str(s) if tags::has_image(s) => tags::extract_image(s),
@@ -355,6 +501,7 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
     if !search.is_empty() {
         populate_list_current_layer(renderer, &search);
     }
+    crate::navigate::after_list_rebuild(renderer);
 }
 
 /// Filter `total_list` by `search_string` using fuzzy matching and store
@@ -760,7 +907,10 @@ pub fn parent_line_text(r: &AppRenderer) -> String {
     if r.current_id.depth() <= 1 {
         return String::new();
     }
-    if let Some(label) = r.session_view_parent_label.as_deref().filter(|l| !l.is_empty())
+    if let Some(label) = r
+        .session_view_parent_label
+        .as_deref()
+        .filter(|l| !l.is_empty())
         && crate::handlers::in_session_view(r)
     {
         return label.to_owned();
@@ -777,14 +927,13 @@ pub fn parent_line_text(r: &AppRenderer) -> String {
     }
     let mut parent_id = r.current_id.clone();
     parent_id.pop();
-    parent_id
-        .last()
-        .and_then(|idx| get_ffon_at_id(&r.ffon, &parent_id)?.get(idx))
-        .map(|elem| match elem {
-            FfonElement::Obj(obj) => tags::strip_display(&obj.key),
-            FfonElement::Str(s) => tags::strip_display(s),
-        })
-        .unwrap_or_default()
+    let raw = text_at(&r.ffon, &parent_id).unwrap_or_default();
+    // Whether a row holds markup was settled when its list was built.
+    if r.sheets.markup_here() {
+        tags::strip_display(&sicompass_sdk::markup::plain(&raw))
+    } else {
+        tags::strip_display(&raw)
+    }
 }
 
 /// Build the list for `Coordinate::Meta` — shortcut hints from the active provider.
@@ -2508,5 +2657,192 @@ mod tests {
             !s.contains('/'),
             "root non-fs path must not render a bare slash: {s}"
         );
+    }
+}
+
+#[cfg(test)]
+mod markup_scope_tests {
+    use super::*;
+    use sicompass_sdk::provider::Provider;
+
+    struct Fixture {
+        markup: bool,
+    }
+
+    impl Provider for Fixture {
+        fn name(&self) -> &str {
+            "fixture"
+        }
+        fn fetch(&mut self) -> Vec<FfonElement> {
+            Vec::new()
+        }
+        fn markup(&self) -> bool {
+            self.markup
+        }
+    }
+
+    fn id(path: &[usize]) -> IdArray {
+        let mut id = IdArray::new();
+        for &p in path {
+            id.push(p);
+        }
+        id
+    }
+
+    fn tree(markup: bool, root: FfonElement, cursor: &[usize]) -> AppRenderer {
+        let mut r = AppRenderer::new();
+        r.providers.push(Box::new(Fixture { markup }));
+        r.ffon = vec![root];
+        r.current_id = id(cursor);
+        r
+    }
+
+    fn obj(key: &str, children: &[FfonElement]) -> FfonElement {
+        let mut element = FfonElement::new_obj(key);
+        for child in children {
+            element.as_obj_mut().unwrap().push(child.clone());
+        }
+        element
+    }
+
+    fn row(text: &str) -> FfonElement {
+        FfonElement::new_str(text)
+    }
+
+    /// A provider with `rows`, the cursor on row `at` of them.
+    fn renderer(markup: bool, rows: &[&str], at: usize) -> AppRenderer {
+        let children: Vec<FfonElement> = rows.iter().map(|text| row(text)).collect();
+        let mut r = tree(markup, obj("fixture", &children), &[0, at]);
+        create_list_current_layer(&mut r);
+        r
+    }
+
+    fn labels(r: &AppRenderer) -> Vec<&str> {
+        r.total_list.iter().map(|i| i.label.as_str()).collect()
+    }
+
+    /// A file named `<b>x` is a file named `<b>x`.
+    #[test]
+    fn a_provider_that_did_not_opt_in_keeps_every_bracket() {
+        let r = renderer(false, &["<b>x</b>", "<style>li { color: red }</style>"], 0);
+        assert_eq!(
+            labels(&r),
+            ["- <b>x</b>", "- <style>li { color: red }</style>"]
+        );
+        assert!(!r.sheets.markup_here());
+        assert!(!r.sheets.styles_rows());
+    }
+
+    #[test]
+    fn a_provider_that_opted_in_shows_the_text_without_the_tags() {
+        let r = renderer(true, &[r#"<h1 class="a">Title</h1>"#, "x <b>y</b> z"], 0);
+        assert_eq!(labels(&r), ["- Title", "- x y z"]);
+        assert!(r.sheets.markup_here());
+    }
+
+    #[test]
+    fn the_older_tags_still_work_inside_markup() {
+        let r = renderer(
+            true,
+            &["<div><button>f</button>Go</div>", "<p><link>u</link></p>"],
+            0,
+        );
+        assert_eq!(labels(&r), ["-b Go", "- u"]);
+    }
+
+    /// Row number is element number, which a lot of the app relies on.
+    #[test]
+    fn a_style_row_is_taken_out_of_the_tree() {
+        let r = renderer(
+            true,
+            &["<style>li { color: #111 }</style>", "one", "two"],
+            0,
+        );
+        assert_eq!(labels(&r), ["- one", "- two"]);
+        assert_eq!(r.ffon[0].as_obj().unwrap().children.len(), 2);
+        assert_eq!(r.current_id.last(), Some(0));
+        assert!(r.sheets.styles_rows());
+    }
+
+    #[test]
+    fn the_cursor_stays_on_its_row_when_a_style_row_above_it_goes() {
+        let r = renderer(true, &["one", "<style>x {}</style>", "two"], 2);
+        assert_eq!(labels(&r), ["- one", "- two"]);
+        assert_eq!(r.current_id.last(), Some(1));
+        assert_eq!(r.list_index, 1);
+    }
+
+    #[test]
+    fn a_style_row_applies_to_the_list_it_was_in() {
+        let r = renderer(true, &["<style>li { color: #111 }</style>", "one"], 0);
+        let style = r.sheets.row_style(None, false, &Default::default());
+        assert_eq!(style.li.color, Some(0x111111FF));
+    }
+
+    #[test]
+    fn a_list_of_only_a_style_row_is_empty_and_does_not_crash() {
+        let r = renderer(true, &["<style>x {}</style>"], 0);
+        assert!(labels(&r).is_empty());
+    }
+
+    /// Inside an FFON document it is markup whatever the provider around it says.
+    #[test]
+    fn a_document_is_markup_inside_a_provider_that_is_not() {
+        let page = obj(
+            "Go <link>page.json</link>",
+            &[
+                row("<style>li { color: #111 }</style>"),
+                row("<h1>Hello</h1>"),
+            ],
+        );
+        let root = obj("fixture", &[page, row("<b>literal</b>")]);
+        let mut r = tree(false, root, &[0, 0, 0]);
+        crate::handlers::mark_document(&mut r, &id(&[0, 0]));
+        create_list_current_layer(&mut r);
+        assert_eq!(labels(&r), ["- Hello"]);
+        assert!(r.sheets.markup_here());
+        // The rows beside the document are still the provider's.
+        r.current_id = id(&[0, 1]);
+        create_list_current_layer(&mut r);
+        assert!(!r.sheets.markup_here());
+        assert!(labels(&r).contains(&"- <b>literal</b>"), "{:?}", labels(&r));
+    }
+
+    #[test]
+    fn a_list_takes_the_classes_of_its_row() {
+        let album = obj(
+            r#"<div class="album">Trip</div>"#,
+            &[
+                row("<style>ul.album li { color: #111 }</style>"),
+                row("photo"),
+            ],
+        );
+        let mut r = tree(true, obj("fixture", &[album]), &[0, 0, 0]);
+        create_list_current_layer(&mut r);
+        let style = r.sheets.row_style(None, false, &Default::default());
+        assert_eq!(style.li.color, Some(0x111111FF));
+    }
+
+    /// The levels below too, when a search walks them without visiting.
+    #[test]
+    fn a_walk_over_levels_below_skips_style_rows_and_tags() {
+        let sub = obj(
+            "<b>Sub</b>",
+            &[row("<style>x {}</style>"), row("<p>inner</p>")],
+        );
+        let mut r = tree(true, obj("fixture", &[sub]), &[0, 0]);
+        create_list_scroll(&mut r);
+        assert_eq!(labels(&r), ["+ Sub", "- inner"]);
+        create_list_extended_search(&mut r);
+        assert_eq!(labels(&r), ["+ Sub", "- inner"]);
+    }
+
+    /// The same walk over rows nobody wrote as markup.
+    #[test]
+    fn a_walk_outside_the_scope_keeps_every_bracket() {
+        let sub = obj("<b>Sub</b>", &[row("<style>x {}</style>")]);
+        let mut r = tree(false, obj("fixture", &[sub]), &[0, 0]);
+        create_list_scroll(&mut r);
+        assert_eq!(labels(&r), ["+ <b>Sub</b>", "- <style>x {}</style>"]);
     }
 }

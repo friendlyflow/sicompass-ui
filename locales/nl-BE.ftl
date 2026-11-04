@@ -132,3 +132,38 @@ hint-ctrl-insert = Ctrl+: Invoegen
 hint-enter-insert = Enter  Invoegen
 insert-palette-empty = niets om in te voegen
 escape-command-mode-first = druk op Escape om eerst { $mode } te verlaten
+
+# Navigatiemodus
+mode-navigate = navigatiemodus
+hint-i-navigate = I      Navigeren
+hint-a-navigate-from-last = A      Navigeren vanaf het laatste
+hint-esc-leave-navigate = Esc    Navigeren verlaten
+hint-right-next-target = Right  Volgend doel
+hint-left-previous-target = Left   Vorig doel
+hint-up-line-above = Up     Regel erboven
+hint-down-line-below = Down   Regel eronder
+hint-d-view-image = D      Afbeelding bekijken
+hint-enter-view-image = Enter  Afbeelding bekijken
+hint-right-next-image = Right  Volgende afbeelding
+hint-left-previous-image = Left   Vorige afbeelding
+target-link = link
+target-image = afbeelding
+target-button = knop
+target-position = { $kind } { $n } van { $total }, { $name }
+targets-links = { $count ->
+    [one] 1 link
+   *[other] { $count } links
+}
+targets-images = { $count ->
+    [one] 1 afbeelding
+   *[other] { $count } afbeeldingen
+}
+targets-buttons = { $count ->
+    [one] 1 knop
+   *[other] { $count } knoppen
+}
+target-video = video
+targets-videos = { $count ->
+    [one] 1 video
+   *[other] { $count } video's
+}

@@ -89,7 +89,7 @@ and an SMTP client, none of which a login screen ever calls. The Stop hook
 
 Where the renderer needs something only the embedder can answer, it asks:
 
-- `registry::HostHooks`: eight methods, every one defaulting to a no-op,
+- `registry::HostHooks`: nine methods, every one defaulting to a no-op,
   stored on `AppRenderer`. The app installs its own; the greeter takes the
   defaults, which are all correct for something with no settings file, no
   updater and no tabs. `dismiss` is only ever called for a launcher.

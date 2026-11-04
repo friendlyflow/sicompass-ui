@@ -132,3 +132,38 @@ hint-ctrl-insert = Ctrl+: Einfügen
 hint-enter-insert = Enter  Einfügen
 insert-palette-empty = nichts zum Einfügen
 escape-command-mode-first = drücke Escape, um zuerst { $mode } zu verlassen
+
+# Navigationsmodus
+mode-navigate = Navigationsmodus
+hint-i-navigate = I      Navigieren
+hint-a-navigate-from-last = A      Ab dem letzten navigieren
+hint-esc-leave-navigate = Esc    Navigation verlassen
+hint-right-next-target = Right  Nächstes Ziel
+hint-left-previous-target = Left   Vorheriges Ziel
+hint-up-line-above = Up     Zeile darüber
+hint-down-line-below = Down   Zeile darunter
+hint-d-view-image = D      Bild ansehen
+hint-enter-view-image = Enter  Bild ansehen
+hint-right-next-image = Right  Nächstes Bild
+hint-left-previous-image = Left   Vorheriges Bild
+target-link = Link
+target-image = Bild
+target-button = Schaltfläche
+target-position = { $kind } { $n } von { $total }, { $name }
+targets-links = { $count ->
+    [one] 1 Link
+   *[other] { $count } Links
+}
+targets-images = { $count ->
+    [one] 1 Bild
+   *[other] { $count } Bilder
+}
+targets-buttons = { $count ->
+    [one] 1 Schaltfläche
+   *[other] { $count } Schaltflächen
+}
+target-video = Video
+targets-videos = { $count ->
+    [one] 1 Video
+   *[other] { $count } Videos
+}

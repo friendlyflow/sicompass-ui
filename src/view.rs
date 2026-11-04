@@ -7,6 +7,7 @@ use crate::app_state::{
     AppRenderer, AppState, CommandPhase, Coordinate, History, Task, WindowAction,
 };
 use crate::handlers;
+use crate::layout::ListItem;
 use crate::render;
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::{Keycode, Mod};
@@ -781,9 +782,21 @@ fn update_view(app: &mut AppState) {
     let header = build_header_text(&app.renderer, line_height);
     let win_w = app.swapchain_extent.width as f32;
     let win_h = app.swapchain_extent.height as f32;
-    let list_items: Vec<(String, Option<String>, bool, Vec<u32>, Option<String>)> =
-        collect_list_items(&app.renderer);
-    let list_has_indicators = list_items.iter().any(|(label, _, _, _, _)| {
+    // What a length in a stylesheet means on this frame.
+    let style_env = crate::style::StyleEnv {
+        base_em: app
+            .font_renderer
+            .as_ref()
+            .map_or(16.0, |fr| crate::text::FONT_SIZE_PT * fr.dpi / 72.0),
+        base_ch: em_width,
+        px_scale: app.font_renderer.as_ref().map_or(1.0, |fr| fr.dpi / 96.0),
+        scheme: match app.renderer.palette_theme {
+            crate::app_state::PaletteTheme::Dark => crate::style::Scheme::Dark,
+            crate::app_state::PaletteTheme::Light => crate::style::Scheme::Light,
+        },
+    };
+    let list_items: Vec<ListItem> = collect_list_items(&app.renderer, &style_env);
+    let list_has_indicators = list_items.iter().any(|ListItem { label, .. }| {
         get_radio_type(label) != RadioType::None || get_checkbox_type(label) != CheckboxType::None
     });
 
@@ -813,9 +826,10 @@ fn update_view(app: &mut AppState) {
         } else {
             list_items
                 .iter()
-                .map(|(label, _, _, _, _)| {
+                .map(|ListItem { label, style, .. }| {
                     let (p, _) = split_label(label);
-                    let text_w = fr.measure_text_width(&prefix_for_display(p), scale);
+                    let font = style.as_ref().map_or(1.0, |s| s.li.font_scale);
+                    let text_w = fr.measure_text_width(&prefix_for_display(p), scale * font);
                     // When any item has an indicator, all items reserve the same indicator width
                     let indicator_w = if list_has_indicators {
                         indicator_width(line_height as f32, em_width)
@@ -829,7 +843,21 @@ fn update_view(app: &mut AppState) {
         (indent, prefix)
     };
     let left_inset = 10.0 + list_indent_px + max_prefix_px;
-    let content_w = (120.0 * em_width).min(win_w);
+    // The column's width is the `ul`'s `max-width`: 120 characters, unless a
+    // stylesheet says otherwise.
+    let ul_style = app.renderer.sheets.list_style(&style_env);
+    let content_w = ul_style
+        .max_width
+        .and_then(|width| {
+            width.px(&crate::style::LengthContext {
+                em: style_env.base_em,
+                ch: style_env.base_ch,
+                percent_of: win_w,
+                px_scale: style_env.px_scale,
+            })
+        })
+        .unwrap_or(win_w)
+        .min(win_w);
     let content_x = ((win_w - content_w - left_inset) / 2.0).max(0.0);
     let text_x = content_x + 10.0;
     let max_content_w = content_w.min(win_w - text_x - left_inset);
@@ -860,11 +888,10 @@ fn update_view(app: &mut AppState) {
         let in_search = app.renderer.coordinate == Coordinate::ScrollSearch;
         // Each level below the entered list is indented four spaces (capped at
         // half the width, so a deep level still has room to wrap).
-        let scroll_indents: Vec<f32> =
-            crate::list::scroll_indent_levels(&app.renderer.total_list)
-                .into_iter()
-                .map(|level| (level as f32 * list_indent_px).min(max_content_w.max(1.0) / 2.0))
-                .collect();
+        let scroll_indents: Vec<f32> = crate::list::scroll_indent_levels(&app.renderer.total_list)
+            .into_iter()
+            .map(|level| (level as f32 * list_indent_px).min(max_content_w.max(1.0) / 2.0))
+            .collect();
         // Content viewport = window minus tabs band + header (+ search bar in
         // search modes). Cached so scroll handlers clamp to the exact area the
         // renderer uses — otherwise the last line/image bottom is unreachable.
@@ -988,9 +1015,7 @@ fn update_view(app: &mut AppState) {
     // Single coordinate for both flavors. Image vs interactive (cell-grid) is
     // decided by the active provider's `dashboard_kind()`.
     if app.renderer.coordinate == Coordinate::Dashboard {
-        let is_interactive = crate::provider::get_active_provider_ref(&app.renderer)
-            .map(|p| p.dashboard_kind() == sicompass_sdk::DashboardKind::Interactive)
-            .unwrap_or(false);
+        let is_interactive = crate::handlers::active_dashboard_is_interactive(&app.renderer);
 
         if is_interactive {
             let cell_w = em_width.max(1.0);
@@ -1243,6 +1268,11 @@ fn update_view(app: &mut AppState) {
                         if img_h * display_scale > avail_h {
                             display_scale = avail_h / img_h;
                         }
+                        // A row's image was opened to see it big, so a small one
+                        // grows to the window too.
+                        if app.renderer.element_image_view {
+                            display_scale = (avail_w / img_w).min(avail_h / img_h);
+                        }
                         let display_w = img_w * display_scale;
                         let display_h = img_h * display_scale;
                         let img_x = (win_w - display_w) / 2.0;
@@ -1470,306 +1500,90 @@ fn update_view(app: &mut AppState) {
     } else {
         0
     };
-    let line_counts: Vec<usize> = {
+    // ---- Every row measured once -------------------------------------------
+    // The scrolling, the placing, the selection and the draw below all read these.
+    let shapes: Vec<crate::layout::RowShape> = {
         let fr = match app.font_renderer.as_ref() {
             Some(f) => f,
             None => return,
+        };
+        let metrics = crate::layout::ListMetrics {
+            scale,
+            line_height: line_height as f32,
+            em_width,
+            win_h,
+            header_lines: 1 + extra_lines,
+            max_content_w,
+            list_has_indicators,
+            is_flat_list,
+            is_extended_search,
+            edited_row: renders_insert_buffer.then(|| crate::layout::EditedRow {
+                index: list_index,
+                prefix: insert_prefix.as_str(),
+                buffer: insert_buf.as_str(),
+            }),
+        };
+        let image_renderer = &mut app.image_renderer;
+        let mut image_size = |path: &str| {
+            image_renderer
+                .as_mut()
+                .and_then(|ir| unsafe { ir.texture_size(path) })
         };
         list_items
             .iter()
             .enumerate()
-            .map(|(idx, (label, img_data, _, _, ext_prefix))| {
-                if renders_insert_buffer && idx == list_index {
-                    let pfx_w = fr.measure_text_width(&insert_prefix, scale);
-                    return insert_buf_segments(fr, &insert_buf, scale, pfx_w, item_max_w)
-                        .len()
-                        .max(1);
-                }
-                if !is_extended_search {
-                    if let Some(path) = img_data {
-                        let (prefix, suffix, has_prefix) = split_image_label(label, path);
-                        // Captions wrap at the content column, exactly like an
-                        // ordinary list item: the "-p " tag sits on line 1 and
-                        // only the text after it is measured.
-                        let prefix_lines = if has_prefix {
-                            let (_, prefix_content) = split_label(prefix);
-                            fr.count_wrapped_lines(prefix_content, scale, item_max_w)
-                        } else {
-                            0
-                        };
-                        let suffix_lines = if suffix.is_empty() {
-                            0
-                        } else {
-                            fr.count_wrapped_lines(suffix, scale, item_max_w)
-                        };
-                        let header_lines = (1 + extra_lines) as f32;
-                        let lh = line_height as f32;
-                        let max_h_raw =
-                            win_h - lh * (header_lines + prefix_lines as f32 + suffix_lines as f32);
-                        let max_h = if suffix_lines > 0 {
-                            ((max_h_raw / lh).floor() * lh).max(lh)
-                        } else {
-                            (max_h_raw - crate::text::TEXT_PADDING).max(lh)
-                        };
-                        let raw_img_h = app
-                            .image_renderer
-                            .as_mut()
-                            .and_then(|ir| unsafe { ir.texture_size(path) })
-                            .map(|(tw, th)| {
-                                if tw == 0 {
-                                    item_max_w
-                                } else {
-                                    item_max_w * th as f32 / tw as f32
-                                }
-                            })
-                            .unwrap_or(item_max_w);
-                        let img_h = raw_img_h.min(max_h);
-                        let image_lines = ((img_h / line_height as f32).ceil() as usize).max(1);
-                        return prefix_lines + image_lines + suffix_lines;
-                    }
-                    let (_, content) = split_label(label);
-                    return fr.count_wrapped_lines(content, scale, item_max_w);
-                }
-                // ExtendedSearch: breadcrumb + prefix precede content — reduce available width.
-                // Use 4.0 * em_width (= item_prefix_x offset) not list_indent_px (space-based)
-                // so that the available_w matches what the rendering loop actually uses.
-                // Also subtract indicator_width when any item has an indicator, since text_prefix_x
-                // is shifted right by that amount for ALL items (for alignment).
-                let indicator_w = if list_has_indicators {
-                    indicator_width(line_height as f32, em_width)
-                } else {
-                    0.0
-                };
-                let rest_w = (max_content_w - 4.0 * em_width - indicator_w).max(1.0);
-                let breadcrumb = img_data.as_deref().unwrap_or("");
-                // Image result: the breadcrumb/prefix flow, then the image below.
-                if let Some(path) = ext_prefix {
-                    let img_w = rest_w;
-                    let img_h = app
-                        .image_renderer
-                        .as_mut()
-                        .and_then(|ir| unsafe { ir.texture_size(path) })
-                        .map(|(tw, th)| {
-                            if tw == 0 {
-                                img_w
-                            } else {
-                                img_w * th as f32 / tw as f32
-                            }
-                        })
-                        .unwrap_or(img_w);
-                    let image_lines = ((img_h / line_height as f32).ceil() as usize).max(1);
-                    let (prefix_text, suffix, _) = split_image_label(label, path);
-                    let prefix_lines =
-                        ext_flow(fr, breadcrumb, "", &label_for_display(prefix_text), scale, img_w, em_width)
-                            .total_lines;
-                    let suffix_lines = if suffix.is_empty() {
-                        0
-                    } else {
-                        fr.count_wrapped_lines(suffix, scale, img_w)
-                    };
-                    return prefix_lines + image_lines + suffix_lines;
-                }
-                let (prefix_str, content) = split_label(label);
-                ext_flow(fr, breadcrumb, &prefix_for_display(prefix_str), content, scale, rest_w, em_width).total_lines
+            .map(|(i, item)| {
+                let row_box = item.style.as_ref().map_or_else(Default::default, |s| {
+                    crate::layout::RowBoxStyle::resolve(&s.li, &style_env, max_content_w)
+                });
+                crate::layout::measure_row(fr, &metrics, i, item, &row_box, &mut image_size)
             })
             .collect()
     };
 
-    let start_index: usize = if count == 0 {
-        0
-    } else {
-        let scroll_offset = app.renderer.scroll_offset;
-        // Whole-list fit: when every item visibly fits in the viewport,
-        // always anchor at index 0 — no point in honoring a non-zero
-        // scroll_offset (e.g. set by walk_back to list_index) that would
-        // hide items above the cursor.
-        let total_lines: usize = line_counts.iter().sum();
-        if total_lines <= available_lines {
-            0
-        } else if scroll_offset < 0 {
-            // Sentinel -1: position list_index as last visible (renderer shows one extra item below).
-            let mut lines_from_bottom = line_counts.get(list_index).copied().unwrap_or(1);
-            let mut si = list_index;
-            while si > 0 {
-                let prev = line_counts.get(si - 1).copied().unwrap_or(1);
-                if lines_from_bottom + prev > available_lines {
-                    break;
-                }
-                lines_from_bottom += prev;
-                si -= 1;
-            }
-            si
-        } else {
-            let mut si = (scroll_offset as usize).min(list_index);
-            // Snap forward until list_index is within the visible area.
-            let mut lines_to_sel: usize = line_counts[si..=list_index].iter().sum();
-            while lines_to_sel > available_lines && si < list_index {
-                lines_to_sel -= line_counts.get(si).copied().unwrap_or(1);
-                si += 1;
-            }
-            // Scrolloff: try to show 1 item above the selection.
-            if si > 0 && si == list_index {
-                let prev_lines = line_counts.get(si - 1).copied().unwrap_or(1);
-                if lines_to_sel + prev_lines <= available_lines {
-                    si -= 1;
-                }
-            }
-            si
-        }
-    };
+    let row_heights: Vec<f32> = shapes.iter().map(|s| s.height).collect();
+    let start_index = crate::layout::first_visible_row(
+        &row_heights,
+        available_lines as f32 * line_height as f32,
+        list_index,
+        app.renderer.scroll_offset,
+    );
     app.renderer.scroll_offset = start_index as i32;
 
-    // ---- Per-item layout metrics (immutable font borrow) ------------------
-    // Each entry: (item_y, content_start_x, lines_used, highlight_w)
-    // Starts from start_index so only visible items are measured/rendered.
-    // image_layouts is a parallel vec with Some(ImageLayout) for image items.
-    let (item_metrics, image_layouts): (Vec<(f32, f32, usize, f32)>, Vec<Option<ImageLayout>>) = {
-        let fr = match app.font_renderer.as_ref() {
-            Some(f) => f,
-            None => return,
-        };
-        let item_prefix_x = text_x + list_indent_px;
-        let content_start_x = item_prefix_x + max_prefix_px;
-        let mut y = first_item_y;
-        let cap = list_items.len().saturating_sub(start_index);
-        let mut metrics = Vec::with_capacity(cap);
-        let mut layouts: Vec<Option<ImageLayout>> = Vec::with_capacity(cap);
-        for (global_idx, (label, img_data, _, _, ext_prefix)) in
-            list_items.iter().enumerate().skip(start_index)
-        {
-            if y > win_h {
-                break;
-            }
-            let (lines, img_layout) = if renders_insert_buffer && global_idx == list_index {
-                let pfx_w = fr.measure_text_width(&insert_prefix, scale);
-                (
-                    insert_buf_segments(fr, &insert_buf, scale, pfx_w, item_max_w)
-                        .len()
-                        .max(1),
-                    None,
-                )
-            } else if !is_extended_search {
-                if let Some(path) = img_data {
-                    let (prefix, suffix, has_prefix) = split_image_label(label, path);
-                    let prefix_lines = if has_prefix {
-                        let (_, prefix_content) = split_label(prefix);
-                        fr.count_wrapped_lines(prefix_content, scale, item_max_w)
-                    } else {
-                        0
-                    };
-                    let suffix_lines = if suffix.is_empty() {
-                        0
-                    } else {
-                        fr.count_wrapped_lines(suffix, scale, item_max_w)
-                    };
-                    let header_lines = (1 + extra_lines) as f32;
-                    let lh = line_height as f32;
-                    let max_h_raw =
-                        win_h - lh * (header_lines + prefix_lines as f32 + suffix_lines as f32);
-                    let max_h = if suffix_lines > 0 {
-                        ((max_h_raw / lh).floor() * lh).max(lh)
-                    } else {
-                        (max_h_raw - crate::text::TEXT_PADDING).max(lh)
-                    };
-                    let img_w = item_max_w;
-                    let img_h = if let Some(ir) = app.image_renderer.as_mut() {
-                        unsafe { ir.texture_size(path) }
-                            .map(|(tw, th)| {
-                                if tw == 0 {
-                                    img_w
-                                } else {
-                                    (img_w * th as f32 / tw as f32).min(max_h)
-                                }
-                            })
-                            .unwrap_or(img_w)
-                    } else {
-                        img_w
-                    };
-                    let image_lines = ((img_h / line_height as f32).ceil() as usize).max(1);
-                    let total_lines = prefix_lines + image_lines + suffix_lines;
-                    (
-                        total_lines,
-                        Some(ImageLayout {
-                            prefix_lines,
-                            suffix_lines,
-                            image_lines,
-                            img_w,
-                            img_h,
-                        }),
-                    )
-                } else if is_flat_list {
-                    // Command/Meta items: no prefix split — measure the full label
-                    (fr.count_wrapped_lines(&label_for_display(label), scale, item_max_w), None)
-                } else {
-                    let (_, content) = split_label(label);
-                    (fr.count_wrapped_lines(content, scale, item_max_w), None)
-                }
-            } else {
-                // ExtendedSearch: breadcrumb + prefix precede content — reduce available width.
-                let indicator_w = if list_has_indicators {
-                    indicator_width(line_height as f32, em_width)
-                } else {
-                    0.0
-                };
-                let rest_w = (max_content_w - 4.0 * em_width - indicator_w).max(1.0);
-                let breadcrumb = img_data.as_deref().unwrap_or("");
-                if let Some(path) = ext_prefix {
-                    // Image result: the breadcrumb/prefix flow, then the image.
-                    let img_w = rest_w;
-                    let img_h = app
-                        .image_renderer
-                        .as_mut()
-                        .and_then(|ir| unsafe { ir.texture_size(path) })
-                        .map(|(tw, th)| {
-                            if tw == 0 {
-                                img_w
-                            } else {
-                                img_w * th as f32 / tw as f32
-                            }
-                        })
-                        .unwrap_or(img_w);
-                    let image_lines = ((img_h / line_height as f32).ceil() as usize).max(1);
-                    let (prefix_text, suffix, _) = split_image_label(label, path);
-                    let prefix_lines =
-                        ext_flow(fr, breadcrumb, "", &label_for_display(prefix_text), scale, img_w, em_width)
-                            .total_lines;
-                    let suffix_lines = if suffix.is_empty() {
-                        0
-                    } else {
-                        fr.count_wrapped_lines(suffix, scale, img_w)
-                    };
-                    (
-                        prefix_lines + image_lines + suffix_lines,
-                        Some(ImageLayout {
-                            prefix_lines,
-                            suffix_lines,
-                            image_lines,
-                            img_w,
-                            img_h,
-                        }),
-                    )
-                } else {
-                    let (prefix_str, content) = split_label(label);
-                    (
-                        ext_flow(fr, breadcrumb, &prefix_for_display(prefix_str), content, scale, rest_w, em_width)
-                            .total_lines,
-                        None,
-                    )
-                }
-            };
-            let highlight_w =
-                (max_prefix_px + item_max_w + 20.0).min(win_w - content_x - list_indent_px);
-            metrics.push((y, content_start_x, lines, highlight_w));
-            layouts.push(img_layout);
-            y += lines as f32 * line_height as f32;
-        }
-        (metrics, layouts)
-    };
+    // ---- Rows placed on screen, from the first visible one ------------------
+    let rows = crate::layout::place_rows(
+        &shapes,
+        start_index,
+        first_item_y,
+        win_h,
+        text_x + list_indent_px + max_prefix_px,
+        (max_prefix_px + item_max_w + 20.0).min(win_w - content_x - list_indent_px),
+        ascender * scale + crate::text::TEXT_PADDING,
+    );
+
+    // Navigate mode's Up and Down ask where the targets are.
+    if app.renderer.coordinate == Coordinate::Navigate
+        && let (Some(fr), Some(item)) = (app.font_renderer.as_ref(), list_items.get(list_index))
+    {
+        let (_, content) = split_label(&item.label);
+        let positions = crate::layout::target_positions(
+            fr,
+            app.renderer
+                .nav_targets
+                .iter()
+                .map(|t| t.display_span.start),
+            content,
+            scale,
+            item_max_w,
+            line_height as f32,
+        );
+        app.renderer.nav_positions = positions;
+    }
 
     // Cache layout metrics for handler use
     app.renderer.window_height = win_h as i32;
     app.renderer.cached_line_height = line_height;
-    app.renderer.cached_line_counts = line_counts.clone();
+    app.renderer.cached_line_counts = crate::layout::line_counts(&shapes, line_height as f32);
 
     // ---- Begin rendering --------------------------------------------------
     let fr = match app.font_renderer.as_mut() {
@@ -1883,12 +1697,62 @@ fn update_view(app: &mut AppState) {
     }
 
     // ---- List items — selection highlight rectangles ----------------------
-    for (i, (_, _, is_selected, _, _)) in list_items[start_index..]
+    let selected_image_frame = crate::navigate::selected_is_image(&app.renderer);
+    let list_background = ul_style.background.unwrap_or(p.background);
+    // The `ul`'s background, behind the column.
+    if let (Some(color), Some(rr)) = (ul_style.background, app.rect_renderer.as_mut()) {
+        let top = first_item_y - ascender * scale - crate::text::TEXT_PADDING;
+        rr.prepare_rectangle(content_x, top, content_w, win_h - top, color, 0.0);
+    }
+    // What a stylesheet draws behind a row: its border and its background.
+    for (
+        i,
+        ListItem {
+            is_selected, style, ..
+        },
+    ) in list_items[start_index..]
         .iter()
-        .take(item_metrics.len())
+        .take(rows.len())
         .enumerate()
     {
-        if !is_selected {
+        let Some(style) = style else { continue };
+        if *is_selected && renders_insert_buffer {
+            continue;
+        }
+        let row = &rows[i];
+        let x = content_x + 4.0 * em_width + row.style.margin[3];
+        let background = row_background(style, *is_selected, list_background, &p);
+        if let Some(rr) = app.rect_renderer.as_mut() {
+            let border = row.style.border;
+            let radius = row.style.radius;
+            if border > 0.0 {
+                let color = style.li.border_color.or(style.li.color).unwrap_or(p.text);
+                rr.prepare_rectangle(x, row.box_y, row.highlight_w, row.box_h, color, radius);
+                let inner = background.unwrap_or(list_background);
+                rr.prepare_rectangle(
+                    x + border,
+                    row.box_y + border,
+                    (row.highlight_w - 2.0 * border).max(0.0),
+                    (row.box_h - 2.0 * border).max(0.0),
+                    inner,
+                    (radius - border).max(0.0),
+                );
+            } else if let Some(color) = background {
+                rr.prepare_rectangle(x, row.box_y, row.highlight_w, row.box_h, color, radius);
+            }
+        }
+    }
+    for (
+        i,
+        ListItem {
+            is_selected, style, ..
+        },
+    ) in list_items[start_index..]
+        .iter()
+        .take(rows.len())
+        .enumerate()
+    {
+        if !is_selected || style.is_some() {
             continue;
         }
         // In insert mode the highlight is deferred: only the input buffer portion
@@ -1896,8 +1760,9 @@ fn update_view(app: &mut AppState) {
         if renders_insert_buffer {
             continue;
         }
-        let (item_y, content_start_x, lines, highlight_w) = item_metrics[i];
-        if let Some(layout) = &image_layouts[i] {
+        let row = &rows[i];
+        let (item_y, content_start_x, highlight_w) = (row.y, row.content_x, row.highlight_w);
+        if let Some(layout) = &row.image {
             // Tight-fitting selection background around image + prefix/suffix text.
             let bg_top = item_y
                 - ascender * scale
@@ -1924,6 +1789,18 @@ fn update_view(app: &mut AppState) {
             let bg_h = bg_bottom - bg_top;
             if let Some(rr) = app.rect_renderer.as_mut() {
                 rr.prepare_rectangle(bg_left, bg_top, bg_w, bg_h, p.selected, 5.0);
+                // Navigate mode's selected image: its frame shows in the 2 px the
+                // image is inset by.
+                if selected_image_frame {
+                    rr.prepare_rectangle(
+                        content_start_x,
+                        img_y,
+                        layout.img_w,
+                        layout.img_h,
+                        p.scroll_search,
+                        0.0,
+                    );
+                }
                 // Square off top-right corner when no prefix text
                 if layout.prefix_lines == 0 {
                     rr.prepare_rectangle(bg_right - 5.0, bg_top, 5.0, 5.0, p.selected, 0.0);
@@ -1941,8 +1818,8 @@ fn update_view(app: &mut AppState) {
                 }
             }
         } else {
-            let rect_y = item_y - ascender * scale - crate::text::TEXT_PADDING;
-            let rect_h = lines as f32 * line_height as f32;
+            let rect_y = row.box_y;
+            let rect_h = row.box_h;
             if let Some(rr) = app.rect_renderer.as_mut() {
                 rr.prepare_rectangle(
                     content_x + 4.0 * em_width,
@@ -1965,12 +1842,22 @@ fn update_view(app: &mut AppState) {
     // The edited field's visual lines, shared by the selection pass below and,
     // through the renderer, by Up/Down. Empty when no field is drawn.
     let mut captured_lines: Vec<sicompass_sdk::input::InputLine> = Vec::new();
-    for (i, (label, item_data, is_selected, match_pos, ext_prefix)) in list_items[start_index..]
+    for (
+        i,
+        ListItem {
+            label,
+            data: item_data,
+            is_selected,
+            match_pos,
+            ext_prefix,
+            style,
+        },
+    ) in list_items[start_index..]
         .iter()
-        .take(item_metrics.len())
+        .take(rows.len())
         .enumerate()
     {
-        let (item_y, content_start_x, _, _) = item_metrics[i];
+        let (item_y, content_start_x) = (rows[i].y, rows[i].content_x);
 
         // Draw graphical indicator (radio/checkbox) and compute x shift.
         // When any item has an indicator, all items shift their text right by the
@@ -2022,7 +1909,7 @@ fn update_view(app: &mut AppState) {
                 // image's prefix text (tag + caption) on line 1, the image
                 // below, then any trailing (suffix) text under it.
                 let (prefix_text, suffix_text, _) = split_image_label(label.as_str(), path);
-                let layout = image_layouts[i].as_ref();
+                let layout = rows[i].image.as_ref();
                 // Match positions run over the whole label; split them around
                 // the image path into the caption-prefix and caption-suffix
                 // ranges so the search term highlights in both.
@@ -2044,7 +1931,15 @@ fn update_view(app: &mut AppState) {
                     // Same continuous flow as a text result: the breadcrumb
                     // wraps, then the caption resumes after its last line.
                     let breadcrumb = item_data.as_deref().unwrap_or("");
-                    let flow = ext_flow(fr, breadcrumb, "", &label_for_display(prefix_text), scale, img_w, em_width);
+                    let flow = ext_flow(
+                        fr,
+                        breadcrumb,
+                        "",
+                        &label_for_display(prefix_text),
+                        scale,
+                        img_w,
+                        em_width,
+                    );
                     for (n, (bc_line, _)) in flow.bc_lines.iter().enumerate() {
                         fr.prepare_text_for_rendering(
                             bc_line,
@@ -2136,7 +2031,15 @@ fn update_view(app: &mut AppState) {
                 // content resume after its last line.
                 let rest_w = (right_edge - text_prefix_x).max(1.0);
                 let breadcrumb = item_data.as_deref().unwrap_or("");
-                let flow = ext_flow(fr, breadcrumb, &prefix_for_display(prefix_str), content, scale, rest_w, em_width);
+                let flow = ext_flow(
+                    fr,
+                    breadcrumb,
+                    &prefix_for_display(prefix_str),
+                    content,
+                    scale,
+                    rest_w,
+                    em_width,
+                );
                 for (n, (bc_line, _)) in flow.bc_lines.iter().enumerate() {
                     fr.prepare_text_for_rendering(
                         bc_line,
@@ -2148,7 +2051,13 @@ fn update_view(app: &mut AppState) {
                 }
                 let content_y = item_y + flow.content_line as f32 * line_height as f32;
                 let prefix_x = text_prefix_x + flow.content_dx;
-                fr.prepare_text_for_rendering(&prefix_for_display(prefix_str), prefix_x, content_y, scale, p.text);
+                fr.prepare_text_for_rendering(
+                    &prefix_for_display(prefix_str),
+                    prefix_x,
+                    content_y,
+                    scale,
+                    p.text,
+                );
                 let content_x = prefix_x + fr.measure_text_width(prefix_str, scale);
                 // Adjust match positions to be relative to content (subtract prefix char count)
                 let prefix_char_count = prefix_str.chars().count() as u32;
@@ -2183,7 +2092,8 @@ fn update_view(app: &mut AppState) {
             }
         } else if let Some(path) = item_data {
             let (prefix_text, suffix_text, has_prefix) = split_image_label(label, path);
-            let (prefix_lines, img_h_precomp) = image_layouts[i]
+            let (prefix_lines, img_h_precomp) = rows[i]
+                .image
                 .as_ref()
                 .map(|l| (l.prefix_lines, l.img_h))
                 .unwrap_or((0, 0.0));
@@ -2205,7 +2115,13 @@ fn update_view(app: &mut AppState) {
                     .map(|&pp| pp - tag_char_count)
                     .collect();
                 if let Some(fr) = app.font_renderer.as_mut() {
-                    fr.prepare_text_for_rendering(&prefix_for_display(tag), text_prefix_x, current_y, scale, p.text);
+                    fr.prepare_text_for_rendering(
+                        &prefix_for_display(tag),
+                        text_prefix_x,
+                        current_y,
+                        scale,
+                        p.text,
+                    );
                     if !content.is_empty() {
                         // Wrap at the content column — `prefix_lines` above was
                         // reserved on that assumption.
@@ -2246,7 +2162,13 @@ fn update_view(app: &mut AppState) {
                 current_y += prefix_lines as f32 * line_height as f32;
             } else {
                 if let Some(fr) = app.font_renderer.as_mut() {
-                    fr.prepare_text_for_rendering(&prefix_for_display("-p"), text_prefix_x, current_y, scale, p.text);
+                    fr.prepare_text_for_rendering(
+                        &prefix_for_display("-p"),
+                        text_prefix_x,
+                        current_y,
+                        scale,
+                        p.text,
+                    );
                 }
             }
 
@@ -2256,15 +2178,7 @@ fn update_view(app: &mut AppState) {
                 let img_h = if img_h_precomp > 0.0 {
                     img_h_precomp
                 } else {
-                    unsafe { ir.texture_size(path) }
-                        .map(|(tw, th)| {
-                            if tw == 0 {
-                                img_w
-                            } else {
-                                img_w * th as f32 / tw as f32
-                            }
-                        })
-                        .unwrap_or(img_w)
+                    crate::layout::scaled_image_height(unsafe { ir.texture_size(path) }, img_w)
                 };
                 let img_y = current_y - ascender * scale - crate::text::TEXT_PADDING;
                 let border = 2.0_f32;
@@ -2455,22 +2369,85 @@ fn update_view(app: &mut AppState) {
             } else {
                 let (prefix, content) = split_label(label.as_str());
                 let prefix_char_count = prefix.chars().count() as u32;
-                fr.prepare_text_for_rendering(&prefix_for_display(prefix), text_prefix_x, item_y, scale, p.text);
+                let row = &rows[i];
+                let font = row.style.font_scale;
+                let row_scale = scale * font;
+                let row_line_h = line_height as f32 * font;
+                let background = style
+                    .as_ref()
+                    .and_then(|s| row_background(s, *is_selected, list_background, &p))
+                    .unwrap_or(if *is_selected {
+                        p.selected
+                    } else {
+                        list_background
+                    });
+                let wanted = style.as_ref().and_then(|s| s.li.color);
+                let text_color = crate::style::readable_color(wanted, background, p.text);
+                let marker = style.as_ref().and_then(|s| s.marker_color).or(wanted);
+                let marker_color = crate::style::readable_color(marker, background, p.text);
+                let bold = style.as_ref().is_some_and(|s| s.li.bold);
+                fr.set_bold(bold);
+                fr.prepare_text_for_rendering(
+                    &prefix_for_display(prefix),
+                    text_prefix_x + row.left,
+                    item_y,
+                    row_scale,
+                    marker_color,
+                );
                 let content_positions: Vec<u32> = match_pos
                     .iter()
                     .filter(|&&p| p >= prefix_char_count)
                     .map(|&p| p - prefix_char_count)
                     .collect();
-                let wrap_w = max_content_w.max(1.0);
-                if content_positions.is_empty() {
+                let wrap_w = (max_content_w - row.style.extra_width()).max(1.0);
+                let align = style
+                    .as_ref()
+                    .map_or(Default::default(), |s| s.li.text_align);
+                let runs = style.as_ref().map_or(&[][..], |s| s.runs.as_slice());
+                let by_lines = align != crate::style::TextAlign::Left || !runs.is_empty();
+                if by_lines && content_positions.is_empty() {
+                    for (n, (line, offset)) in fr
+                        .wrap_lines_with_offsets(content, row_scale, wrap_w)
+                        .iter()
+                        .enumerate()
+                    {
+                        let free = (wrap_w - fr.measure_text_width(line, row_scale)).max(0.0);
+                        let mut x = content_start_x
+                            + match align {
+                                crate::style::TextAlign::Left => 0.0,
+                                crate::style::TextAlign::Center => free / 2.0,
+                                crate::style::TextAlign::Right => free,
+                            };
+                        let line_y = item_y + n as f32 * row_line_h;
+                        let first = content[..*offset].chars().count();
+                        let len = line.chars().count();
+                        let chars: Vec<char> = line.chars().collect();
+                        for (from, to, run) in
+                            crate::layout::split_at_runs(first, first + len, runs)
+                        {
+                            let piece: String = chars[from - first..to - first].iter().collect();
+                            let color = run.map_or(text_color, |run| {
+                                crate::style::readable_color(
+                                    run.color.or(wanted),
+                                    background,
+                                    p.text,
+                                )
+                            });
+                            fr.set_bold(run.map_or(bold, |run| run.bold));
+                            fr.prepare_text_for_rendering(&piece, x, line_y, row_scale, color);
+                            x += fr.measure_text_width(&piece, row_scale);
+                        }
+                    }
+                    fr.set_bold(bold);
+                } else if content_positions.is_empty() {
                     fr.prepare_text_wrapped(
                         content,
                         content_start_x,
                         item_y,
-                        scale,
+                        row_scale,
                         wrap_w,
-                        line_height as f32,
-                        p.text,
+                        row_line_h,
+                        text_color,
                     );
                 } else {
                     // Same uniform wrap as the branch above: highlighted items
@@ -2482,10 +2459,10 @@ fn update_view(app: &mut AppState) {
                         content,
                         content_start_x,
                         item_y,
-                        scale,
+                        row_scale,
                         ascender,
-                        line_height as f32,
-                        p.text,
+                        row_line_h,
+                        text_color,
                         p.scroll_search,
                         &content_positions,
                         Some(WrapLayout {
@@ -2495,6 +2472,7 @@ fn update_view(app: &mut AppState) {
                         }),
                     );
                 }
+                fr.set_bold(false);
             }
         }
     }
@@ -2763,7 +2741,7 @@ fn scroll_item_width(max_w: f32, indent: f32) -> f32 {
 fn measure_scroll_items(
     fr: &crate::text::FontRenderer,
     ir: Option<&mut crate::image::ImageRenderer>,
-    list_items: &[(String, Option<String>, bool, Vec<u32>, Option<String>)],
+    list_items: &[ListItem],
     indents: &[f32],
     scale: f32,
     line_height: i32,
@@ -2772,7 +2750,15 @@ fn measure_scroll_items(
     let mut ir = ir;
     let mut layouts = Vec::with_capacity(list_items.len());
     let mut y_accum: i32 = 0;
-    for (i, (label, img_data, _, _, _)) in list_items.iter().enumerate() {
+    for (
+        i,
+        ListItem {
+            label,
+            data: img_data,
+            ..
+        },
+    ) in list_items.iter().enumerate()
+    {
         let indent = indents.get(i).copied().unwrap_or(0.0);
         let item_w = scroll_item_width(max_w, indent);
         let (img, content_lines) = if let Some(path) = img_data {
@@ -2917,7 +2903,13 @@ fn render_scroll_item(
             }
         }
         if !list_prefix.is_empty() {
-            fr.prepare_text_for_rendering(&prefix_for_display(&list_prefix), text_prefix_x, baseline, scale, p.text);
+            fr.prepare_text_for_rendering(
+                &prefix_for_display(&list_prefix),
+                text_prefix_x,
+                baseline,
+                scale,
+                p.text,
+            );
         }
     }
 
@@ -2926,8 +2918,17 @@ fn render_scroll_item(
         let (caption_prefix, caption_suffix) = scroll_image_caption(label, path);
         // Caption text rendered above the image, at the content column.
         render_scroll_lines(
-            fr, caption_prefix, content_x, content_top, content_w, scale, ascender, lh, clip_y,
-            win_h, p.text,
+            fr,
+            caption_prefix,
+            content_x,
+            content_top,
+            content_w,
+            scale,
+            ascender,
+            lh,
+            clip_y,
+            win_h,
+            p.text,
         );
         let img_top = content_top + img.caption_prefix_lines as f32 * lh;
         if img_top + img.img_h > clip_y && img_top < win_h {
@@ -2951,12 +2952,30 @@ fn render_scroll_item(
         // Caption text rendered below the image.
         let suffix_top = img_top + img.image_lines as f32 * lh;
         render_scroll_lines(
-            fr, caption_suffix, content_x, suffix_top, content_w, scale, ascender, lh, clip_y,
-            win_h, p.text,
+            fr,
+            caption_suffix,
+            content_x,
+            suffix_top,
+            content_w,
+            scale,
+            ascender,
+            lh,
+            clip_y,
+            win_h,
+            p.text,
         );
     } else {
         render_scroll_lines(
-            fr, &content, content_x, content_top, content_w, scale, ascender, lh, clip_y, win_h,
+            fr,
+            &content,
+            content_x,
+            content_top,
+            content_w,
+            scale,
+            ascender,
+            lh,
+            clip_y,
+            win_h,
             p.text,
         );
     }
@@ -2970,7 +2989,7 @@ fn render_scroll_full(
     fr: &mut crate::text::FontRenderer,
     mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
     mut ir: Option<&mut crate::image::ImageRenderer>,
-    list_items: &[(String, Option<String>, bool, Vec<u32>, Option<String>)],
+    list_items: &[ListItem],
     indents: &[f32],
     list_index: usize,
     text_scroll_offset: i32,
@@ -3018,7 +3037,15 @@ fn render_scroll_full(
     // highlight (search sub-modes highlight matches instead).
 
     // Render visible items.
-    for (i, (label, img_data, _, _, _)) in list_items.iter().enumerate() {
+    for (
+        i,
+        ListItem {
+            label,
+            data: img_data,
+            ..
+        },
+    ) in list_items.iter().enumerate()
+    {
         let l = &layouts[i];
         let item_top_screen = clip_y + (l.top - scroll_offset) as f32;
         if item_top_screen + l.height as f32 <= clip_y {
@@ -3054,10 +3081,8 @@ fn render_scroll_full(
 
 /// True when any item in the scroll list is a radio or checkbox — then every
 /// item reserves an indicator-width gutter so prefixes stay column-aligned.
-fn scroll_list_has_indicators(
-    list_items: &[(String, Option<String>, bool, Vec<u32>, Option<String>)],
-) -> bool {
-    list_items.iter().any(|(label, _, _, _, _)| {
+fn scroll_list_has_indicators(list_items: &[ListItem]) -> bool {
+    list_items.iter().any(|ListItem { label, .. }| {
         get_radio_type(label) != RadioType::None || get_checkbox_type(label) != CheckboxType::None
     })
 }
@@ -3111,7 +3136,7 @@ fn render_scroll_search_full(
     fr: &mut crate::text::FontRenderer,
     mut rr: Option<&mut crate::rectangle::RectangleRenderer>,
     mut ir: Option<&mut crate::image::ImageRenderer>,
-    list_items: &[(String, Option<String>, bool, Vec<u32>, Option<String>)],
+    list_items: &[ListItem],
     indents: &[f32],
     list_index: usize,
     text_scroll_offset: i32,
@@ -3158,7 +3183,15 @@ fn render_scroll_search_full(
     // text above/below the image for image items. Segments are appended
     // top-to-bottom so the resulting match list is ordered by vertical position.
     let mut segments: Vec<SearchSegment> = Vec::with_capacity(list_items.len());
-    for (item_idx, (label, img_data, _, _, _)) in list_items.iter().enumerate() {
+    for (
+        item_idx,
+        ListItem {
+            label,
+            data: img_data,
+            ..
+        },
+    ) in list_items.iter().enumerate()
+    {
         let l = &layouts[item_idx];
         let x = content_x + l.indent;
         let item_w = scroll_item_width(max_w, l.indent);
@@ -3331,7 +3364,15 @@ fn render_scroll_search_full(
     }
 
     // Render visible items on top of the highlights.
-    for (i, (label, img_data, _, _, _)) in list_items.iter().enumerate() {
+    for (
+        i,
+        ListItem {
+            label,
+            data: img_data,
+            ..
+        },
+    ) in list_items.iter().enumerate()
+    {
         let l = &layouts[i];
         let item_top_screen = clip_y + (l.top - scroll_offset) as f32;
         if item_top_screen + l.height as f32 <= clip_y {
@@ -3391,10 +3432,27 @@ fn build_header_text(r: &AppRenderer, line_height: i32) -> String {
 
 /// Snapshot the active list for rendering (avoids mixed borrows later).
 /// Returns `(label, item_data, is_selected, fuzzy_match_positions, ext_prefix)`.
-fn collect_list_items(
-    r: &AppRenderer,
-) -> Vec<(String, Option<String>, bool, Vec<u32>, Option<String>)> {
+fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<ListItem> {
     let len = r.active_list_len();
+    // Rows only in the lists that are the tree's own, and only if a stylesheet has
+    // something to say about them. Every row looks the same to a stylesheet so far,
+    // so two styles cover a list of any length.
+    let markup_here = r.sheets.markup_here();
+    let styled = r.sheets.styles_rows()
+        && matches!(
+            r.coordinate.base(),
+            Coordinate::General
+                | Coordinate::Navigate
+                | Coordinate::Insert
+                | Coordinate::Normal
+                | Coordinate::Visual
+                | Coordinate::SimpleSearch
+        );
+    // The row being edited is drawn as an edit buffer, whatever it looks like at rest.
+    let editing = matches!(
+        r.coordinate.base(),
+        Coordinate::Insert | Coordinate::Normal | Coordinate::Visual | Coordinate::InputSearch
+    );
     let mut out = Vec::with_capacity(len);
     let has_filter = !r.filtered_list_indices.is_empty();
     for i in 0..len {
@@ -3411,16 +3469,50 @@ fn collect_list_items(
             } else {
                 Vec::new()
             };
-            out.push((
-                item.label.clone(),
-                item.data.clone(),
-                i == r.list_index,
-                positions,
-                item.ext_prefix.clone(),
-            ));
+            out.push(ListItem {
+                label: item.label.clone(),
+                data: item.data.clone(),
+                is_selected: i == r.list_index,
+                match_pos: if r.coordinate == Coordinate::Navigate && i == r.list_index {
+                    crate::navigate::highlight_positions(r, &item.label)
+                } else {
+                    positions
+                },
+                ext_prefix: item.ext_prefix.clone(),
+                style: styled
+                    .then(|| {
+                        let focus = i == r.list_index;
+                        let markup = markup_here
+                            .then(|| crate::list::text_at(&r.ffon, &item.id))
+                            .flatten()
+                            .filter(|row| sicompass_sdk::markup::has_markup(row));
+                        r.sheets.row_style(markup.as_deref(), focus, env)
+                    })
+                    .filter(|_| !(editing && i == r.list_index)),
+            });
         }
     }
     out
+}
+
+/// What a styled row has behind it, `None` for nothing. The cursor's row always has
+/// something, and something that shows: see [`crate::style::visible_focus`].
+fn row_background(
+    style: &crate::layout::RowStyle,
+    selected: bool,
+    list_background: u32,
+    p: &crate::app_state::ColorPalette,
+) -> Option<u32> {
+    if selected {
+        let around = style.unfocused_background.unwrap_or(list_background);
+        Some(crate::style::visible_focus(
+            style.li.background,
+            around,
+            p.selected,
+        ))
+    } else {
+        style.li.background
+    }
 }
 
 /// Word-wrap layout for `render_with_highlights`. The first wrapped line keeps
@@ -3450,7 +3542,7 @@ struct WrapLayout {
 /// The three passes that lay out these rows — scroll metrics, draw metrics and
 /// the draw itself — all go through [`ext_flow`], so the height a row reserves
 /// cannot drift from the height it draws.
-struct ExtFlow {
+pub(crate) struct ExtFlow {
     /// Breadcrumb wrapped uniformly at `rest_w`; empty when there is none.
     bc_lines: Vec<(String, usize)>,
     /// Line index, relative to the row's first line, that the prefix starts on.
@@ -3464,7 +3556,7 @@ struct ExtFlow {
     /// than under the `- ` tag, the way an ordinary list row wraps.
     rest_dx: f32,
     /// Total visual lines the row occupies.
-    total_lines: usize,
+    pub(crate) total_lines: usize,
 }
 
 /// Visual line segments of the insert-mode edit buffer, as
@@ -3476,7 +3568,7 @@ struct ExtFlow {
 /// non-editable prefix, and continuation lines run full-width at the left
 /// margin. Height reservation, draw and caret all read this one segmentation,
 /// so they cannot disagree.
-fn insert_buf_segments(
+pub(crate) fn insert_buf_segments(
     fr: &crate::text::FontRenderer,
     buf: &str,
     scale: f32,
@@ -3504,7 +3596,7 @@ fn insert_lines_from_segments(
 
 /// Lay out `[breadcrumb][prefix][content]` as one continuous flow `rest_w` wide.
 /// See [`ExtFlow`]. Pass an empty `prefix` when the caller draws no separate tag.
-fn ext_flow(
+pub(crate) fn ext_flow(
     fr: &crate::text::FontRenderer,
     breadcrumb: &str,
     prefix: &str,
@@ -3828,7 +3920,7 @@ fn get_checkbox_type(label: &str) -> CheckboxType {
 }
 
 /// Returns the pixel width consumed by the indicator (circle/box + one em gap).
-fn indicator_width(line_h: f32, em_width: f32) -> f32 {
+pub(crate) fn indicator_width(line_h: f32, em_width: f32) -> f32 {
     line_h * 0.8 + em_width
 }
 
@@ -3956,7 +4048,7 @@ pub(crate) fn label_for_display(label: &str) -> std::borrow::Cow<'_, str> {
 
 /// Split a list label at the first space into (prefix_with_space, content).
 /// E.g. `"-c My item"` -> `("-c ", "My item")`.
-fn split_label(label: &str) -> (&str, &str) {
+pub(crate) fn split_label(label: &str) -> (&str, &str) {
     if let Some(i) = label.find(' ') {
         (&label[..=i], &label[i + 1..])
     } else {
@@ -3968,7 +4060,7 @@ fn split_label(label: &str) -> (&str, &str) {
 /// has_meaningful_prefix). Prefix is everything before the path (including "-p "),
 /// suffix is everything after. has_meaningful_prefix is true when there is text
 /// beyond the bare "-p " marker (prefix.len() > 3).
-fn split_image_label<'a>(label: &'a str, path: &str) -> (&'a str, &'a str, bool) {
+pub(crate) fn split_image_label<'a>(label: &'a str, path: &str) -> (&'a str, &'a str, bool) {
     if let Some(pos) = label.find(path) {
         let prefix = &label[..pos];
         let suffix = &label[pos + path.len()..];
@@ -3977,15 +4069,6 @@ fn split_image_label<'a>(label: &'a str, path: &str) -> (&'a str, &'a str, bool)
     } else {
         ("-p ", "", false)
     }
-}
-
-/// Layout data for image items, pre-computed alongside item_metrics.
-struct ImageLayout {
-    prefix_lines: usize,
-    suffix_lines: usize,
-    image_lines: usize,
-    img_w: f32,
-    img_h: f32,
 }
 
 #[cfg(test)]
@@ -4041,7 +4124,9 @@ mod prefix_display_tests {
         let label = "-p cat";
         let shown: Vec<char> = label_for_display(label).chars().collect();
         let raw: Vec<char> = label.chars().collect();
-        for (p, q) in (0..raw.len() as u32).zip(positions_for_display(label, &(0..6).collect::<Vec<u32>>())) {
+        for (p, q) in
+            (0..raw.len() as u32).zip(positions_for_display(label, &(0..6).collect::<Vec<u32>>()))
+        {
             if p >= 1 {
                 assert_eq!(shown[q as usize], raw[p as usize], "position {p}");
             }

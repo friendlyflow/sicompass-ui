@@ -11,7 +11,18 @@ use ash::vk;
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_RECT_VERTICES: usize = 300 * 6; // 300 quads × 6 vertices (extra headroom for checkmark strokes)
+/// Quads × 6 vertices. Generous: a styled list draws backgrounds and four border
+/// edges per row, and going over only loses rectangles.
+const MAX_RECT_VERTICES: usize = 4096 * 6;
+
+/// Say once when a frame runs out of rectangles, because the only other sign is a
+/// highlight or a checkbox quietly missing from the screen.
+fn warn_rect_overflow() {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!("rectangle buffer full ({MAX_RECT_VERTICES} vertices), dropping rectangles");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Vertex layout (must match shaders/rectangle.vert attributes)
@@ -217,6 +228,7 @@ impl RectangleRenderer {
         corner_radius: f32,
     ) {
         if self.vertices.len() >= MAX_RECT_VERTICES {
+            warn_rect_overflow();
             return;
         }
 
@@ -284,6 +296,7 @@ impl RectangleRenderer {
     /// Ports `prepareCheckmark()` from `checkmark.c`.
     pub fn prepare_checkmark(&mut self, x: f32, y: f32, size: f32, color: u32) {
         if self.vertices.len() + 12 > MAX_RECT_VERTICES {
+            warn_rect_overflow();
             return;
         }
 
@@ -422,6 +435,7 @@ impl RectangleRenderer {
     /// control icons as strokes.
     pub fn prepare_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, color: u32) {
         if self.vertices.len() + 6 > MAX_RECT_VERTICES {
+            warn_rect_overflow();
             return;
         }
 

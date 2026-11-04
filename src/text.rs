@@ -184,6 +184,10 @@ pub struct FontRenderer {
     // Primary face first, then the fallback faces (in `FALLBACK_FONTS` order).
     // A glyph is rasterized from the first face that contains its codepoint.
     faces: Vec<ft::FT_Face>,
+    /// The bold of the primary face, null if it failed to parse.
+    bold_face: ft::FT_Face,
+    /// Whether text is being drawn bold right now, see [`FontRenderer::set_bold`].
+    bold: Cell<bool>,
 
     // ---- Glyph metrics and atlas -------------------------------------------
     // Codepoint -> glyph, populated lazily by `ensure_glyph`. Interior-mutable
@@ -240,6 +244,9 @@ pub struct FontRenderer {
 // Safety: FontRenderer is only used from the main thread; raw FT pointers are opaque handles.
 unsafe impl Send for FontRenderer {}
 
+/// Set in a glyph-cache key for a bold glyph, above every Unicode code point.
+const BOLD_GLYPH: u32 = 1 << 24;
+
 /// How far to lower a glyph from the icon face, the last of `faces`, in pixels.
 ///
 /// Bootstrap Icons centres its glyphs on the middle of the em box, far above the
@@ -251,7 +258,8 @@ unsafe impl Send for FontRenderer {}
 /// # Safety
 /// `face` must be a live face with a size set.
 unsafe fn icon_drop(faces: &[ft::FT_Face], face: ft::FT_Face) -> f32 {
-    if faces.last() != Some(&face) {
+    // Two or more: on its own, as when drawing bold, the face is not the icon face.
+    if faces.len() < 2 || faces.last() != Some(&face) {
         return 0.0;
     }
     unsafe { (*(*face).size).metrics.y_ppem as f32 * 0.2 }
@@ -876,6 +884,15 @@ impl FontRenderer {
                 }
             }
 
+            // Bold — optional too: without it, bold text just draws regular.
+            let mut bold_face: ft::FT_Face = std::ptr::null_mut();
+            if new_memory_face(ft_library, fonts::PRIMARY_BOLD, &mut bold_face) != 0
+                || ft::FT_Set_Char_Size(bold_face, 0, 64 * 64, dpi, dpi) != 0
+            {
+                eprintln!("text.rs: embedded bold font could not be parsed");
+                bold_face = std::ptr::null_mut();
+            }
+
             // Scale the atlas with DPI so glyphs always fit.  At 96 DPI the atlas
             // is 1024² (baseline, unchanged).  Each doubling of DPI doubles both
             // glyph dimensions, so we need 4× the area — i.e. 2× the linear size.
@@ -1208,6 +1225,8 @@ impl FontRenderer {
                 ascender,
                 descender,
                 dpi: dpi as f32,
+                bold_face,
+                bold: Cell::new(false),
                 atlas_size: font_atlas_size,
                 atlas_data: RefCell::new(atlas_data),
                 pen_x: Cell::new(pen_x),
@@ -1257,6 +1276,9 @@ impl FontRenderer {
             for &face in &self.faces {
                 ft::FT_Done_Face(face);
             }
+            if !self.bold_face.is_null() {
+                ft::FT_Done_Face(self.bold_face);
+            }
             ft::FT_Done_FreeType(self.ft_library);
         }
     }
@@ -1270,6 +1292,11 @@ impl FontRenderer {
     fn ensure_glyph(&self, cp: u32) -> Option<GlyphInfo> {
         if cp < 32 {
             return None;
+        }
+        if self.bold.get()
+            && let Some(g) = self.ensure_bold_glyph(cp)
+        {
+            return Some(g);
         }
         if let Some(g) = self.glyphs.borrow().get(&cp).copied() {
             return Some(g);
@@ -1318,6 +1345,56 @@ impl FontRenderer {
         }
         self.missing.borrow_mut().insert(cp);
         None
+    }
+
+    /// The bold glyph, kept in the same atlas under its own key. `None` for what the
+    /// bold face lacks (an icon, an emoji), which then draws regular.
+    fn ensure_bold_glyph(&self, cp: u32) -> Option<GlyphInfo> {
+        if self.bold_face.is_null() {
+            return None;
+        }
+        let key = cp | BOLD_GLYPH;
+        if let Some(g) = self.glyphs.borrow().get(&key).copied() {
+            return Some(g);
+        }
+        if self.missing.borrow().contains(&key) {
+            return None;
+        }
+        let (mut px, mut py, mut rh) = (self.pen_x.get(), self.pen_y.get(), self.row_height.get());
+        let result = {
+            let mut data = self.atlas_data.borrow_mut();
+            unsafe {
+                rasterize_glyph(
+                    &[self.bold_face],
+                    &mut data,
+                    self.atlas_size,
+                    &mut px,
+                    &mut py,
+                    &mut rh,
+                    cp,
+                )
+            }
+        };
+        self.pen_x.set(px);
+        self.pen_y.set(py);
+        self.row_height.set(rh);
+        match result {
+            Some(g) => {
+                self.dirty.set(true);
+                self.glyphs.borrow_mut().insert(key, g);
+                Some(g)
+            }
+            None => {
+                self.missing.borrow_mut().insert(key);
+                None
+            }
+        }
+    }
+
+    /// Draw and measure bold until told otherwise. Every caller that turns it on
+    /// turns it off again before its next row.
+    pub fn set_bold(&self, bold: bool) {
+        self.bold.set(bold);
     }
 
     /// Horizontal advance of `ch` in atlas pixels, ensuring the glyph exists.
@@ -1952,6 +2029,8 @@ pub(crate) fn fr_from_glyphs(
     FontRenderer {
         ft_library: std::ptr::null_mut(),
         faces: Vec::new(),
+        bold_face: std::ptr::null_mut(),
+        bold: Cell::new(false),
         glyphs: RefCell::new(glyphs),
         missing: RefCell::new(std::collections::HashSet::new()),
         line_height,
@@ -2466,7 +2545,11 @@ mod tests {
                 fonts::ICON_DASH,
             ] {
                 let cp = icon as ft::FT_ULong;
-                assert_ne!(ft::FT_Get_Char_Index(*icon_face, cp), 0, "{cp:X} is no icon");
+                assert_ne!(
+                    ft::FT_Get_Char_Index(*icon_face, cp),
+                    0,
+                    "{cp:X} is no icon"
+                );
                 for face in text_faces {
                     assert_eq!(ft::FT_Get_Char_Index(*face, cp), 0, "{cp:X} in a text face");
                 }
@@ -2488,8 +2571,10 @@ mod tests {
             let mut atlas = vec![0u8; (atlas_size * atlas_size) as usize];
             let (mut px, mut py, mut rh) = (0i32, 0i32, 0i32);
             let mut glyph = |cp: u32| {
-                rasterize_glyph(&faces, &mut atlas, atlas_size, &mut px, &mut py, &mut rh, cp)
-                    .expect("glyph")
+                rasterize_glyph(
+                    &faces, &mut atlas, atlas_size, &mut px, &mut py, &mut rh, cp,
+                )
+                .expect("glyph")
             };
             let middle = |g: &GlyphInfo| g.bearing[1] - g.size[1] / 2.0;
             let small = middle(&glyph('x' as u32));
@@ -2506,6 +2591,32 @@ mod tests {
                     icon as u32
                 );
             }
+            for face in faces {
+                ft::FT_Done_Face(face);
+            }
+            ft::FT_Done_FreeType(lib);
+        }
+    }
+
+    /// Bold must not move anything: the renderer wraps and places text assuming so.
+    #[test]
+    fn bold_has_the_same_advance_as_regular() {
+        unsafe {
+            let (lib, faces) = load_test_faces();
+            let mut bold: ft::FT_Face = std::ptr::null_mut();
+            assert_eq!(new_memory_face(lib, fonts::PRIMARY_BOLD, &mut bold), 0);
+            assert_eq!(ft::FT_Set_Char_Size(bold, 0, 64 * 64, 96, 96), 0);
+            let advance = |face: ft::FT_Face, c: char| {
+                assert_eq!(
+                    ft::FT_Load_Char(face, c as ft::FT_ULong, ft::FT_LOAD_DEFAULT as ft::FT_Int32),
+                    0
+                );
+                (*(*face).glyph).advance.x
+            };
+            for c in ['a', 'M', 'i', '.', ' ', 'é', 'Ж'] {
+                assert_eq!(advance(bold, c), advance(faces[0], c), "{c}");
+            }
+            ft::FT_Done_Face(bold);
             for face in faces {
                 ft::FT_Done_Face(face);
             }

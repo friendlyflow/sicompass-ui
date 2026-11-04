@@ -142,3 +142,38 @@ hint-ctrl-insert = Ctrl+: Insert
 hint-enter-insert = Enter  Insert
 insert-palette-empty = nothing to insert
 escape-command-mode-first = press Escape to leave { $mode } first
+
+# Navigate mode
+mode-navigate = navigate mode
+hint-i-navigate = I      Navigate
+hint-a-navigate-from-last = A      Navigate from last
+hint-esc-leave-navigate = Esc    Leave navigate
+hint-right-next-target = Right  Next target
+hint-left-previous-target = Left   Previous target
+hint-up-line-above = Up     Line above
+hint-down-line-below = Down   Line below
+hint-d-view-image = D      View image
+hint-enter-view-image = Enter  View image
+hint-right-next-image = Right  Next image
+hint-left-previous-image = Left   Previous image
+target-link = link
+target-image = image
+target-button = button
+target-position = { $kind } { $n } of { $total }, { $name }
+targets-links = { $count ->
+    [one] 1 link
+   *[other] { $count } links
+}
+targets-images = { $count ->
+    [one] 1 image
+   *[other] { $count } images
+}
+targets-buttons = { $count ->
+    [one] 1 button
+   *[other] { $count } buttons
+}
+target-video = video
+targets-videos = { $count ->
+    [one] 1 video
+   *[other] { $count } videos
+}
