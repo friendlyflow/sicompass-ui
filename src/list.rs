@@ -2777,7 +2777,10 @@ mod markup_scope_tests {
             "-pv"
         );
         assert_eq!(prefix(r#"<img src="a.jpg" alt="A">"#, true), "-p");
-        assert_eq!(prefix(r#"<button>go</button><video src="b.mp4">B</video>"#, true), "-b");
+        assert_eq!(
+            prefix(r#"<button>go</button><video src="b.mp4">B</video>"#, true),
+            "-b"
+        );
         // Not markup, and an escaped one is only text.
         assert_eq!(prefix(r#"<video src="a.mp4">Trip</video>"#, false), "-");
         assert_eq!(prefix(&tags::escape(r#"<video src="a.mp4">"#), true), "-");

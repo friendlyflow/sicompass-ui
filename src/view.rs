@@ -4357,8 +4357,8 @@ fn render_checkbox_indicator(
 /// are drawn with an icon: a colon command's raw label can start with a `-` that
 /// is its own text.
 const LIST_PREFIXES: &[&str] = &[
-    "-", "-p", "-v", "-pv", "-cc", "-c", "-rc", "-r", "-b", "-i", "-ci", "+", "+cc", "+c", "+l", "+R", "+i",
-    "+ci", "+di", "+fi",
+    "-", "-p", "-v", "-pv", "-cc", "-c", "-rc", "-r", "-b", "-i", "-ci", "+", "+cc", "+c", "+l",
+    "+R", "+i", "+ci", "+di", "+fi",
 ];
 
 /// A list prefix as it is drawn: the `+` or `-` becomes its Bootstrap icon, and
