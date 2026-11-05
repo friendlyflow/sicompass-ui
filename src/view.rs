@@ -820,23 +820,35 @@ fn update_view(app: &mut AppState) {
             None => return,
         };
         let indent = fr.measure_text_width("    ", scale);
+        let number_column = line_number_column(&list_items);
         let prefix = if is_flat_list {
             0.0_f32
         } else {
             list_items
                 .iter()
-                .map(|ListItem { label, style, .. }| {
-                    let (p, _) = split_label(label);
-                    let font = style.li.font_scale;
-                    let text_w = fr.measure_text_width(&prefix_for_display(p), scale * font);
-                    // When any item has an indicator, all items reserve the same indicator width
-                    let indicator_w = if list_has_indicators {
-                        indicator_width(line_height as f32, em_width)
-                    } else {
-                        0.0
-                    };
-                    text_w + indicator_w
-                })
+                .map(
+                    |ListItem {
+                         label,
+                         style,
+                         line_number,
+                         ..
+                     }| {
+                        let (p, _) = split_label(label);
+                        let font = style.li.font_scale;
+                        let mut text_w =
+                            fr.measure_text_width(&prefix_for_display(p), scale * font);
+                        if let (Some(_), Some(column)) = (line_number, &number_column) {
+                            text_w += fr.measure_text_width(column, scale * font);
+                        }
+                        // When any item has an indicator, all items reserve the same indicator width
+                        let indicator_w = if list_has_indicators {
+                            indicator_width(line_height as f32, em_width)
+                        } else {
+                            0.0
+                        };
+                        text_w + indicator_w
+                    },
+                )
                 .fold(0.0_f32, f32::max)
         };
         (indent, prefix)
@@ -1948,6 +1960,7 @@ fn update_view(app: &mut AppState) {
         i,
         ListItem {
             label,
+            line_number,
             data: item_data,
             is_selected,
             match_pos,
@@ -2550,6 +2563,15 @@ fn update_view(app: &mut AppState) {
                     row_scale,
                     marker_color,
                 );
+                if let Some(number) = line_number {
+                    fr.prepare_text_for_rendering(
+                        &number.to_string(),
+                        line_number_x(fr, *number, content_start_x, row_scale),
+                        item_y,
+                        row_scale,
+                        marker_color,
+                    );
+                }
                 let content_positions: Vec<u32> = match_pos
                     .iter()
                     .filter(|&&p| p >= prefix_char_count)
@@ -3151,6 +3173,15 @@ fn render_scroll_item(
                 look.marker,
             );
         }
+        if let Some(number) = look.line_number {
+            fr.prepare_text_for_rendering(
+                &number.to_string(),
+                line_number_x(fr, number, content_x, scale),
+                baseline,
+                scale,
+                look.marker,
+            );
+        }
     }
 
     let content_top = item_top_screen;
@@ -3228,6 +3259,7 @@ fn render_scroll_item(
 /// What a row's style changes in the scroll view, which reads as one flow of text: no
 /// focus, one font size, and a picture or two instead of a grid.
 struct ScrollLook {
+    line_number: Option<usize>,
     background: Option<u32>,
     color: u32,
     marker: u32,
@@ -3244,6 +3276,7 @@ fn scroll_look(
     let behind = style.li.background.unwrap_or(p.background);
     let wanted = style.li.color;
     ScrollLook {
+        line_number: None,
         background: style.li.background,
         color: crate::style::readable_color(wanted, behind, p.text),
         marker: crate::style::readable_color(style.marker_color.or(wanted), behind, p.text),
@@ -3313,6 +3346,7 @@ fn render_scroll_full(
         i,
         ListItem {
             label,
+            line_number,
             data: img_data,
             style,
             ..
@@ -3346,7 +3380,10 @@ fn render_scroll_full(
             clip_y,
             win_h,
             p,
-            &scroll_look(style, env, max_w, p),
+            &ScrollLook {
+                line_number: *line_number,
+                ..scroll_look(style, env, max_w, p)
+            },
         );
     }
 
@@ -3643,6 +3680,7 @@ fn render_scroll_search_full(
         i,
         ListItem {
             label,
+            line_number,
             data: img_data,
             style,
             ..
@@ -3677,7 +3715,10 @@ fn render_scroll_search_full(
             clip_y,
             win_h,
             p,
-            &scroll_look(style, env, max_w, p),
+            &ScrollLook {
+                line_number: *line_number,
+                ..scroll_look(style, env, max_w, p)
+            },
         );
     }
 
@@ -3775,8 +3816,10 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
                 _ => std::sync::Arc::clone(&plain[usize::from(styled_focus)]),
             };
             let boxed = style.boxed && !scrolling;
+            let number = crate::list::shown_line_number(r, item, i);
             out.push(ListItem {
                 label: item.label.clone(),
+                line_number: number,
                 // A row of boxes draws its own pictures.
                 data: if boxed { None } else { item.data.clone() },
                 is_selected: focus,
@@ -3799,6 +3842,23 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
         }
     }
     out
+}
+
+/// The text of the column line numbers take at the end of the list prefix, for the
+/// longest number in the list: its digits and the space before the row's text. `None`
+/// when the list has no numbers. The whole list counts, so scrolling never moves it.
+fn line_number_column(list_items: &[ListItem]) -> Option<String> {
+    list_items
+        .iter()
+        .filter_map(|item| item.line_number)
+        .max()
+        .map(|longest| format!("{longest} "))
+}
+
+/// Where a line number starts: right-aligned against the row's text at `content_x`, so
+/// numbers line up whatever the letters before them say and however long they are.
+fn line_number_x(fr: &crate::text::FontRenderer, number: usize, content_x: f32, scale: f32) -> f32 {
+    content_x - fr.measure_text_width(&format!("{number} "), scale)
 }
 
 /// Paint a row of boxes: backgrounds and borders, text with its runs, pictures, and the
@@ -4743,6 +4803,63 @@ mod prefix_display_tests {
         assert!(!split_image_label("-p a.png", "a.png").2);
         assert!(!split_image_label("-cp a.png", "a.png").2);
         assert!(split_image_label("-cp look a.png", "a.png").2);
+    }
+
+    /// Numbers of any length end in the same place, against the row's text, and the
+    /// column is as wide as the longest of them.
+    #[test]
+    fn line_numbers_are_right_aligned_in_their_column() {
+        use super::{line_number_column, line_number_x};
+        let fr = crate::text::make_fr_uniform(10.0);
+        let item = |line_number| crate::layout::ListItem {
+            label: "-ci x".to_owned(),
+            line_number,
+            ..Default::default()
+        };
+        let items = [item(Some(7)), item(Some(120)), item(None)];
+        assert_eq!(line_number_column(&items).as_deref(), Some("120 "));
+        assert_eq!(line_number_column(&[item(None)]), None);
+        // A cell is 10 px: the number and its space end at the text.
+        assert_eq!(line_number_x(&fr, 7, 100.0, 1.0), 80.0);
+        assert_eq!(line_number_x(&fr, 12, 100.0, 1.0), 70.0);
+        assert_eq!(line_number_x(&fr, 120, 100.0, 1.0), 60.0);
+    }
+
+    /// The number is not part of the label, so a search never finds it and its highlight
+    /// stays on the same letters.
+    #[test]
+    fn a_line_number_stays_out_of_the_label() {
+        use crate::app_state::LineNumbers;
+        use sicompass_sdk::ffon::{FfonElement, IdArray};
+        use sicompass_sdk::tags;
+        let mut root = FfonElement::new_obj("root");
+        for (n, line) in ["a", "b"].iter().enumerate() {
+            let row = tags::format_input(&format!("{}{line}", tags::format_src(n)));
+            root.as_obj_mut().unwrap().push(FfonElement::new_str(row));
+        }
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        let mut id = IdArray::new();
+        id.push(0);
+        id.push(0);
+        r.current_id = id;
+        r.line_numbers = LineNumbers::Relative;
+        crate::list::create_list_current_layer(&mut r);
+        let env = crate::style::StyleEnv {
+            base_em: 16.0,
+            base_ch: 8.0,
+            px_scale: 1.0,
+            scheme: crate::style::Scheme::Dark,
+        };
+        let items = super::collect_list_items(&r, &env);
+        assert_eq!(items[0].label, "-ci a");
+        assert_eq!(items[1].label, "-ci b");
+        assert_eq!(
+            items[0].line_number,
+            Some(1),
+            "the cursor's row says its line"
+        );
+        assert_eq!(items[1].line_number, Some(1), "one row from the cursor");
     }
 
     /// Every prefix swaps its sign and keeps every letter after it, one space on.

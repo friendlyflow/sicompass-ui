@@ -831,6 +831,40 @@ pub(crate) fn is_toggle_prefix(prefix: &str) -> bool {
         .any(|toggle| prefix.strip_prefix(toggle).is_some_and(holds))
 }
 
+/// The number the list prefix of `item` shows, if it is a line of a file and the user
+/// asked for numbers. `at` is the row's place in the list on screen.
+///
+/// Worked out when it is drawn or spoken, not stored in the label: a relative number
+/// changes with every move of the cursor, a search should not find it, and it is drawn in
+/// a column of its own so the numbers line up whatever the letters before them say.
+pub(crate) fn shown_line_number(
+    r: &AppRenderer,
+    item: &RenderListItem,
+    at: usize,
+) -> Option<usize> {
+    use crate::app_state::LineNumbers;
+    if r.line_numbers == LineNumbers::None
+        || !(item.label.starts_with("-ci ") || item.label.starts_with("+ci "))
+        || r.coordinate.base() == Coordinate::ExtendedSearch
+    {
+        return None;
+    }
+    let row = text_ref_at(&r.ffon, &item.id)?;
+    let inner = tags::extract_input(row)?;
+    let line = tags::extract_src(&inner)
+        .map(|(line, _)| line)
+        .or_else(|| tags::extract_src_insert(&inner))?;
+    // In a search the rows are not next to each other, so a distance would mean nothing.
+    let relative = r.line_numbers == LineNumbers::Relative
+        && r.filtered_list_indices.is_empty()
+        && at != r.list_index;
+    Some(if relative {
+        at.abs_diff(r.list_index)
+    } else {
+        line + 1
+    })
+}
+
 /// The text of a row, whether or not it has rows under it.
 pub(crate) fn element_text(elem: &FfonElement) -> &str {
     match elem {
@@ -3189,5 +3223,88 @@ mod markup_scope_tests {
         // Escaped, it is the row's own text.
         assert_eq!(without("\\<checkbox> x"), "\\<checkbox> x");
         assert_eq!(without("<checkbox>\\<checkbox> x"), "\\<checkbox> x");
+    }
+
+    /// A file of `lines`, numbered by source line, with the cursor on `at`.
+    fn file_renderer(
+        lines: &[&str],
+        at: usize,
+        mode: crate::app_state::LineNumbers,
+    ) -> AppRenderer {
+        let mut root = FfonElement::new_obj("root");
+        for (n, line) in lines.iter().enumerate() {
+            let row = tags::format_input(&format!("{}{line}", tags::format_src(n)));
+            root.as_obj_mut().unwrap().push(FfonElement::new_str(row));
+        }
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        let mut id = IdArray::new();
+        id.push(0);
+        id.push(at);
+        r.current_id = id;
+        r.line_numbers = mode;
+        create_list_current_layer(&mut r);
+        r
+    }
+
+    fn numbers(r: &AppRenderer) -> Vec<Option<usize>> {
+        r.total_list
+            .iter()
+            .enumerate()
+            .map(|(at, item)| shown_line_number(r, item, at))
+            .collect()
+    }
+
+    #[test]
+    fn line_numbers_none_shows_no_number() {
+        use crate::app_state::LineNumbers;
+        let r = file_renderer(&["a", "b"], 0, LineNumbers::None);
+        assert_eq!(numbers(&r), [None, None]);
+    }
+
+    #[test]
+    fn line_numbers_absolute_counts_from_one() {
+        use crate::app_state::LineNumbers;
+        let r = file_renderer(&["a", "b", "c"], 1, LineNumbers::Absolute);
+        assert_eq!(numbers(&r), [Some(1), Some(2), Some(3)]);
+    }
+
+    /// The cursor's row says where it is in the file, and the others how far away they are.
+    #[test]
+    fn line_numbers_relative_counts_from_the_cursor() {
+        use crate::app_state::LineNumbers;
+        let mut r = file_renderer(&["a", "b", "c", "d", "e"], 2, LineNumbers::Relative);
+        assert_eq!(r.list_index, 2);
+        assert_eq!(numbers(&r), [Some(2), Some(1), Some(3), Some(1), Some(2)]);
+        // Nothing is rebuilt when the cursor moves.
+        r.list_index = 4;
+        assert_eq!(numbers(&r), [Some(4), Some(3), Some(2), Some(1), Some(5)]);
+    }
+
+    #[test]
+    fn line_numbers_are_absolute_in_a_search() {
+        use crate::app_state::LineNumbers;
+        let mut r = file_renderer(&["a", "b", "c"], 0, LineNumbers::Relative);
+        r.filtered_list_indices = vec![0, 2];
+        assert_eq!(numbers(&r)[2], Some(3));
+    }
+
+    /// Only a line of a file has a number: not a folder's rows, and not an ordinary row.
+    #[test]
+    fn only_a_line_of_a_file_has_a_number() {
+        use crate::app_state::LineNumbers;
+        let mut root = FfonElement::new_obj("root");
+        for row in ["plain", "<input>name</input>", "<file><input>a.txt</input>"] {
+            root.as_obj_mut().unwrap().push(FfonElement::new_str(row));
+        }
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        let mut id = IdArray::new();
+        id.push(0);
+        id.push(0);
+        r.current_id = id;
+        r.line_numbers = LineNumbers::Absolute;
+        create_list_current_layer(&mut r);
+        assert_eq!(numbers(&r), [None, None, None]);
     }
 }

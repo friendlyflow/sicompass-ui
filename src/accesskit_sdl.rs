@@ -580,9 +580,12 @@ fn current_element(renderer: &AppRenderer) -> (String, String) {
     };
     let item = &renderer.total_list[raw_idx];
     let raw_label = &item.label;
+    let line = crate::list::shown_line_number(renderer, item, renderer.list_index)
+        .map(|number| format!("{number} "))
+        .unwrap_or_default();
     let mut spoken = match &renderer.typed_speech {
-        Some(typed) => format!("{typed}, {}", label_to_speech(raw_label)),
-        None => label_to_speech(raw_label),
+        Some(typed) => format!("{typed}, {line}{}", label_to_speech(raw_label)),
+        None => format!("{line}{}", label_to_speech(raw_label)),
     };
     let counts = focused_row_counts(renderer, item);
     if counts.total() > 0 {
@@ -921,6 +924,44 @@ mod tests {
             });
         }
         r
+    }
+
+    /// The screen reader hears the number too, and only when the user asked for numbers.
+    #[test]
+    fn a_line_number_is_spoken_before_the_line() {
+        use crate::app_state::LineNumbers;
+        use sicompass_sdk::ffon::FfonElement;
+        use sicompass_sdk::tags;
+        let mut root = FfonElement::new_obj("root");
+        for (n, line) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            let row = tags::format_input(&format!("{}{line}", tags::format_src(n)));
+            root.as_obj_mut().unwrap().push(FfonElement::new_str(row));
+        }
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        let mut id = IdArray::new();
+        id.push(0);
+        id.push(2);
+        r.current_id = id;
+        crate::list::create_list_current_layer(&mut r);
+
+        assert!(
+            current_element(&r).0.starts_with("gamma"),
+            "{}",
+            current_element(&r).0
+        );
+        r.line_numbers = LineNumbers::Absolute;
+        assert!(
+            current_element(&r).0.starts_with("3 gamma"),
+            "{}",
+            current_element(&r).0
+        );
+        r.line_numbers = LineNumbers::Relative;
+        r.list_index = 0;
+        assert!(
+            current_element(&r).0.starts_with("1 alpha"),
+            "the cursor's own line"
+        );
     }
 
     #[test]

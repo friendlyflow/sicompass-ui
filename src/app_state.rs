@@ -136,6 +136,32 @@ impl From<ash::LoadingError> for SiError {
 // Palette
 // ---------------------------------------------------------------------------
 
+/// The setting of the text editor's section that says how its lines are numbered. The
+/// app hands its value to [`LineNumbers::from_setting`].
+pub const LINE_NUMBERS_SETTING: &str = "textEditorLineNumbers";
+
+/// What the list prefix of a line of a file says about where it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineNumbers {
+    #[default]
+    None,
+    /// Its line in the file.
+    Absolute,
+    /// How many rows it is from the cursor. The cursor's own row says its line in the
+    /// file, or nothing would.
+    Relative,
+}
+
+impl LineNumbers {
+    pub fn from_setting(value: &str) -> Self {
+        match value {
+            "absolute" => Self::Absolute,
+            "relative" => Self::Relative,
+            _ => Self::None,
+        }
+    }
+}
+
 /// Theme selection. Mirrors C `colorScheme` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PaletteTheme {
@@ -1006,6 +1032,8 @@ pub struct AppRenderer {
     /// When true the visual output is suppressed (blank screen). Navigation,
     /// FFON state, and AccessKit/screen-reader output continue to work normally.
     pub privacy_blank: bool,
+    /// See [`LineNumbers`].
+    pub line_numbers: LineNumbers,
 
     // ---- Launcher ----------------------------------------------------------
     /// The embedder is a launcher (desicompass-superkey): the list lives in
@@ -1300,6 +1328,7 @@ impl AppRenderer {
             typed_speech: None,
             typed_speech_seq: 0,
             privacy_blank: false,
+            line_numbers: LineNumbers::None,
             launcher_mode: false,
             launcher_window: false,
             suspended: false,

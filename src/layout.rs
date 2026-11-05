@@ -75,6 +75,8 @@ pub(crate) fn split_at_runs(
 pub struct ListItem {
     /// The label: list prefix, space, display text.
     pub label: String,
+    /// The number at the end of the list prefix, on a line of a file.
+    pub line_number: Option<usize>,
     /// An image path, or in extended search the breadcrumb.
     pub data: Option<String>,
     /// The cursor is on this row.
@@ -596,6 +598,7 @@ mod tests {
 
     fn row(label: &str) -> ListItem {
         ListItem {
+            line_number: None,
             label: label.into(),
             ..Default::default()
         }
@@ -603,6 +606,7 @@ mod tests {
 
     fn image_row(label: &str, path: &str) -> ListItem {
         ListItem {
+            line_number: None,
             label: label.into(),
             data: Some(path.into()),
             ..Default::default()
@@ -928,6 +932,7 @@ mod tests {
         let mut m = metrics();
         m.is_extended_search = true;
         let result = |crumb: &str| ListItem {
+            line_number: None,
             label: "- content".into(),
             data: Some(crumb.into()),
             ..Default::default()
@@ -945,6 +950,7 @@ mod tests {
         let mut m = metrics();
         m.is_extended_search = true;
         let item = ListItem {
+            line_number: None,
             label: "-p a.jpg".into(),
             data: Some("crumb > ".into()),
             ext_prefix: Some("a.jpg".into()),
@@ -969,6 +975,7 @@ mod tests {
         with.is_extended_search = true;
         with.list_has_indicators = true;
         let item = ListItem {
+            line_number: None,
             label: "-p a.jpg".into(),
             ext_prefix: Some("a.jpg".into()),
             ..Default::default()
