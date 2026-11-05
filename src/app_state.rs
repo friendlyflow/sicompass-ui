@@ -732,6 +732,10 @@ pub struct AppRenderer {
     /// The mode in element mode returns to. Its own, because the big view it opens
     /// uses `previous_coordinate` and has to come back here.
     pub nav_return: Coordinate,
+    /// The link last followed with Enter: the row it is in, which of the row's links it is
+    /// (a row can hold several to the same place), and where it goes. The parent line of
+    /// the page it opened shows which one it was.
+    pub followed_link: Option<(IdArray, usize, String)>,
     /// The dashboard is showing a row's image, not the provider's dashboard.
     pub element_image_view: bool,
     /// How far in element mode has scrolled the row it is in, for a row of boxes taller
@@ -1198,6 +1202,7 @@ impl AppRenderer {
             nav_index: 0,
             nav_positions: Vec::new(),
             nav_return: Coordinate::General,
+            followed_link: None,
             element_image_view: false,
             row_scroll: 0.0,
             video_request: None,

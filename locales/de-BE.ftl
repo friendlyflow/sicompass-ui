@@ -150,6 +150,8 @@ target-link = Link
 target-image = Bild
 target-button = Schaltfläche
 target-position = { $kind } { $n } von { $total }, { $name }
+target-followed = Link geöffnet, { $name }
+target-pressed = Schaltfläche gedrückt, { $name }
 targets-links = { $count ->
     [one] 1 Link
    *[other] { $count } Links

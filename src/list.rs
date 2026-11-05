@@ -754,7 +754,6 @@ fn with_video_letter(label: String, row: &str) -> String {
         Some(("-p", rest)) => format!("-pv {rest}"),
         Some(("-l", rest)) => format!("-lv {rest}"),
         Some(("+", rest)) => format!("+v {rest}"),
-        Some(("+l", rest)) => format!("+lv {rest}"),
         None if label == "-" => "-v".to_owned(),
         None if label == "-p" => "-pv".to_owned(),
         None if label == "-l" => "-lv".to_owned(),
@@ -874,7 +873,9 @@ fn build_obj_label(obj: &FfonObject) -> String {
         let content = tags::extract_checkbox(key).unwrap_or_else(|| tags::strip_display(key));
         return format!("+c {content}");
     } else if tags::has_link(key) {
-        return format!("+l {}", tags::strip_display(key));
+        // A link is followed with Enter, never opened with Right, so it is a dash like a
+        // row of links: `-l`, whether or not it has a page under it.
+        return format!("-l {}", tags::strip_display(key));
     } else if tags::has_radio(key) {
         let group = tags::extract_radio(key).unwrap_or_else(|| tags::strip_display(key));
         let state = obj
@@ -2835,9 +2836,9 @@ mod markup_scope_tests {
         assert_eq!(obj_prefix(r#"<video src="a.mp4">Trip</video>"#), "+v");
         assert_eq!(
             obj_prefix(r#"<video src="a.mp4">T</video> <link>u</link>"#),
-            "+lv"
+            "-lv"
         );
-        assert_eq!(obj_prefix("<link>u</link>"), "+l");
+        assert_eq!(obj_prefix("<link>u</link>"), "-l");
     }
 
     /// A `<b>` typed into a list of markup is text. It must not turn the row bold while

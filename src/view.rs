@@ -1728,8 +1728,65 @@ fn update_view(app: &mut AppState) {
         } else {
             parent_display
         };
-        let parent_shown = fr.truncate_to_width(&parent_display, scale, chrome_w);
-        fr.prepare_text_for_rendering(&parent_shown, text_x, parent_y, scale, p.text);
+        // The link that was followed to get here is drawn the way a link is drawn.
+        let arrow_chars =
+            usize::from(parent_display.starts_with(crate::fonts::ICON_ARROW_LEFT)) * 2;
+        let followed = followed_link_span(&app.renderer)
+            .map(|s| (s.start + arrow_chars)..(s.end + arrow_chars));
+        let link_look = app.renderer.sheets.style_for(
+            &[
+                crate::style::StyleNode::new("ul"),
+                crate::style::StyleNode::new("li"),
+                crate::style::StyleNode::new("link"),
+            ],
+            &style_env,
+        );
+        // A line too long for the window is cut at its end, unless the link is out there:
+        // then the front is cut instead, so the link is what you read.
+        let (shown_chars, followed): (Vec<char>, Option<std::ops::Range<usize>>) = match followed {
+            Some(span) if fr.measure_text_width(&parent_display, scale) > chrome_w => {
+                let chars: Vec<char> = parent_display.chars().collect();
+                let (shown, span) = window_on_link(
+                    &|s| fr.measure_text_width(s, scale),
+                    &chars,
+                    arrow_chars,
+                    span,
+                    chrome_w,
+                );
+                (shown, Some(span))
+            }
+            other => (
+                fr.truncate_to_width(&parent_display, scale, chrome_w)
+                    .chars()
+                    .collect(),
+                other,
+            ),
+        };
+        let parent_shown: String = shown_chars.iter().collect();
+        match followed {
+            Some(span) if span.start < shown_chars.len() && span.start < span.end => {
+                let end = span.end.min(shown_chars.len());
+                let before: String = shown_chars[..span.start].iter().collect();
+                let link: String = shown_chars[span.start..end].iter().collect();
+                let after: String = shown_chars[end..].iter().collect();
+                let link_x = text_x + fr.measure_text_width(&before, scale);
+                let after_x = link_x + {
+                    fr.set_bold(link_look.bold);
+                    let w = fr.measure_text_width(&link, scale);
+                    fr.set_bold(false);
+                    w
+                };
+                fr.prepare_text_for_rendering(&before, text_x, parent_y, scale, p.text);
+                fr.set_bold(link_look.bold);
+                let color = crate::style::readable_color(link_look.color, p.background, p.text);
+                fr.prepare_text_for_rendering(&link, link_x, parent_y, scale, color);
+                fr.set_bold(false);
+                fr.prepare_text_for_rendering(&after, after_x, parent_y, scale, p.text);
+            }
+            _ => {
+                fr.prepare_text_for_rendering(&parent_shown, text_x, parent_y, scale, p.text);
+            }
+        }
         if let Some(ref summary) = parent_info.radio_summary {
             let indent = fr.measure_text_width("    ", scale);
             let summary_x = text_x + indent;
@@ -3929,6 +3986,70 @@ fn draw_box_row(
 /// the cursor row's border (3 px, see [`focus_outline`]) is never covered by it.
 const INSIDE_THE_FOCUS_BORDER: f32 = 4.0;
 
+/// `chars` cut so the link at `span` is on the line: the front is cut when what comes before
+/// it does not fit, with as much as fits of what follows it, and an ellipsis at each end
+/// that was cut. The first `keep` characters (the left arrow) stay. `measure` is the width
+/// of a string. Returns what to draw and where the link is in it.
+fn window_on_link(
+    measure: &dyn Fn(&str) -> f32,
+    chars: &[char],
+    keep: usize,
+    span: std::ops::Range<usize>,
+    max_w: f32,
+) -> (Vec<char>, std::ops::Range<usize>) {
+    const ELLIPSIS: char = '\u{2026}';
+    let n = chars.len();
+    let end_of_link = span.end.min(n);
+    let start_of_link = span.start.min(end_of_link).max(keep);
+    let build = |from: usize, to: usize| -> Vec<char> {
+        let mut out: Vec<char> = chars[..keep.min(n)].to_vec();
+        if from > keep {
+            out.push(ELLIPSIS);
+        }
+        out.extend_from_slice(&chars[from.max(keep).min(to)..to]);
+        if to < n {
+            out.push(ELLIPSIS);
+        }
+        out
+    };
+    let width = |text: &[char]| measure(&text.iter().collect::<String>());
+    // The most that comes before the link and still fits with it.
+    let from = (keep..=start_of_link)
+        .find(|&from| width(&build(from, end_of_link)) <= max_w)
+        .unwrap_or(start_of_link);
+    // Then whatever follows it, while there is room.
+    let mut to = end_of_link;
+    while to < n && width(&build(from, to + 1)) <= max_w {
+        to += 1;
+    }
+    let shown = build(from, to);
+    let lead = keep.min(n) + usize::from(from > keep);
+    let start = lead + start_of_link - from.max(keep);
+    (shown, start..start + (end_of_link - start_of_link))
+}
+
+/// Where, in what the parent line shows, the link followed to reach this level is. `None`
+/// when this level was reached any other way.
+fn followed_link_span(r: &AppRenderer) -> Option<std::ops::Range<usize>> {
+    let (row, which, url) = r.followed_link.as_ref()?;
+    let mut parent = r.current_id.clone();
+    parent.pop();
+    if &parent != row {
+        return None;
+    }
+    let raw = crate::list::text_ref_at(&r.ffon, row)?;
+    let links: Vec<_> = sicompass_sdk::markup::targets(raw)
+        .into_iter()
+        .filter(|t| t.kind == sicompass_sdk::tags::TargetKind::Link)
+        .collect();
+    // The nth link, which is the one: a row can hold several that go to the same place.
+    links
+        .get(*which)
+        .filter(|t| &t.value == url)
+        .or_else(|| links.iter().find(|t| &t.value == url))
+        .map(|t| t.display_span.clone())
+}
+
 /// The cursor's row: a border of `edge` in `color` round a plain `inside`, with the
 /// corners rounded the way every background is.
 fn focus_outline(
@@ -5028,6 +5149,102 @@ mod tests {
         let (prefix, content) = split_label("+ Section name");
         assert_eq!(prefix, "+ ");
         assert_eq!(content, "Section name");
+    }
+
+    /// The parent line shows which of a row's links was followed, and only that one.
+    #[test]
+    fn the_parent_line_marks_the_link_that_was_followed() {
+        use sicompass_sdk::ffon::{FfonElement, IdArray};
+        let row = "See <link>u1</link> or <link>u2</link>";
+        let mut folder = FfonElement::new_obj(row);
+        folder
+            .as_obj_mut()
+            .unwrap()
+            .push(FfonElement::new_str("page"));
+        let mut root = FfonElement::new_obj("root");
+        root.as_obj_mut().unwrap().push(folder);
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        let mut row_id = IdArray::new();
+        row_id.push(0);
+        row_id.push(0);
+        let mut inside = row_id.clone();
+        inside.push(0);
+        r.current_id = inside;
+
+        assert_eq!(followed_link_span(&r), None, "nothing followed yet");
+        r.followed_link = Some((row_id.clone(), 1, "u2".to_owned()));
+        // "See u1 or u2": the second link is "or u2", chars 7 to 12.
+        assert_eq!(followed_link_span(&r), Some(7..12));
+        r.followed_link = Some((row_id.clone(), 0, "u1".to_owned()));
+        assert_eq!(followed_link_span(&r), Some(0..6));
+        r.followed_link = Some((row_id.clone(), 0, "elsewhere".to_owned()));
+        assert_eq!(followed_link_span(&r), None, "a link the row does not hold");
+        let mut other = IdArray::new();
+        other.push(0);
+        other.push(1);
+        r.followed_link = Some((other, 0, "u1".to_owned()));
+        assert_eq!(followed_link_span(&r), None, "another row's link");
+    }
+
+    /// A line cut to fit shows an ellipsis at each end that was cut: the front when the
+    /// link is far along, the end when something comes after it.
+    #[test]
+    fn the_window_on_a_link_has_an_ellipsis_at_each_cut_end() {
+        // One column a character.
+        let measure = |s: &str| s.chars().count() as f32;
+        let text: Vec<char> = "\u{2190} aaaa bbbb cccc dddd eeee ffff".chars().collect();
+        let shown = |span: std::ops::Range<usize>, width: f32| {
+            let (chars, at) = window_on_link(&measure, &text, 2, span, width);
+            let shown: String = chars.iter().collect();
+            let link: String = chars[at].iter().collect();
+            (shown, link)
+        };
+        // The last link: the front is cut, nothing follows.
+        let (shown_last, link) = shown(27..31, 16.0);
+        assert!(shown_last.starts_with("\u{2190} \u{2026}"), "{shown_last}");
+        assert!(shown_last.ends_with("ffff"), "{shown_last}");
+        assert_eq!(link, "ffff");
+        // One before it: the front is cut and so is the end.
+        let (shown_next, link) = shown(22..26, 16.0);
+        assert!(shown_next.starts_with("\u{2190} \u{2026}"), "{shown_next}");
+        assert!(shown_next.ends_with('\u{2026}'), "{shown_next}");
+        assert_eq!(link, "eeee");
+        // The first link: nothing before it is cut, the end is.
+        let (shown_first, link) = shown(2..6, 16.0);
+        assert!(!shown_first.contains("\u{2026}\u{2026}"), "{shown_first}");
+        assert!(shown_first.ends_with('\u{2026}'), "{shown_first}");
+        assert_eq!(link, "aaaa");
+        for line in [shown_last, shown_next, shown_first] {
+            assert!(line.chars().count() <= 16, "fits: {line}");
+        }
+    }
+
+    /// Links to the same place are told apart by which of them it was.
+    #[test]
+    fn the_parent_line_marks_the_right_one_of_several_links_to_one_place() {
+        use sicompass_sdk::ffon::{FfonElement, IdArray};
+        let row = "A <link>u</link> B <link>u</link> C <link>u</link>";
+        let mut folder = FfonElement::new_obj(row);
+        folder
+            .as_obj_mut()
+            .unwrap()
+            .push(FfonElement::new_str("page"));
+        let mut root = FfonElement::new_obj("root");
+        root.as_obj_mut().unwrap().push(folder);
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        let mut row_id = IdArray::new();
+        row_id.push(0);
+        row_id.push(0);
+        let mut inside = row_id.clone();
+        inside.push(0);
+        r.current_id = inside;
+        // Shown: "A u B u C u".
+        for (which, span) in [(0, 0..3), (1, 4..7), (2, 8..11)] {
+            r.followed_link = Some((row_id.clone(), which, "u".to_owned()));
+            assert_eq!(followed_link_span(&r), Some(span), "link {which}");
+        }
     }
 
     #[test]

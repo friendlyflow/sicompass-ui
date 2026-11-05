@@ -150,6 +150,8 @@ target-link = lien
 target-image = image
 target-button = bouton
 target-position = { $kind } { $n } sur { $total }, { $name }
+target-followed = lien suivi, { $name }
+target-pressed = bouton pressé, { $name }
 targets-links = { $count ->
     [one] 1 lien
    *[other] { $count } liens

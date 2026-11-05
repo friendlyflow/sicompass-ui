@@ -150,6 +150,8 @@ target-link = link
 target-image = afbeelding
 target-button = knop
 target-position = { $kind } { $n } van { $total }, { $name }
+target-followed = link gevolgd, { $name }
+target-pressed = knop ingedrukt, { $name }
 targets-links = { $count ->
     [one] 1 link
    *[other] { $count } links

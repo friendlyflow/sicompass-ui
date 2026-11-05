@@ -890,6 +890,17 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_shift_down_insert,
     },
     // ---- Right / L -------------------------------------------------------
+    // A link is followed with Enter, so Right does nothing on a row that is one.
+    Shortcut {
+        key: Keycode::Right,
+        key2: Some(Keycode::L),
+        ctrl: false,
+        shift: false,
+        modes: GENERAL,
+        label: "",
+        is_available: focused_is_link,
+        handle: handlers::ignore_key,
+    },
     Shortcut {
         key: Keycode::Right,
         key2: Some(Keycode::L),
@@ -1357,7 +1368,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         modes: &[Coordinate::General],
         label: "Enter  Activate",
         is_available: avail_enter_activate,
-        handle: handlers::handle_enter_general,
+        handle: crate::in_element::handle_enter_button,
     },
     Shortcut {
         key: Keycode::Return,

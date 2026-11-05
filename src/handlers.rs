@@ -826,6 +826,9 @@ fn open_session_row(r: &mut AppRenderer) -> bool {
 }
 
 /// Navigate into the selected item (Right key).
+/// A key that has nothing to do on this row.
+pub fn ignore_key(_r: &mut AppRenderer) {}
+
 pub fn handle_right(r: &mut AppRenderer) {
     // Before `navigate_right_raw`, so a swap that leaves `current_id` alone does
     // not record a `TimelineEntry::Navigate` describing a move that never

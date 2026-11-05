@@ -26,6 +26,23 @@ fn focused_targets(r: &AppRenderer) -> Vec<Target> {
     }
 }
 
+/// Say which link was followed or which button was pressed, so Enter is never silent.
+fn announce_activation(r: &mut AppRenderer, target: &Target) {
+    let key = match target.kind {
+        TargetKind::Link => "target-followed",
+        TargetKind::Button => "target-pressed",
+        _ => return,
+    };
+    let mut args = Args::new();
+    args.set("name", target.name.clone());
+    let fallback = match target.kind {
+        TargetKind::Link => format!("followed link, {}", target.name),
+        _ => format!("pressed button, {}", target.name),
+    };
+    let phrase = localized(key, &args, fallback);
+    r.announce_provider_line(phrase);
+}
+
 fn focused_counts(r: &AppRenderer) -> TargetCounts {
     handlers::focused_element_raw(r)
         .map(|raw| {
@@ -234,8 +251,16 @@ pub fn handle_enter(r: &mut AppRenderer) {
     match target.kind {
         TargetKind::Link => {
             let (id, return_to) = (r.current_id.clone(), r.nav_return);
+            // Which of the row's links this is, for the parent line of the page.
+            let which = r.nav_targets[..=r.nav_index]
+                .iter()
+                .filter(|t| t.kind == TargetKind::Link)
+                .count()
+                .saturating_sub(1);
             r.coordinate = return_to;
             if follow_link(r, &target.value) {
+                r.followed_link = Some((id.clone(), which, target.value.clone()));
+                announce_activation(r, &target);
                 r.nav_targets.clear();
                 r.nav_positions.clear();
             } else {
@@ -252,6 +277,7 @@ pub fn handle_enter(r: &mut AppRenderer) {
 
 /// Run a button, staying in the mode if the row is still there afterwards.
 fn press_button(r: &mut AppRenderer, target: &Target) {
+    announce_activation(r, target);
     let row = r.current_id.clone();
     let return_to = r.nav_return;
     r.coordinate = return_to;
@@ -333,15 +359,42 @@ pub fn handle_enter_link(r: &mut AppRenderer) {
         handlers::handle_enter_general(r);
         return;
     }
+    let first_link = focused_targets(r)
+        .into_iter()
+        .find(|t| t.kind == TargetKind::Link);
+    let row_before = r.current_id.clone();
     let index = r.current_id.last().unwrap_or(0);
     let is_obj = get_ffon_at_id(&r.ffon, &r.current_id)
         .and_then(|slice| slice.get(index))
         .is_some_and(|e| matches!(e, FfonElement::Obj(_)));
     if is_obj {
+        // A link row with a page under it: Enter goes in, and says which link it was.
+        let row = r.current_id.clone();
         handlers::handle_right(r);
-    } else if let Some(url) = tags::extract_link(&raw) {
-        follow_link(r, &url);
+        if r.current_id.depth() > row.depth()
+            && let Some(first) = first_link
+        {
+            r.followed_link = Some((row, 0, first.value.clone()));
+            announce_activation(r, &first);
+        }
+    } else if let Some(url) = tags::extract_link(&raw)
+        && follow_link(r, &url)
+        && let Some(first) = first_link
+    {
+        r.followed_link = Some((row_before, 0, first.value.clone()));
+        announce_activation(r, &first);
     }
+}
+
+/// Enter on a row holding a button, in General: it presses the first, and says which.
+pub fn handle_enter_button(r: &mut AppRenderer) {
+    if let Some(first) = focused_targets(r)
+        .into_iter()
+        .find(|t| t.kind == TargetKind::Button)
+    {
+        announce_activation(r, &first);
+    }
+    handlers::handle_enter_general(r);
 }
 
 /// Enter or `d` on a row whose one target is an image.
@@ -478,6 +531,52 @@ mod tests {
             .unwrap_or("")
             .trim_end_matches('\u{200B}')
             .to_owned()
+    }
+
+    /// Enter says which link it follows and which button it presses, with or without
+    /// element mode, and the first one when the row has several.
+    #[test]
+    fn enter_says_which_link_or_button_it_used() {
+        // Rows 0 and 1 are what the fragments point to, and row 2 holds the links.
+        let rows = [
+            "<id>a</id>Alpha",
+            "<id>b</id>Beta",
+            "Home <link>#a</link> and About <link>#b</link>",
+        ];
+        let mut r = renderer(&rows, 2);
+        press(&mut r, Keycode::Return);
+        assert!(
+            announced(&r).starts_with("followed link, Home"),
+            "{}",
+            announced(&r)
+        );
+
+        let mut r = renderer(&rows, 2);
+        press(&mut r, Keycode::A);
+        press(&mut r, Keycode::Return);
+        assert!(
+            announced(&r).starts_with("followed link, and About"),
+            "{}",
+            announced(&r)
+        );
+
+        let row = "<button>one</button>First <button>two</button>Second";
+        let mut r = renderer(&[row], 0);
+        press(&mut r, Keycode::Return);
+        assert!(
+            announced(&r).starts_with("pressed button, First"),
+            "{}",
+            announced(&r)
+        );
+
+        let mut r = renderer(&[row], 0);
+        press(&mut r, Keycode::A);
+        press(&mut r, Keycode::Return);
+        assert!(
+            announced(&r).starts_with("pressed button, Second"),
+            "{}",
+            announced(&r)
+        );
     }
 
     /// `i` and `a` and the highlight have to read the row without its markup.
