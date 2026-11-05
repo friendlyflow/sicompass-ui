@@ -26,7 +26,6 @@ system-wide.
   hold: never reference a Linux-only package (`wayland`, `mesa`,
   `at-spi2-core`) outside the `isLinux` branch, since nixpkgs marks `wayland`
   bad on darwin and a stray reference breaks `nix develop` at eval time there.
-  `x86_64-darwin` builds from the `nixpkgs-26.05-darwin` input.
 - `.cargo/config.toml` points every cargo-spawned process at a throwaway XDG
   tree under `target/`. Keep it. This crate links `sicompass-sdk`, whose
   `platform` module would otherwise have tests reading and writing the real
