@@ -40,6 +40,8 @@ pub struct TextRun {
     pub end: usize,
     pub color: Option<u32>,
     pub bold: bool,
+    /// Behind the text of the run, with rounded corners: a button.
+    pub background: Option<u32>,
 }
 
 /// Cut `[from, to)` of a row's text at the runs: each piece, by character, with the
@@ -780,6 +782,7 @@ mod tests {
             end,
             color: None,
             bold: true,
+            background: None,
         }
     }
 

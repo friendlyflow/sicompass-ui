@@ -1791,6 +1791,10 @@ fn update_view(app: &mut AppState) {
             crate::layout::RowBoxStyle::resolve(&ul_style, &style_env, max_content_w).radius;
         rr.prepare_rectangle(content_x, top, content_w, win_h - top, color, radius);
     }
+    // In element mode the cursor is on a target inside the row, and it is the target that
+    // is marked, by a border in the colour the row is usually filled with. The row
+    // itself has no fill then.
+    let outline_focus = app.renderer.coordinate == Coordinate::InElement;
     // What is drawn behind a row: its border and its background, the cursor's row
     // always having one.
     for (
@@ -1810,7 +1814,7 @@ fn update_view(app: &mut AppState) {
         }
         let row = &rows[i];
         let x = content_x + 4.0 * em_width + row.style.margin[3];
-        let background = row_background(style, *is_selected, list_background, &p);
+        let background = row_background(style, *is_selected && !outline_focus, list_background, &p);
         let radius = row.style.radius;
         // A picture's row fits round the picture and its text.
         if let (true, Some(layout)) = (*is_selected, &row.image) {
@@ -1835,14 +1839,16 @@ fn update_view(app: &mut AppState) {
                 img_y + layout.img_h + crate::text::TEXT_PADDING
             };
             if let Some(rr) = app.rect_renderer.as_mut() {
-                rr.prepare_rectangle(
-                    x,
-                    bg_top,
-                    bg_right - x,
-                    bg_bottom - bg_top,
-                    background.unwrap_or(p.selected),
-                    radius,
-                );
+                if !outline_focus {
+                    rr.prepare_rectangle(
+                        x,
+                        bg_top,
+                        bg_right - x,
+                        bg_bottom - bg_top,
+                        background.unwrap_or(p.selected),
+                        radius,
+                    );
+                }
                 // In element mode's selected image: its frame shows in the 2 px the
                 // image is inset by.
                 if selected_image_frame {
@@ -1851,7 +1857,7 @@ fn update_view(app: &mut AppState) {
                         img_y,
                         layout.img_w,
                         layout.img_h,
-                        p.scroll_search,
+                        p.selected,
                         0.0,
                     );
                 }
@@ -1905,13 +1911,13 @@ fn update_view(app: &mut AppState) {
     {
         let (item_y, content_start_x) = (rows[i].y, rows[i].content_x);
         if let Some(laid) = rows[i].boxes.as_ref() {
-            let background = row_background(style, *is_selected, list_background, &p).unwrap_or(
-                if *is_selected {
+            let focus_fill = *is_selected && !outline_focus;
+            let background =
+                row_background(style, focus_fill, list_background, &p).unwrap_or(if focus_fill {
                     p.selected
                 } else {
                     list_background
-                },
-            );
+                });
             let top = item_y - ascender * scale - crate::text::TEXT_PADDING;
             let chrome_bottom = first_item_y - ascender * scale - crate::text::TEXT_PADDING;
             let prefix_x = if list_has_indicators {
@@ -2075,6 +2081,7 @@ fn update_view(app: &mut AppState) {
                             line_height: line_height as f32,
                             text_color: p.text,
                             highlight_color: p.scroll_search,
+                            highlight_pad: 0.0,
                         },
                         &positions_for_display(prefix_text, &prefix_positions),
                         wrap,
@@ -2123,6 +2130,7 @@ fn update_view(app: &mut AppState) {
                                 line_height: line_height as f32,
                                 text_color: p.text,
                                 highlight_color: p.scroll_search,
+                                highlight_pad: 0.0,
                             },
                             &suffix_positions,
                             Some(WrapLayout {
@@ -2190,6 +2198,7 @@ fn update_view(app: &mut AppState) {
                         line_height: line_height as f32,
                         text_color: p.text,
                         highlight_color: p.scroll_search,
+                        highlight_pad: 0.0,
                     },
                     &content_positions,
                     Some(WrapLayout {
@@ -2257,6 +2266,7 @@ fn update_view(app: &mut AppState) {
                                     line_height: line_height as f32,
                                     text_color: p.text,
                                     highlight_color: p.scroll_search,
+                                    highlight_pad: 0.0,
                                 },
                                 &content_positions,
                                 Some(WrapLayout {
@@ -2334,6 +2344,7 @@ fn update_view(app: &mut AppState) {
                                 line_height: line_height as f32,
                                 text_color: p.text,
                                 highlight_color: p.scroll_search,
+                                highlight_pad: 0.0,
                             },
                             &suffix_positions,
                             Some(WrapLayout {
@@ -2466,6 +2477,7 @@ fn update_view(app: &mut AppState) {
                             line_height: line_height as f32,
                             text_color: p.text,
                             highlight_color: p.scroll_search,
+                            highlight_pad: 0.0,
                         },
                         match_pos,
                         Some(WrapLayout {
@@ -2482,12 +2494,14 @@ fn update_view(app: &mut AppState) {
                 let font = row.style.font_scale;
                 let row_scale = scale * font;
                 let row_line_h = line_height as f32 * font;
-                let background = row_background(style, *is_selected, list_background, &p)
-                    .unwrap_or(if *is_selected {
+                let focus_fill = *is_selected && !outline_focus;
+                let background = row_background(style, focus_fill, list_background, &p).unwrap_or(
+                    if focus_fill {
                         p.selected
                     } else {
                         list_background
-                    });
+                    },
+                );
                 let wanted = style.li.color;
                 let text_color = crate::style::readable_color(wanted, background, p.text);
                 let marker = style.marker_color.or(wanted);
@@ -2509,8 +2523,12 @@ fn update_view(app: &mut AppState) {
                 let wrap_w = (max_content_w - row.style.extra_width()).max(1.0);
                 let align = style.li.text_align;
                 let runs = style.runs.as_slice();
+                let in_element_target =
+                    app.renderer.coordinate == Coordinate::InElement && *is_selected;
                 let by_lines = align != crate::style::TextAlign::Left || !runs.is_empty();
-                if by_lines && content_positions.is_empty() {
+                // In element mode the target is lit too, and the row keeps the rest of its
+                // links and buttons looking as they do at rest.
+                if by_lines && (content_positions.is_empty() || in_element_target) {
                     for (n, (line, offset)) in fr
                         .wrap_lines_with_offsets(content, row_scale, wrap_w)
                         .iter()
@@ -2527,20 +2545,80 @@ fn update_view(app: &mut AppState) {
                         let first = content[..*offset].chars().count();
                         let len = line.chars().count();
                         let chars: Vec<char> = line.chars().collect();
+                        if in_element_target && let Some(rr) = app.rect_renderer.as_mut() {
+                            let pad = em_width * 0.4;
+                            let mut i = 0;
+                            while i < len {
+                                if content_positions
+                                    .binary_search(&((first + i) as u32))
+                                    .is_err()
+                                {
+                                    i += 1;
+                                    continue;
+                                }
+                                let start = i;
+                                while i < len
+                                    && content_positions
+                                        .binary_search(&((first + i) as u32))
+                                        .is_ok()
+                                {
+                                    i += 1;
+                                }
+                                let before: String = chars[..start].iter().collect();
+                                let lit: String = chars[start..i].iter().collect();
+                                let (bx, by) = (
+                                    x + fr.measure_text_width(&before, row_scale) - pad,
+                                    line_y - ascender * row_scale - crate::text::TEXT_PADDING,
+                                );
+                                let bw = fr.measure_text_width(&lit, row_scale) + 2.0 * pad;
+                                // A border and nothing inside it: the colour of the frame,
+                                // then the row's own background in the middle.
+                                let edge = 3.0;
+                                rr.prepare_rectangle(bx, by, bw, row_line_h, p.selected, 3.0);
+                                rr.prepare_rectangle(
+                                    bx + edge,
+                                    by + edge,
+                                    (bw - 2.0 * edge).max(0.0),
+                                    (row_line_h - 2.0 * edge).max(0.0),
+                                    background,
+                                    1.0,
+                                );
+                            }
+                        }
                         for (from, to, run) in
                             crate::layout::split_at_runs(first, first + len, runs)
                         {
                             let piece: String = chars[from - first..to - first].iter().collect();
+                            // The target the cursor is on shows the focus and nothing the
+                            // content gave it: no pill, no link colour, just the border.
+                            let lit = in_element_target
+                                && content_positions.binary_search(&(from as u32)).is_ok();
+                            let run = run.filter(|_| !lit);
                             let color = run.map_or(text_color, |run| {
                                 crate::style::readable_color(
                                     run.color.or(wanted),
-                                    background,
+                                    run.background.unwrap_or(background),
                                     p.text,
                                 )
                             });
                             fr.set_bold(run.map_or(bold, |run| run.bold));
+                            let width = fr.measure_text_width(&piece, row_scale);
+                            if let (Some(back), Some(rr)) =
+                                (run.and_then(|r| r.background), app.rect_renderer.as_mut())
+                            {
+                                // A little wider than the word, so it reads as a button.
+                                let pad = em_width * 0.4;
+                                rr.prepare_rectangle(
+                                    x - pad,
+                                    line_y - ascender * row_scale - crate::text::TEXT_PADDING,
+                                    width + 2.0 * pad,
+                                    row_line_h,
+                                    back,
+                                    row.style.radius,
+                                );
+                            }
                             fr.prepare_text_for_rendering(&piece, x, line_y, row_scale, color);
-                            x += fr.measure_text_width(&piece, row_scale);
+                            x += width;
                         }
                     }
                     fr.set_bold(bold);
@@ -2568,6 +2646,11 @@ fn update_view(app: &mut AppState) {
                             line_height: row_line_h,
                             text_color,
                             highlight_color: p.scroll_search,
+                            highlight_pad: if in_element_target {
+                                em_width * 0.4
+                            } else {
+                                0.0
+                            },
                         },
                         &content_positions,
                         Some(WrapLayout {
@@ -3605,17 +3688,17 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
     // the timeline has no element behind it. A row with no markup looks like any other,
     // so two styles cover a list of any length.
     let scrolling = matches!(r.coordinate, Coordinate::Scroll | Coordinate::ScrollSearch);
-    let markup_here = r.sheets.markup_here()
-        && (scrolling
-            || matches!(
-                r.coordinate.base(),
-                Coordinate::General
-                    | Coordinate::InElement
-                    | Coordinate::Insert
-                    | Coordinate::Normal
-                    | Coordinate::Visual
-                    | Coordinate::SimpleSearch
-            ));
+    let tree_rows = scrolling
+        || matches!(
+            r.coordinate.base(),
+            Coordinate::General
+                | Coordinate::InElement
+                | Coordinate::Insert
+                | Coordinate::Normal
+                | Coordinate::Visual
+                | Coordinate::SimpleSearch
+        );
+    let markup_here = r.sheets.markup_here() && tree_rows;
     let plain = [
         r.sheets.row_style(None, false, env),
         r.sheets.row_style(None, true, env),
@@ -3643,16 +3726,24 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
             };
             let focus = i == r.list_index;
             // Most rows hold no `<` at all, and this runs for every row of the list.
-            let markup = markup_here
+            let raw = tree_rows
                 .then(|| crate::list::text_ref_at(&r.ffon, &item.id))
                 .flatten()
-                .filter(|row| row.contains('<') && sicompass_sdk::markup::has_markup(row))
+                .filter(|row| row.contains('<'));
+            let markup = raw
+                .filter(|row| markup_here && sicompass_sdk::markup::has_markup(row))
                 .map(str::to_owned);
+            // A link or a button stands out wherever it is, so its row has a style of
+            // its own even when it is not markup.
+            let with_targets = raw.filter(|row| {
+                markup.is_some() || row.contains("<link>") || row.contains("<button>")
+            });
             // Scrolling has no cursor to show, and no boxes: it reads as one flow.
             let styled_focus = focus && !scrolling;
-            let style = match &markup {
+            let style = match with_targets {
                 Some(row) if !(editing && focus) => {
-                    r.sheets.row_style(Some(row), styled_focus, env)
+                    r.sheets
+                        .row_style_for(Some(row), markup_here, styled_focus, env)
                 }
                 _ => std::sync::Arc::clone(&plain[usize::from(styled_focus)]),
             };
@@ -3831,7 +3922,7 @@ fn draw_box_row(
             (x, y, t, h),
             (x + w - t, y, t, h),
         ] {
-            rr.prepare_rectangle(fx, fy, fw, fh, p.text, 0.0);
+            rr.prepare_rectangle(fx, fy, fw, fh, p.selected, 0.0);
         }
     }
 }
@@ -4079,6 +4170,9 @@ struct TextLook {
     line_height: f32,
     text_color: u32,
     highlight_color: u32,
+    /// How far a highlight reaches past its text on each side, so a target in element
+    /// mode reads as a pill and not as a clipped word.
+    highlight_pad: f32,
 }
 
 /// Render `text` at `(x, y)` with background highlight rectangles behind
@@ -4097,6 +4191,7 @@ fn render_with_highlights(
         line_height,
         text_color,
         highlight_color,
+        highlight_pad,
     }: TextLook,
     match_positions: &[u32],
     wrap: Option<WrapLayout>,
@@ -4145,9 +4240,9 @@ fn render_with_highlights(
                         let match_x = seg_x + fr.measure_text_width(&seg_text[..start_byte], scale);
                         let match_w = fr.measure_text_width(&seg_text[start_byte..byte_off], scale);
                         rr.prepare_rectangle(
-                            match_x,
+                            match_x - highlight_pad,
                             rect_y,
-                            match_w,
+                            match_w + 2.0 * highlight_pad,
                             line_height,
                             highlight_color,
                             3.0,
@@ -4357,8 +4452,8 @@ fn render_checkbox_indicator(
 /// are drawn with an icon: a colon command's raw label can start with a `-` that
 /// is its own text.
 const LIST_PREFIXES: &[&str] = &[
-    "-", "-p", "-v", "-pv", "-cc", "-c", "-rc", "-r", "-b", "-i", "-ci", "+", "+cc", "+c", "+l",
-    "+R", "+i", "+ci", "+di", "+fi",
+    "-", "-p", "-v", "-pv", "-l", "-lv", "+v", "+lv", "-cc", "-c", "-rc", "-r", "-b", "-i", "-ci",
+    "+", "+cc", "+c", "+l", "+R", "+i", "+ci", "+di", "+fi",
 ];
 
 /// A list prefix as it is drawn: the `+` or `-` becomes its Bootstrap icon, and
@@ -4453,6 +4548,10 @@ mod prefix_display_tests {
         assert_eq!(prefix_for_display("-b"), format!("{DASH} b"));
         assert_eq!(prefix_for_display("-p"), format!("{DASH} p"));
         assert_eq!(prefix_for_display("-v"), format!("{DASH} v"));
+        assert_eq!(prefix_for_display("-l"), format!("{DASH} l"));
+        assert_eq!(prefix_for_display("-lv"), format!("{DASH} lv"));
+        assert_eq!(prefix_for_display("+v"), format!("{ARROW} v"));
+        assert_eq!(prefix_for_display("+lv"), format!("{ARROW} lv"));
         assert_eq!(prefix_for_display("-pv"), format!("{DASH} pv"));
     }
 

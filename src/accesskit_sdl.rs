@@ -410,6 +410,10 @@ fn list_prefix_to_word(prefix: &str) -> Option<&'static str> {
         "-" => Some("dash"),
         "-p" => Some("dash p"),
         "-v" => Some("dash v"),
+        "-l" => Some("dash l"),
+        "-lv" => Some("dash lv"),
+        "+v" => Some("arrow right v"),
+        "+lv" => Some("arrow right lv"),
         "-pv" => Some("dash pv"),
         "-cc" => Some("dash cc"),
         "-c" => Some("dash c"),
@@ -1227,6 +1231,7 @@ mod tests {
     #[test]
     fn label_to_speech_minus_v() {
         assert_eq!(label_to_speech("-v trip.mp4"), "dash v trip.mp4");
+        assert_eq!(label_to_speech("-l first page"), "dash l first page");
         assert_eq!(label_to_speech("-pv a.jpg b.mp4"), "dash pv a.jpg b.mp4");
     }
 

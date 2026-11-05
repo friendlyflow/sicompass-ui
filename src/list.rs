@@ -272,10 +272,11 @@ impl MarkupScope {
                     return build_obj_label(obj);
                 }
                 // The children only say whether a radio has a checked one.
-                build_obj_label(&FfonObject {
+                let label = build_obj_label(&FfonObject {
                     key: key.into_owned(),
                     children: obj.children.clone(),
-                })
+                });
+                with_video_letter(label, &obj.key)
             }
         }
     }
@@ -738,7 +739,7 @@ fn build_label_for_element(elem: &FfonElement, parent_has_radio: bool) -> String
 }
 
 /// A row of markup holding a video says so in its prefix, the way `p` says a picture:
-/// `-v`, or `-pv` when it holds both. Only markup can hold a video, so this reads the
+/// `-v`, or `-pv` when it holds both, and `+v` for a row with a page under it. Only markup can hold a video, so this reads the
 /// row as written. Other letters win (`-b`, `-i`): they say what Enter or `i` does.
 fn with_video_letter(label: String, row: &str) -> String {
     if !row.contains("<video")
@@ -751,8 +752,12 @@ fn with_video_letter(label: String, row: &str) -> String {
     match label.split_once(' ') {
         Some(("-", rest)) => format!("-v {rest}"),
         Some(("-p", rest)) => format!("-pv {rest}"),
+        Some(("-l", rest)) => format!("-lv {rest}"),
+        Some(("+", rest)) => format!("+v {rest}"),
+        Some(("+l", rest)) => format!("+lv {rest}"),
         None if label == "-" => "-v".to_owned(),
         None if label == "-p" => "-pv".to_owned(),
+        None if label == "-l" => "-lv".to_owned(),
         _ => label,
     }
 }
@@ -818,6 +823,10 @@ fn build_str_label(s: &str, parent_has_radio: bool) -> String {
         ("-i", content)
     } else if parent_has_radio {
         ("-r", tags::strip_display(s))
+    } else if tags::has_link(s) {
+        // A row holding a link, like `+l` for a link that has a page under it. Other
+        // letters win: they say what Enter or `i` does on the row.
+        ("-l", tags::strip_display(s))
     } else {
         ("-", tags::strip_display(s))
     };
@@ -2755,6 +2764,30 @@ mod markup_scope_tests {
         r.total_list.iter().map(|i| i.label.as_str()).collect()
     }
 
+    /// `l` says a row holds a link, whether it is the whole row or one of several.
+    #[test]
+    fn a_row_holding_links_says_l_in_its_prefix() {
+        let prefix = |row: &str, markup: bool| {
+            let r = renderer(markup, &[row], 0);
+            r.total_list[0]
+                .label
+                .split(' ')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let two = "First <link>a.ffon</link> second <link>b.ffon</link>";
+        assert_eq!(prefix(two, false), "-l");
+        assert_eq!(prefix(two, true), "-l");
+        assert_eq!(prefix(r#"<a href="u">Go</a>"#, true), "-l");
+        assert_eq!(
+            prefix(&format!("{two}<video src=\"v.mp4\">V</video>"), true),
+            "-lv"
+        );
+        assert_eq!(prefix("<button>f</button>Go <link>u</link>", false), "-b");
+        assert_eq!(prefix("plain", false), "-");
+    }
+
     /// `v` says a video, like `p` says a picture.
     #[test]
     fn a_row_holding_a_video_says_v_in_its_prefix() {
@@ -2784,6 +2817,27 @@ mod markup_scope_tests {
         // Not markup, and an escaped one is only text.
         assert_eq!(prefix(r#"<video src="a.mp4">Trip</video>"#, false), "-");
         assert_eq!(prefix(&tags::escape(r#"<video src="a.mp4">"#), true), "-");
+
+        // A row with a page under it says it too.
+        let obj_prefix = |key: &str| {
+            let mut folder = FfonElement::new_obj(key);
+            folder.as_obj_mut().unwrap().push(FfonElement::new_str("x"));
+            let r = tree(true, obj("fixture", &[folder]), &[0, 0]);
+            let mut r = r;
+            create_list_current_layer(&mut r);
+            r.total_list[0]
+                .label
+                .split(' ')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(obj_prefix(r#"<video src="a.mp4">Trip</video>"#), "+v");
+        assert_eq!(
+            obj_prefix(r#"<video src="a.mp4">T</video> <link>u</link>"#),
+            "+lv"
+        );
+        assert_eq!(obj_prefix("<link>u</link>"), "+l");
     }
 
     /// A `<b>` typed into a list of markup is text. It must not turn the row bold while
@@ -2832,7 +2886,7 @@ mod markup_scope_tests {
             &["<div><button>f</button>Go</div>", "<p><link>u</link></p>"],
             0,
         );
-        assert_eq!(labels(&r), ["-b Go", "- u"]);
+        assert_eq!(labels(&r), ["-b Go", "-l u"]);
     }
 
     /// Row number is element number, which a lot of the app relies on.

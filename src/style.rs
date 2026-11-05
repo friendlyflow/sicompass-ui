@@ -42,12 +42,17 @@ use std::sync::{Arc, Mutex};
 /// The corners of every background, until a stylesheet says otherwise.
 pub const DEFAULT_RADIUS: f32 = 5.0;
 
+// Colours are written the way the palette writes them, not as they look on screen: the
+// swapchain is sRGB, so they come out lighter. `link` and `button` below are the same.
 pub const DEFAULT_CSS: &str = "ul { max-width: 120ch }
     h1 { font-size: 2em; font-weight: bold }
     h2 { font-size: 1.5em; font-weight: bold }
     h3 { font-size: 1.17em; font-weight: bold }
     header { font-weight: bold }
-    b { font-weight: bold }";
+    b { font-weight: bold }
+    a, button { font-weight: bold }
+    @media (prefers-color-scheme: dark) { a { color: #267AFF } button { color: #FFFFFF; background: #0420B8 } }
+    @media (prefers-color-scheme: light) { a { color: #001B6D } button { color: #FFFFFF; background: #011469 } }";
 
 // ---------------------------------------------------------------------------
 // Values
@@ -129,7 +134,7 @@ pub enum Justify {
 }
 
 /// The colour scheme, for `@media (prefers-color-scheme: ...)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Scheme {
     #[default]
     Dark,
@@ -1075,7 +1080,7 @@ pub struct Sheets {
     markup_here: bool,
     /// Computed row styles, by the row's text and whether the cursor is on it. Rows
     /// that look alike share one, so a long list costs a few lookups a frame.
-    cache: RefCell<HashMap<(String, bool), Arc<RowStyle>>>,
+    cache: RefCell<HashMap<RowKey, Arc<RowStyle>>>,
     /// Rows of boxes already laid out, see `boxes::layout_row`.
     pub(crate) box_cache: RefCell<HashMap<crate::boxes::BoxKey, Arc<crate::boxes::RowLayout>>>,
 }
@@ -1095,6 +1100,10 @@ impl Default for Sheets {
         }
     }
 }
+
+/// What a computed row style depends on: the row, whether it is markup, whether the
+/// cursor is on it, and the colour scheme.
+type RowKey = (String, bool, bool, Scheme);
 
 /// `root` is `id` or above it in the tree.
 pub(crate) fn id_covers(root: &IdArray, id: &IdArray) -> bool {
@@ -1140,6 +1149,48 @@ fn node_of(element: &markup::Element) -> StyleNode {
     }
 }
 
+/// Links and buttons stand out wherever a row has them, before anything is pressed:
+/// their text takes what `a` and `button` say, which by default is bold and a colour.
+/// Whatever an element of the row already styled is left alone.
+fn target_runs(
+    sheets: &[&Stylesheet],
+    row: &str,
+    markup: bool,
+    path: &[StyleNode],
+    env: &StyleEnv,
+    runs: &mut Vec<TextRun>,
+) {
+    let found = if markup {
+        markup::targets(row)
+    } else {
+        tags::targets(row)
+    };
+    for target in found {
+        let tag = match target.kind {
+            tags::TargetKind::Link => "link",
+            tags::TargetKind::Button => "button",
+            _ => continue,
+        };
+        let mut path = path.to_vec();
+        path.push(StyleNode::new(tag));
+        let style = compute(sheets, &path, env);
+        let (start, end) = (target.display_span.start, target.display_span.end);
+        let taken = runs.iter().any(|r| r.start < end && start < r.end);
+        let nothing = style.color.is_none() && !style.bold && style.background.is_none();
+        if nothing || end <= start || taken {
+            continue;
+        }
+        runs.push(TextRun {
+            start,
+            end,
+            color: style.color,
+            bold: style.bold,
+            background: style.background,
+        });
+    }
+    runs.sort_by_key(|r| r.start);
+}
+
 /// Where inline elements colour or embolden the row's text. `at` counts the
 /// characters of what the row shows.
 fn collect_runs(
@@ -1163,6 +1214,7 @@ fn collect_runs(
                         end: *at + len,
                         color,
                         bold,
+                        background: None,
                     });
                 }
                 *at += len;
@@ -1175,12 +1227,16 @@ fn collect_runs(
                 path.pop();
                 let shown = markup::plain_nodes(std::slice::from_ref(node));
                 let len = tags::strip_display(&shown).chars().count();
-                if element.tag == "a" && (style.color.is_some() || style.bold) && len > 0 {
+                if element.tag == "a"
+                    && (style.color.is_some() || style.bold || style.background.is_some())
+                    && len > 0
+                {
                     runs.push(TextRun {
                         start: *at,
                         end: *at + len,
                         color: style.color,
                         bold: style.bold,
+                        background: style.background,
                     });
                 }
                 *at += len;
@@ -1343,11 +1399,30 @@ impl Sheets {
 
     /// A row of the current list. `row` is its text if it holds markup.
     pub fn row_style(&self, row: Option<&str>, focus: bool, env: &StyleEnv) -> Arc<RowStyle> {
-        let key = (row.unwrap_or_default().to_owned(), focus);
+        self.row_style_for(row, row.is_some(), focus, env)
+    }
+
+    /// [`Sheets::row_style`] for a row that is not markup but holds links or buttons, which
+    /// stand out wherever they are: `markup` says how to read the row.
+    pub fn row_style_for(
+        &self,
+        row: Option<&str>,
+        markup: bool,
+        focus: bool,
+        env: &StyleEnv,
+    ) -> Arc<RowStyle> {
+        // The colour scheme is part of it: `@media (prefers-color-scheme)` is decided here, and
+        // the scheme can change while the app runs.
+        let key = (
+            row.unwrap_or_default().to_owned(),
+            markup,
+            focus,
+            env.scheme,
+        );
         if let Some(found) = self.cache.borrow().get(&key) {
             return Arc::clone(found);
         }
-        let style = Arc::new(self.compute_row(row, focus, env));
+        let style = Arc::new(self.compute_row(row, markup, focus, env));
         let mut cache = self.cache.borrow_mut();
         // Rows whose text keeps changing must not grow this for ever.
         if cache.len() > 4096 {
@@ -1357,14 +1432,23 @@ impl Sheets {
         style
     }
 
-    fn compute_row(&self, row: Option<&str>, focus: bool, env: &StyleEnv) -> RowStyle {
+    fn compute_row(
+        &self,
+        row: Option<&str>,
+        markup: bool,
+        focus: bool,
+        env: &StyleEnv,
+    ) -> RowStyle {
         let sheets = self.all();
         let li = |focus| StyleNode {
             focus,
             ..StyleNode::new("li")
         };
         let ul = self.ul_node();
-        let nodes = row.map(markup::parse).unwrap_or_default();
+        let nodes = row
+            .filter(|_| markup)
+            .map(markup::parse)
+            .unwrap_or_default();
         let element = markup::whole_row_element(&nodes);
         let mut path = vec![ul.clone(), li(focus)];
         let mut style = compute(&sheets, &path, env);
@@ -1380,9 +1464,20 @@ impl Sheets {
             path.push(node_of(element));
         }
         collect_runs(&sheets, inner, &mut path, None, env, &mut at, &mut runs);
+        if let Some(row) = row {
+            target_runs(
+                &sheets,
+                row,
+                markup,
+                &[ul.clone(), li(focus)],
+                env,
+                &mut runs,
+            );
+        }
         let marker = StyleNode::new(MARKER_TAG);
-        let boxed =
-            row.is_some() && crate::boxes::needs_boxes(&nodes, self, env, &[ul.clone(), li(focus)]);
+        let boxed = markup
+            && row.is_some()
+            && crate::boxes::needs_boxes(&nodes, self, env, &[ul.clone(), li(focus)]);
         RowStyle {
             boxed,
             li: style,
@@ -1469,6 +1564,88 @@ mod tests {
 
     fn li(css: &str) -> Style {
         style(css, &[node("ul", &[]), node("li", &[])])
+    }
+
+    /// Links and buttons stand out before `i` or `a`, in a row of plain text and in one of
+    /// markup, and a sheet can restyle them.
+    #[test]
+    fn links_and_buttons_stand_out_in_every_row() {
+        let env = StyleEnv::default();
+        let sheets = Sheets::default();
+        let runs = |row: &str, markup: bool| {
+            sheets
+                .row_style_for(Some(row), markup, false, &env)
+                .runs
+                .clone()
+        };
+
+        let row = "First <link>a</link> then <link>b</link>";
+        let found = runs(row, false);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found.iter().all(|r| r.bold && r.color == Some(0x267AFFFF)),
+            "{found:?}"
+        );
+        assert_eq!(
+            (found[0].start, found[0].end),
+            (0, 7),
+            "\"First a\", as shown"
+        );
+
+        let found = runs("<button>f</button>Run it", false);
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].bold && found[0].color == Some(0xFFFFFFFF),
+            "{found:?}"
+        );
+        assert_eq!(
+            found[0].background,
+            Some(0x0420B8FF),
+            "a button has a pill behind it"
+        );
+        assert!(runs("First <link>a</link>", false)[0].background.is_none());
+
+        assert_eq!(runs(r#"<p>See <a href="u">here</a></p>"#, true).len(), 1);
+        assert!(runs("just text", false).is_empty());
+        assert!(runs("a picture <image>p.png</image>", false).is_empty());
+
+        // Both colour schemes read well: every colour has 4.5:1 against the plain
+        // background of its scheme, and against the pill behind it.
+        for (scheme, background) in [(Scheme::Dark, 0x000000FF), (Scheme::Light, 0xFFFFFFFF)] {
+            let env = StyleEnv {
+                scheme,
+                ..StyleEnv::default()
+            };
+            let link = sheets.row_style_for(Some(row), false, false, &env).runs[0];
+            assert!(
+                contrast(link.color.unwrap(), background) >= MIN_CONTRAST,
+                "{scheme:?} link"
+            );
+            let button = sheets
+                .row_style_for(Some("<button>f</button>Go"), false, false, &env)
+                .runs[0];
+            assert!(
+                contrast(button.color.unwrap(), button.background.unwrap()) >= MIN_CONTRAST,
+                "{scheme:?} button"
+            );
+            assert!(
+                contrast(button.background.unwrap(), background) >= 1.5,
+                "{scheme:?} the pill shows against the list"
+            );
+        }
+
+        let mut own = Sheets::default();
+        own.set_user(Some(
+            "a { color: #FF0000 } button { font-weight: normal; color: #00FF00 }",
+        ));
+        let link = own.row_style_for(Some(row), false, false, &env).runs[0];
+        assert_eq!(link.color, Some(0xFF0000FF));
+        assert!(
+            own.row_style_for(Some("<button>f</button>Go"), false, false, &env)
+                .runs[0]
+                .color
+                == Some(0x00FF00FF)
+        );
     }
 
     #[test]
@@ -1956,12 +2133,17 @@ mod tests {
         let row = r#"<a href="u">Home</a> then <b>this</b>"#;
         let style = sheets.row_style(Some(row), false, &StyleEnv::default());
         let shown = tags::strip_display(&markup::plain(row));
-        let bold: String = shown
-            .chars()
-            .skip(style.runs[0].start)
-            .take(style.runs[0].end - style.runs[0].start)
-            .collect();
-        assert_eq!(bold, "this", "{shown:?}");
+        let text = |run: &TextRun| -> String {
+            shown
+                .chars()
+                .skip(run.start)
+                .take(run.end - run.start)
+                .collect()
+        };
+        // The link stands out too now, so it is the first run and `<b>` the last.
+        assert_eq!(style.runs.len(), 2, "{:?}", style.runs);
+        assert_eq!(text(&style.runs[0]), "Home u", "{shown:?}");
+        assert_eq!(text(&style.runs[1]), "this", "{shown:?}");
     }
 
     #[test]

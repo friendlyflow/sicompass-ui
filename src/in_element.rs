@@ -499,7 +499,7 @@ mod tests {
         let mut r = renderer(&[row], 0);
         r.providers.push(Box::new(Markup));
         list::create_list_current_layer(&mut r);
-        assert_eq!(r.total_list[0].label, "- One u1 Two u2");
+        assert_eq!(r.total_list[0].label, "-l One u1 Two u2");
         press(&mut r, Keycode::A);
         assert_eq!(r.nav_targets.len(), 2);
         let label = r.total_list[0].label.clone();
