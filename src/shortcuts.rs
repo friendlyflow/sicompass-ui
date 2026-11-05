@@ -52,6 +52,7 @@ const NAV_UP_DOWN: &[Coordinate] = &[
     Coordinate::ScrollSearch,
     Coordinate::Meta,
     Coordinate::TimelineView,
+    Coordinate::Manual,
     Coordinate::ConfirmCloseTab,
     Coordinate::TabSwitcher,
 ];
@@ -74,6 +75,7 @@ const ALL_MODES: &[Coordinate] = &[
     Coordinate::Dashboard,
     Coordinate::Meta,
     Coordinate::TimelineView,
+    Coordinate::Manual,
     Coordinate::ConfirmCloseTab,
     Coordinate::TabSwitcher,
 ];
@@ -204,6 +206,16 @@ fn at_root(r: &AppRenderer) -> bool {
 }
 
 /// True when the focused element is an Obj with children (can navigate into with Right).
+/// The list keys work in the manual wherever it was opened from.
+fn not_at_root_or_manual(r: &AppRenderer) -> bool {
+    r.coordinate == Coordinate::Manual || not_at_root(r)
+}
+
+/// S scrolls the list you are in, and the manual wherever you opened it.
+fn avail_scroll(r: &AppRenderer) -> bool {
+    r.coordinate == Coordinate::Manual || not_at_root(r)
+}
+
 fn focused_has_children(r: &AppRenderer) -> bool {
     use sicompass_sdk::ffon::FfonElement;
     let Some(slice) = get_ffon_at_id(&r.ffon, &r.current_id) else {
@@ -773,6 +785,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::InputSearch,
             Coordinate::Meta,
             Coordinate::TimelineView,
+            Coordinate::Manual,
             Coordinate::Dashboard,
             Coordinate::ConfirmCloseTab,
             Coordinate::TabSwitcher,
@@ -799,6 +812,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::InputSearch,
             Coordinate::Meta,
             Coordinate::TimelineView,
+            Coordinate::Manual,
             Coordinate::Dashboard,
             Coordinate::ConfirmCloseTab,
             Coordinate::TabSwitcher,
@@ -1056,9 +1070,10 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::Command,
             Coordinate::Scroll,
             Coordinate::ScrollSearch,
+            Coordinate::Manual,
         ],
         label: "PgUp   Page up",
-        is_available: not_at_root,
+        is_available: not_at_root_or_manual,
         handle: handlers::handle_page_up,
     },
     Shortcut {
@@ -1090,9 +1105,10 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::Command,
             Coordinate::Scroll,
             Coordinate::ScrollSearch,
+            Coordinate::Manual,
         ],
         label: "PgDn   Page dn",
-        is_available: not_at_root,
+        is_available: not_at_root_or_manual,
         handle: handlers::handle_page_down,
     },
     Shortcut {
@@ -1130,9 +1146,10 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::Scroll,
             Coordinate::ScrollSearch,
             Coordinate::InputSearch,
+            Coordinate::Manual,
         ],
         label: "Home   First",
-        is_available: not_at_root,
+        is_available: not_at_root_or_manual,
         handle: handlers::handle_home,
     },
     Shortcut {
@@ -1172,9 +1189,10 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::Scroll,
             Coordinate::ScrollSearch,
             Coordinate::InputSearch,
+            Coordinate::Manual,
         ],
         label: "End    Last",
-        is_available: not_at_root,
+        is_available: not_at_root_or_manual,
         handle: handlers::handle_end,
     },
     Shortcut {
@@ -1255,7 +1273,18 @@ pub static SHORTCUTS: &[Shortcut] = &[
         ctrl: false,
         shift: false,
         modes: GENERAL,
-        label: "Tab    Search",
+        label: "Tab    Manual",
+        is_available: always,
+        handle: handlers::handle_manual,
+    },
+    // f (general mode): search the list. It was Tab, which is the beginner's manual now.
+    Shortcut {
+        key: Keycode::F,
+        key2: None,
+        ctrl: false,
+        shift: false,
+        modes: &[Coordinate::General, Coordinate::Manual],
+        label: "F      Search",
         is_available: always,
         handle: handlers::handle_tab,
     },
@@ -1886,9 +1915,9 @@ pub static SHORTCUTS: &[Shortcut] = &[
         key2: None,
         ctrl: false,
         shift: false,
-        modes: &[Coordinate::General],
+        modes: &[Coordinate::General, Coordinate::Manual],
         label: "S      Scroll",
-        is_available: not_at_root,
+        is_available: avail_scroll,
         handle: handlers::handle_s,
     },
     // ---- M (enter meta/hint screen) --------------------------------------
@@ -1899,7 +1928,11 @@ pub static SHORTCUTS: &[Shortcut] = &[
         key2: None,
         ctrl: false,
         shift: false,
-        modes: &[Coordinate::General, Coordinate::InElement],
+        modes: &[
+            Coordinate::General,
+            Coordinate::InElement,
+            Coordinate::Manual,
+        ],
         label: "M      Meta",
         is_available: always,
         handle: handlers::handle_meta,
@@ -2078,6 +2111,27 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_file_delete,
     },
     // ---- Ctrl+X / C / V -------------------------------------------------
+    // The manual is read-only: Ctrl+C copies the line, and Ctrl+X does too.
+    Shortcut {
+        key: Keycode::C,
+        key2: None,
+        ctrl: true,
+        shift: false,
+        modes: &[Coordinate::Manual],
+        label: "Ctrl+C Copy",
+        is_available: always,
+        handle: handlers::handle_ctrl_c,
+    },
+    Shortcut {
+        key: Keycode::X,
+        key2: None,
+        ctrl: true,
+        shift: false,
+        modes: &[Coordinate::Manual],
+        label: "Ctrl+X Cut",
+        is_available: always,
+        handle: handlers::handle_ctrl_x,
+    },
     // General: compose body clipboard (before filebrowser entries)
     Shortcut {
         key: Keycode::X,
@@ -2220,6 +2274,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::Scroll,
             Coordinate::ScrollSearch,
             Coordinate::InputSearch,
+            Coordinate::Manual,
         ],
         label: "Ctrl+F Extended search",
         is_available: always,
@@ -2843,6 +2898,14 @@ pub(crate) fn label_fluent_key(label: &str) -> String {
 }
 
 /// Register this crate's translation bundles (keyboard hints). Idempotent.
+/// Line `n` (from 1) of the beginner's manual, in the language in use.
+pub fn manual_line(n: usize) -> String {
+    register_translations();
+    let key = format!("manual-{n:02}");
+    let line = sicompass_sdk::localize::t(&key);
+    if line == key { String::new() } else { line }
+}
+
 pub fn register_translations() {
     use std::sync::OnceLock;
     static ONCE: OnceLock<()> = OnceLock::new();
@@ -3170,10 +3233,164 @@ mod tests {
     // --- dispatch correctness ---
 
     #[test]
-    fn tab_in_general_switches_to_simple_search() {
+    fn f_in_general_switches_to_simple_search() {
+        let mut r = AppRenderer::new();
+        dispatch_key(&mut r, Some(Keycode::F), no_mod());
+        assert_eq!(r.coordinate, Coordinate::SimpleSearch);
+    }
+
+    /// Tab opens the beginner's manual: a list with no parent, a dash row to a line, and
+    /// Escape goes back to general mode, where Tab opens it again.
+    #[test]
+    fn tab_opens_the_manual_and_escape_leaves_it() {
+        let mut r = AppRenderer::new();
+        for _ in 0..2 {
+            dispatch_key(&mut r, Some(Keycode::Tab), no_mod());
+            assert_eq!(r.coordinate, Coordinate::Manual);
+            assert_eq!(r.total_list.len(), crate::list::MANUAL_LINES);
+            assert!(r.total_list.iter().all(|i| i.label.starts_with("- ")));
+            assert_eq!(r.list_index, 0);
+            dispatch_key(&mut r, Some(Keycode::Down), no_mod());
+            assert_eq!(r.list_index, 1, "Down walks the manual");
+            dispatch_key(&mut r, Some(Keycode::Escape), no_mod());
+            assert_eq!(r.coordinate, Coordinate::General);
+        }
+    }
+
+    /// In the manual, m shows the keys that work there and Escape comes back to the same
+    /// line, and s reads the manual as one page with Escape coming back the same way.
+    #[test]
+    fn meta_and_scroll_work_inside_the_manual() {
         let mut r = AppRenderer::new();
         dispatch_key(&mut r, Some(Keycode::Tab), no_mod());
-        assert_eq!(r.coordinate, Coordinate::SimpleSearch);
+        for _ in 0..3 {
+            dispatch_key(&mut r, Some(Keycode::Down), no_mod());
+        }
+        assert_eq!(r.list_index, 3);
+
+        dispatch_key(&mut r, Some(Keycode::M), no_mod());
+        assert_eq!(r.coordinate, Coordinate::Meta, "m opens the hints");
+        dispatch_key(&mut r, Some(Keycode::Escape), no_mod());
+        assert_eq!(r.coordinate, Coordinate::Manual);
+        assert_eq!(r.list_index, 3, "back on the same line");
+        assert_eq!(r.total_list.len(), crate::list::MANUAL_LINES);
+
+        dispatch_key(&mut r, Some(Keycode::S), no_mod());
+        assert_eq!(r.coordinate, Coordinate::Scroll, "s scrolls the manual");
+        assert_eq!(r.total_list.len(), crate::list::MANUAL_LINES);
+        dispatch_key(&mut r, Some(Keycode::Escape), no_mod());
+        assert_eq!(r.coordinate, Coordinate::Manual);
+        assert_eq!(r.list_index, 3, "back on the same line");
+
+        // Enter in the scrolled manual reads on in the manual, never goes to an element.
+        dispatch_key(&mut r, Some(Keycode::S), no_mod());
+        dispatch_key(&mut r, Some(Keycode::Return), no_mod());
+        assert_eq!(r.coordinate, Coordinate::Manual);
+
+        // Leaving the manual and scrolling the list underneath is no longer the manual.
+        dispatch_key(&mut r, Some(Keycode::Escape), no_mod());
+        assert_eq!(r.coordinate, Coordinate::General);
+        assert_ne!(r.total_list.len(), crate::list::MANUAL_LINES);
+    }
+
+    /// The list keys work in the manual, and the tab keys do not.
+    #[test]
+    fn the_manual_has_the_list_keys_and_no_tab_keys() {
+        let mut r = AppRenderer::new();
+        dispatch_key(&mut r, Some(Keycode::Tab), no_mod());
+        let last = crate::list::MANUAL_LINES - 1;
+        dispatch_key(&mut r, Some(Keycode::End), no_mod());
+        assert_eq!(r.list_index, last, "End goes to the last line");
+        dispatch_key(&mut r, Some(Keycode::Home), no_mod());
+        assert_eq!(r.list_index, 0, "Home goes to the first");
+        dispatch_key(&mut r, Some(Keycode::PageDown), no_mod());
+        assert!(r.list_index > 0, "PgDn moves down");
+        let down = r.list_index;
+        dispatch_key(&mut r, Some(Keycode::PageUp), no_mod());
+        assert!(r.list_index < down, "PgUp moves back");
+
+        // No tabs from the manual: the keys that make or switch tabs do nothing.
+        let tabs = r.tabs.len();
+        dispatch_key(&mut r, Some(Keycode::T), ctrl());
+        assert_eq!(r.tabs.len(), tabs, "no new tab");
+        assert_eq!(r.coordinate, Coordinate::Manual);
+        dispatch_key(&mut r, Some(Keycode::T), no_mod());
+        assert_eq!(r.coordinate, Coordinate::Manual, "t opens no switcher here");
+    }
+
+    /// f and Ctrl+F search the manual's lines, and the manual is where you are after.
+    #[test]
+    fn the_manual_can_be_searched() {
+        for ctrl_f in [false, true] {
+            let mut r = AppRenderer::new();
+            dispatch_key(&mut r, Some(Keycode::Tab), no_mod());
+            dispatch_key(&mut r, Some(Keycode::Down), no_mod());
+            dispatch_key(&mut r, Some(Keycode::Down), no_mod());
+            if ctrl_f {
+                dispatch_key(&mut r, Some(Keycode::F), ctrl());
+                assert_eq!(r.coordinate, Coordinate::ExtendedSearch);
+            } else {
+                dispatch_key(&mut r, Some(Keycode::F), no_mod());
+                assert_eq!(r.coordinate, Coordinate::SimpleSearch);
+            }
+            assert_eq!(r.total_list.len(), crate::list::MANUAL_LINES);
+            let query = "Sicompass"; // in every language, so it does not matter which one is set
+            if ctrl_f {
+                r.input_buffer = query.to_owned();
+                r.cursor_position = query.len();
+                crate::list::populate_list_current_layer(&mut r, query);
+            } else {
+                r.search_string = query.to_owned();
+                r.cursor_position = query.len();
+                crate::list::populate_list_current_layer(&mut r, query);
+            }
+            let shown = r.active_list_len();
+            assert!(
+                (1..crate::list::MANUAL_LINES).contains(&shown),
+                "filtered: {shown}"
+            );
+            // A fuzzy match may come first, so look at what is shown, not at the first line.
+            assert!(
+                r.filtered_list_indices
+                    .iter()
+                    .any(|&i| r.total_list[i].label.contains("Sicompass")),
+                "a line with the word is among the matches"
+            );
+            // Enter lands on the line in the manual.
+            let line = r.current_list_item().unwrap().id.get(0).unwrap();
+            dispatch_key(&mut r, Some(Keycode::Return), no_mod());
+            assert_eq!(r.coordinate, Coordinate::Manual);
+            assert_eq!(r.list_index, line);
+            assert_eq!(r.total_list.len(), crate::list::MANUAL_LINES);
+            // Escape from a search puts you back on the line you were on.
+            r.list_index = 2;
+            dispatch_key(
+                &mut r,
+                Some(Keycode::F),
+                if ctrl_f { ctrl() } else { no_mod() },
+            );
+            dispatch_key(&mut r, Some(Keycode::Escape), no_mod());
+            assert_eq!(r.coordinate, Coordinate::Manual);
+            assert_eq!(r.list_index, 2);
+            dispatch_key(&mut r, Some(Keycode::Escape), no_mod());
+            assert_eq!(r.coordinate, Coordinate::General);
+        }
+    }
+
+    /// Every line of the manual is written in every language.
+    #[test]
+    fn the_manual_has_every_line_in_every_language() {
+        register_translations();
+        let mut seen = std::collections::HashSet::new();
+        for locale in ["en-US", "nl-BE", "fr-BE", "de-BE"] {
+            sicompass_sdk::localize::set_locale(locale);
+            for n in 1..=crate::list::MANUAL_LINES {
+                let line = manual_line(n);
+                assert!(!line.is_empty(), "{locale} manual-{n:02} is missing");
+                assert!(seen.insert(line), "{locale} manual-{n:02} repeats a line");
+            }
+        }
+        sicompass_sdk::localize::set_locale("en-US");
     }
 
     #[test]

@@ -45,7 +45,8 @@ hint-enter-follow-link = Enter  Follow link
 hint-enter-go-to-element = Enter  Go to element
 hint-enter-go-to-match = Enter  Go to match
 
-hint-tab-search = Tab    Search
+hint-f-search = F      Search
+hint-tab-manual = Tab    Manual
 hint-tab-next-field = Tab    Next field
 
 hint-bspc-backspace = Bspc   Backspace
@@ -113,6 +114,7 @@ mode-input-search = input search mode
 mode-dashboard = dashboard mode
 mode-meta = meta mode
 mode-timeline = timeline mode
+mode-manual = manual mode
 mode-tab-switcher = tab switcher mode
 mode-confirm-close-tab = confirm close tab mode
 
@@ -186,3 +188,31 @@ video-paused = paused
 video-unavailable = This version of Sicompass cannot play video
 
 search-no-matches = no matches
+
+# The beginner's manual (Tab): one line each, read in order.
+manual-01 = Beginner's manual. Press the Down arrow key now to hear the next line, and the Up arrow key to go back one line. Escape leaves the manual.
+manual-02 = Everything in Sicompass is a list, and you are in one now. Each line is one element, and your screen reader reads the line you are on. Read this manual from top to bottom. To open it again later, press Tab in general mode.
+manual-03 = Home jumps to the first line of a list and End to the last. PgDn and PgUp move a page at a time.
+manual-04 = Right goes into a line that starts with an arrow right, and Left goes back out. The line above the list, with an arrow left, names the place you are in.
+manual-05 = Press Home twice to reach the very top, where all your programs are listed. Open one, such as the file browser, notes or the store, with Right.
+manual-06 = Every line starts with a mark. An arrow right means there is more inside. A dash means there is nothing inside. The letters after it say what kind of element it is, and the next lines go through them.
+manual-07 = A dash with no letter is plain text. You can read it and that is all.
+manual-08 = i is an input, a line of text you can change. Press i to start typing, or a to type at the end. Enter keeps what you typed, and Escape throws it away.
+manual-09 = c is a checkbox. Press Enter to tick it or untick it.
+manual-10 = R is a group of choices, and r is one choice in it. Press Right to go into the group, move to a choice and press Enter. Only one can be picked.
+manual-11 = b is a button. Press Enter to run it. Sicompass tells you which button it was.
+manual-12 = l is a link. Press Enter to follow it, and Left to come back. Right does nothing on a link. The line above the new list shows which link you followed.
+manual-13 = A line can hold several links or buttons. Press i to start on the first, or a to start on the last. Then Left and Right move between them, Up and Down move a line when the row wraps, Enter uses the one you are on, and Escape leaves.
+manual-14 = p is a picture. Press Enter to see it big, and Escape to come back. v is a video. Press Enter to play it, and Enter again to pause it.
+manual-15 = Now the modes. A mode is what the keys do at the moment, and the header at the top says which one you are in. Most of the time you are in general mode, where you move around and press Enter.
+manual-16 = Insert mode: you enter it with i or a on an input. You type, Enter keeps the text, and Escape goes back to general mode.
+manual-17 = Search mode: press f in general mode and type to narrow the list down. Enter goes to the match and Escape cancels. Ctrl+F searches everything below you, not only this list.
+manual-18 = Command mode: press the colon key for the commands of the line you are on, such as open with. In the terminal it starts a shell.
+manual-19 = Scroll mode: press s to read a long list as one page. PgUp, PgDn, Home and End move through it, and Escape leaves.
+manual-20 = Element mode: press i or a on a line with several links, buttons, pictures or videos. It moves between them inside the line, as the earlier lines showed.
+manual-21 = Meta mode: press m to see every key that works on the line you are on. Timeline mode: press z to see what you did. Ctrl+Z undoes and Ctrl+Shift+Z redoes.
+manual-22 = Manual mode is this list. Escape always takes you back to general mode, and Tab opens the manual again.
+manual-23 = Tab switcher mode keeps several places open at once. Press t to open the switcher and pick one with Enter, or press Ctrl+T to open a new place.
+manual-24 = Ctrl+C copies the line you are on, Ctrl+Shift+C copies a link or a value, and Ctrl+V pastes. Ctrl+W tells you where you are.
+manual-25 = A screen reader reads every line you land on. If you are lost, press Escape, or press Home twice to start again from the top.
+manual-26 = Next, open the tutorial from the list of programs. It lets you try every element in this manual. The settings program changes the font size and the colours.

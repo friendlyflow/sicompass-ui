@@ -58,6 +58,7 @@ pub fn handle_up(r: &mut AppRenderer) {
         | Coordinate::Command
         | Coordinate::ExtendedSearch
         | Coordinate::Meta
+        | Coordinate::Manual
         | Coordinate::TimelineView
         | Coordinate::ConfirmCloseTab
         | Coordinate::TabSwitcher => {
@@ -70,6 +71,7 @@ pub fn handle_up(r: &mut AppRenderer) {
                 if r.coordinate.base() != Coordinate::Command
                     && r.coordinate != Coordinate::Meta
                     && r.coordinate != Coordinate::TimelineView
+                    && r.coordinate != Coordinate::Manual
                     && r.coordinate != Coordinate::ConfirmCloseTab
                     && r.coordinate != Coordinate::TabSwitcher
                 {
@@ -123,6 +125,7 @@ pub fn handle_down(r: &mut AppRenderer) {
         | Coordinate::Command
         | Coordinate::ExtendedSearch
         | Coordinate::Meta
+        | Coordinate::Manual
         | Coordinate::TimelineView
         | Coordinate::ConfirmCloseTab
         | Coordinate::TabSwitcher => {
@@ -136,6 +139,7 @@ pub fn handle_down(r: &mut AppRenderer) {
                 if r.coordinate.base() != Coordinate::Command
                     && r.coordinate != Coordinate::Meta
                     && r.coordinate != Coordinate::TimelineView
+                    && r.coordinate != Coordinate::Manual
                     && r.coordinate != Coordinate::ConfirmCloseTab
                     && r.coordinate != Coordinate::TabSwitcher
                 {
@@ -1102,7 +1106,10 @@ pub fn handle_page_up(r: &mut AppRenderer) {
             let viewport_h = r.text_scroll_viewport_h;
             r.text_scroll_offset = (r.text_scroll_offset - viewport_h).max(0);
         }
-        Coordinate::SimpleSearch | Coordinate::Command | Coordinate::ExtendedSearch => {
+        Coordinate::SimpleSearch
+        | Coordinate::Command
+        | Coordinate::ExtendedSearch
+        | Coordinate::Manual => {
             r.error_message.clear();
             let new_idx = if r.cached_line_counts.is_empty() {
                 r.list_index.saturating_sub(page_size)
@@ -1158,7 +1165,10 @@ pub fn handle_page_down(r: &mut AppRenderer) {
             let max_offset = (r.text_scroll_total_height - viewport_h).max(0);
             r.text_scroll_offset = (r.text_scroll_offset + viewport_h).min(max_offset);
         }
-        Coordinate::SimpleSearch | Coordinate::Command | Coordinate::ExtendedSearch => {
+        Coordinate::SimpleSearch
+        | Coordinate::Command
+        | Coordinate::ExtendedSearch
+        | Coordinate::Manual => {
             r.error_message.clear();
             let count = r.active_list_len();
             if count > 0 {
@@ -1292,10 +1302,16 @@ pub fn handle_a(r: &mut AppRenderer) {
 
 /// Enter scroll mode (S key in General).
 pub fn handle_s(r: &mut AppRenderer) {
-    if !r.coordinate.is_general() {
+    if !r.coordinate.is_general() && r.coordinate != Coordinate::Manual {
         return;
     }
-    prefetch_scroll_subtree(r);
+    // From the manual it is the manual that scrolls, with nothing to prefetch.
+    r.manual_scroll = r.coordinate == Coordinate::Manual;
+    if r.manual_scroll {
+        r.manual_index = r.list_index;
+    } else {
+        prefetch_scroll_subtree(r);
+    }
     r.previous_coordinate = r.coordinate;
     r.coordinate = Coordinate::Scroll;
     r.speak_mode_change(None);
@@ -1437,6 +1453,25 @@ pub fn handle_enter_scroll(r: &mut AppRenderer) {
     if !matches!(r.coordinate, Coordinate::Scroll | Coordinate::ScrollSearch) {
         return;
     }
+    // The manual's lines are not elements to go to: Enter reads on from there in the
+    // manual itself.
+    if r.manual_scroll {
+        let line = r.list_index;
+        r.coordinate = Coordinate::Manual;
+        r.text_scroll_offset = 0;
+        r.text_scroll_total_height = 0;
+        r.scroll_search_match_count = 0;
+        r.scroll_search_current_match = 0;
+        r.scroll_search_needs_position = false;
+        r.scroll_search_snap = false;
+        r.input_buffer.clear();
+        r.cursor_position = 0;
+        list::create_list_current_layer(r);
+        r.list_index = line.min(r.total_list.len().saturating_sub(1));
+        r.speak_mode_change(None);
+        r.needs_redraw = true;
+        return;
+    }
     let target = r.total_list.get(r.list_index).map(|it| it.id.clone());
     r.coordinate = rest_coordinate(r);
     r.text_scroll_offset = 0;
@@ -1460,11 +1495,32 @@ pub fn handle_enter_scroll(r: &mut AppRenderer) {
 
 /// Navigate into the meta hint screen. M is only bound in General mode.
 pub fn handle_meta(r: &mut AppRenderer) {
-    if !r.coordinate.is_general() && r.coordinate != Coordinate::InElement {
+    if !r.coordinate.is_general()
+        && r.coordinate != Coordinate::InElement
+        && r.coordinate != Coordinate::Manual
+    {
         return;
+    }
+    if r.coordinate == Coordinate::Manual {
+        r.manual_index = r.list_index;
     }
     r.previous_coordinate = r.coordinate;
     r.coordinate = Coordinate::Meta;
+    r.speak_mode_change(None);
+    r.list_index = 0;
+    list::create_list_current_layer(r);
+    r.needs_redraw = true;
+}
+
+/// Open the beginner's manual (Tab in General). It is a list of its own with no parent,
+/// so it reads from the top whatever the list underneath is.
+pub fn handle_manual(r: &mut AppRenderer) {
+    if !r.coordinate.is_general() && r.coordinate != Coordinate::InElement {
+        return;
+    }
+    r.manual_return = r.coordinate;
+    r.previous_coordinate = r.coordinate;
+    r.coordinate = Coordinate::Manual;
     r.speak_mode_change(None);
     r.list_index = 0;
     list::create_list_current_layer(r);
@@ -1498,7 +1554,11 @@ pub fn handle_tab(r: &mut AppRenderer) {
         Coordinate::Scroll | Coordinate::ScrollSearch => {
             // Tab does nothing in scroll mode: Ctrl+F is its search.
         }
-        Coordinate::General | Coordinate::Insert => {
+        Coordinate::General | Coordinate::Insert | Coordinate::Manual => {
+            r.search_in_manual = r.coordinate == Coordinate::Manual;
+            if r.search_in_manual {
+                r.manual_index = r.list_index;
+            }
             r.previous_coordinate = r.coordinate;
             r.search_origin_id = r.current_id.clone();
             r.coordinate = Coordinate::SimpleSearch;
@@ -2857,6 +2917,24 @@ pub fn handle_enter_general(r: &mut AppRenderer) {
 
 /// Enter in SimpleSearch / ExtendedSearch — navigate to selected item and return to previous mode.
 pub fn handle_enter_search(r: &mut AppRenderer) {
+    // In the manual a match is a line to read on from, not an element to go to.
+    if r.search_in_manual {
+        let line = r
+            .current_list_item()
+            .and_then(|it| it.id.get(0))
+            .unwrap_or(0);
+        r.coordinate = Coordinate::Manual;
+        r.search_in_manual = false;
+        r.search_string.clear();
+        r.input_buffer.clear();
+        r.cursor_position = 0;
+        list::create_list_current_layer(r);
+        r.list_index = line.min(r.total_list.len().saturating_sub(1));
+        r.scroll_offset = -1;
+        r.speak_mode_change(None);
+        r.needs_redraw = true;
+        return;
+    }
     if r.coordinate == Coordinate::ExtendedSearch {
         handle_enter_extended_search(r);
         return;
@@ -4453,7 +4531,12 @@ pub fn handle_escape(r: &mut AppRenderer) {
             r.search_string.clear();
             r.current_id = r.search_origin_id.clone();
             list::create_list_current_layer(r);
-            r.list_index = r.current_id.last().unwrap_or(0);
+            r.list_index = if r.search_in_manual {
+                r.manual_index
+            } else {
+                r.current_id.last().unwrap_or(0)
+            };
+            r.search_in_manual = false;
             r.scroll_offset = 0;
             r.caret.reset(sdl_ticks());
             r.needs_redraw = true;
@@ -4466,16 +4549,29 @@ pub fn handle_escape(r: &mut AppRenderer) {
             r.cursor_position = 0;
             r.current_id = r.search_origin_id.clone();
             list::create_list_current_layer(r);
-            r.list_index = r.current_id.last().unwrap_or(0);
+            r.list_index = if r.search_in_manual {
+                r.manual_index
+            } else {
+                r.current_id.last().unwrap_or(0)
+            };
+            r.search_in_manual = false;
             r.scroll_offset = 0;
             r.needs_redraw = true;
             return;
         }
-        Coordinate::Meta => {
-            r.coordinate = r.previous_coordinate;
+        Coordinate::Meta | Coordinate::Manual => {
+            r.coordinate = if r.coordinate == Coordinate::Manual {
+                r.manual_return
+            } else {
+                r.previous_coordinate
+            };
             r.speak_mode_change(None);
             list::create_list_current_layer(r);
-            r.list_index = r.current_id.last().unwrap_or(0);
+            r.list_index = if r.coordinate == Coordinate::Manual {
+                r.manual_index
+            } else {
+                r.current_id.last().unwrap_or(0)
+            };
             r.scroll_offset = 0;
             r.caret.reset(sdl_ticks());
             r.needs_redraw = true;
@@ -4545,6 +4641,9 @@ pub fn handle_escape(r: &mut AppRenderer) {
             // Rebuild the plain current-layer list — total_list still holds the
             // recursively-flattened scroll list otherwise.
             list::create_list_current_layer(r);
+            if r.coordinate == Coordinate::Manual {
+                r.list_index = r.manual_index;
+            }
         }
         _ => {
             // Cancel file-browser open: reset filebrowser and return to source provider
@@ -6077,6 +6176,12 @@ pub fn handle_shift_right(r: &mut AppRenderer) {
 /// Home — go to first list item (General/General) or line start (insert/search).
 pub fn handle_home(r: &mut AppRenderer) {
     match r.coordinate.base() {
+        Coordinate::Manual => {
+            r.list_index = 0;
+            r.scroll_offset = 0;
+            r.speak_current_element();
+            r.needs_redraw = true;
+        }
         Coordinate::Scroll => {
             r.text_scroll_offset = 0;
             r.needs_redraw = true;
@@ -6127,6 +6232,12 @@ pub fn handle_home(r: &mut AppRenderer) {
 /// End — go to last list item (General/General) or line end (insert/search).
 pub fn handle_end(r: &mut AppRenderer) {
     match r.coordinate.base() {
+        Coordinate::Manual => {
+            r.list_index = r.active_list_len().saturating_sub(1);
+            r.scroll_offset = -1;
+            r.speak_current_element();
+            r.needs_redraw = true;
+        }
         Coordinate::Scroll => {
             let max_offset = (r.text_scroll_total_height - r.text_scroll_viewport_h).max(0);
             r.text_scroll_offset = max_offset;
@@ -6390,6 +6501,23 @@ unsafe extern "C" fn clipboard_image_cleanup(userdata: *mut std::ffi::c_void) {
 /// competing image flavor they fall back to the rich HTML (which embeds the
 /// image as a `data:` URI), pasting text and picture together. Bare images (no
 /// surrounding text) keep the image flavors so they still paste as a picture.
+/// Copy the text of the line the cursor is on, without its list mark: what Ctrl+C does in
+/// the manual and in a search, where there is no element to copy.
+fn copy_focused_line(r: &mut AppRenderer) {
+    let Some(item) = r.current_list_item() else {
+        return;
+    };
+    let text = item
+        .label
+        .split_once(' ')
+        .map_or(item.label.as_str(), |(_, rest)| rest)
+        .to_owned();
+    if !text.is_empty() {
+        sdl_set_clipboard(&text);
+    }
+    r.needs_redraw = true;
+}
+
 fn sdl_set_clipboard_image(html: Vec<u8>, image: Option<(Vec<u8>, Vec<u8>)>, text: String) -> bool {
     use std::ffi::CString;
     let include_image = image.is_some();
@@ -6770,8 +6898,20 @@ fn insert_editor_file_line(r: &mut AppRenderer, after: bool) {
 
 /// Ctrl+X — cut selected text (insert modes) or cut FFON element (general mode).
 pub fn handle_ctrl_x(r: &mut AppRenderer) {
+    // The manual is read-only: there is nothing to cut, so it copies the line.
+    if r.coordinate == Coordinate::Manual {
+        copy_focused_line(r);
+        return;
+    }
     if is_text_edit_mode(r) {
         if !has_selection(r) {
+            // A search with no text selected: the result the cursor is on.
+            if matches!(
+                r.coordinate.base(),
+                Coordinate::SimpleSearch | Coordinate::ExtendedSearch
+            ) {
+                copy_focused_line(r);
+            }
             return;
         }
         if let Some((start, end)) = selection_range(r) {
@@ -6859,8 +6999,19 @@ pub(crate) fn copy_underlying_value(raw: &str) -> String {
 /// element's display text to the system clipboard (all providers). Also preserves
 /// the filebrowser file-copy and compose/structural internal-clipboard behaviors.
 pub fn handle_ctrl_c(r: &mut AppRenderer) {
+    if r.coordinate == Coordinate::Manual {
+        copy_focused_line(r);
+        return;
+    }
     if is_text_edit_mode(r) {
         if !has_selection(r) {
+            // A search with no text selected: the result the cursor is on.
+            if matches!(
+                r.coordinate.base(),
+                Coordinate::SimpleSearch | Coordinate::ExtendedSearch
+            ) {
+                copy_focused_line(r);
+            }
             return;
         }
         if let Some((start, end)) = selection_range(r) {
@@ -7208,6 +7359,10 @@ pub fn handle_ctrl_f(r: &mut AppRenderer) {
         _ => {
             // From SimpleSearch: preserve previous_coordinate and search_origin_id (don't overwrite)
             if r.coordinate != Coordinate::SimpleSearch {
+                r.search_in_manual = r.coordinate == Coordinate::Manual;
+                if r.search_in_manual {
+                    r.manual_index = r.list_index;
+                }
                 r.previous_coordinate = r.coordinate;
                 r.search_origin_id = r.current_id.clone();
             }
@@ -7221,11 +7376,14 @@ pub fn handle_ctrl_f(r: &mut AppRenderer) {
             // so `current_id.last()` (an index into the immediate layer) does
             // not address it. Select the flattened-list item whose id matches
             // the focused element so search opens on it, not the first row.
-            r.list_index = r
-                .total_list
-                .iter()
-                .position(|it| it.id == r.current_id)
-                .unwrap_or(0);
+            r.list_index = if r.search_in_manual {
+                r.manual_index
+            } else {
+                r.total_list
+                    .iter()
+                    .position(|it| it.id == r.current_id)
+                    .unwrap_or(0)
+            };
             let ctx = r
                 .current_list_item()
                 .map(|it| crate::accesskit_sdl::label_to_speech(&it.label));

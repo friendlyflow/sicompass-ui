@@ -324,10 +324,17 @@ mod tests {
     // --- Tab ---
 
     #[test]
-    fn tab_in_general_switches_to_simple_search() {
+    fn f_in_general_switches_to_simple_search() {
+        let mut r = AppRenderer::new();
+        dispatch_key(&mut r, Some(Keycode::F), no_mod());
+        assert_eq!(r.coordinate, Coordinate::SimpleSearch);
+    }
+
+    #[test]
+    fn tab_in_general_opens_the_beginners_manual() {
         let mut r = AppRenderer::new();
         dispatch_key(&mut r, Some(Keycode::Tab), no_mod());
-        assert_eq!(r.coordinate, Coordinate::SimpleSearch);
+        assert_eq!(r.coordinate, Coordinate::Manual);
     }
 
     // --- Colon (Shift+Semicolon) ---

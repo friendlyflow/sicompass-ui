@@ -201,6 +201,9 @@ pub enum Coordinate {
     Dashboard,
     Meta,
     TimelineView,
+    /// The beginner's manual (Tab): a list with no parent, read from the top with Down.
+    /// Escape goes back to the mode it was opened from.
+    Manual,
     /// Modal yes/no list before a tab closes, since a closed tab cannot be
     /// undone. Ctrl+Shift+T always shows it, Delete / Ctrl+D in the tab switcher
     /// only for a busy tab (e.g. a terminal running a foreground command). The list
@@ -296,7 +299,7 @@ impl Coordinate {
     /// Every variant. Exists so the locale-coverage test can assert that each
     /// mode resolves in all four bundles without a hand-maintained list that
     /// silently misses a new variant.
-    pub const ALL: [Coordinate; 20] = [
+    pub const ALL: [Coordinate; 21] = [
         Coordinate::General,
         Coordinate::Insert,
         Coordinate::InElement,
@@ -311,6 +314,7 @@ impl Coordinate {
         Coordinate::Dashboard,
         Coordinate::Meta,
         Coordinate::TimelineView,
+        Coordinate::Manual,
         Coordinate::ConfirmCloseTab,
         Coordinate::TabSwitcher,
         Coordinate::SessionCommand,
@@ -346,6 +350,7 @@ impl Coordinate {
             Coordinate::Dashboard => "dashboard mode",
             Coordinate::Meta => "meta mode",
             Coordinate::TimelineView => "timeline mode",
+            Coordinate::Manual => "manual mode",
             Coordinate::ConfirmCloseTab => "confirm close tab mode",
             Coordinate::TabSwitcher => "tab switcher mode",
             Coordinate::SessionCommand => "command mode",
@@ -376,6 +381,7 @@ impl Coordinate {
             Coordinate::Dashboard => "mode-dashboard",
             Coordinate::Meta => "mode-meta",
             Coordinate::TimelineView => "mode-timeline",
+            Coordinate::Manual => "mode-manual",
             Coordinate::ConfirmCloseTab => "mode-confirm-close-tab",
             Coordinate::TabSwitcher => "mode-tab-switcher",
             // Shares `mode-command` with `Coordinate::Command`: same name, and
@@ -736,6 +742,17 @@ pub struct AppRenderer {
     /// (a row can hold several to the same place), and where it goes. The parent line of
     /// the page it opened shows which one it was.
     pub followed_link: Option<(IdArray, usize, String)>,
+    /// Scroll mode was entered from the beginner's manual, so it reads the manual and not
+    /// the list underneath.
+    pub manual_scroll: bool,
+    /// Where the cursor was in the manual while Meta or Scroll mode is open on top of it.
+    pub manual_index: usize,
+    /// The mode the manual was opened from, which Escape goes back to. Its own, because
+    /// Meta and Scroll mode opened inside the manual overwrite `previous_coordinate`.
+    pub manual_return: Coordinate,
+    /// A search opened from the beginner's manual searches the manual's lines, not the
+    /// elements of the list underneath.
+    pub search_in_manual: bool,
     /// The dashboard is showing a row's image, not the provider's dashboard.
     pub element_image_view: bool,
     /// How far in element mode has scrolled the row it is in, for a row of boxes taller
@@ -1203,6 +1220,10 @@ impl AppRenderer {
             nav_positions: Vec::new(),
             nav_return: Coordinate::General,
             followed_link: None,
+            manual_scroll: false,
+            manual_index: 0,
+            manual_return: Coordinate::General,
+            search_in_manual: false,
             element_image_view: false,
             row_scroll: 0.0,
             video_request: None,
@@ -2166,6 +2187,10 @@ impl AppRenderer {
 
     /// Update `current_id.last()` to match the selected list item.
     pub fn sync_current_id_from_list(&mut self) {
+        // The manual's lines are not elements of the tree, so the cursor id stays where it was.
+        if self.search_in_manual {
+            return;
+        }
         if let Some(item_id) = self.current_list_item_id()
             && let Some(last_idx) = item_id.last()
         {
@@ -2642,7 +2667,7 @@ mod tests {
             assert!(!seen.contains(&c), "{c:?} listed twice");
             seen.push(c);
         }
-        assert_eq!(Coordinate::ALL.len(), 20);
+        assert_eq!(Coordinate::ALL.len(), 21);
     }
 
     #[test]

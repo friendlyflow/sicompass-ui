@@ -23,6 +23,11 @@ pub fn create_list_extended_search(renderer: &mut AppRenderer) {
     renderer.total_list.clear();
     renderer.filtered_list_indices.clear();
     renderer.error_message.clear();
+    // Opened from the beginner's manual: its lines are all there is to search.
+    if renderer.search_in_manual {
+        build_manual_list(renderer);
+        return;
+    }
 
     // Recursively walk the in-memory FFON tree.
     let base_id = renderer.current_id.clone();
@@ -111,6 +116,14 @@ pub fn create_list_scroll(renderer: &mut AppRenderer) {
     renderer.total_list.clear();
     renderer.filtered_list_indices.clear();
     renderer.error_message.clear();
+    // Opened from the beginner's manual: it is the manual that is read as one page.
+    if renderer.manual_scroll {
+        build_manual_list(renderer);
+        renderer.list_index = renderer
+            .manual_index
+            .min(renderer.total_list.len().saturating_sub(1));
+        return;
+    }
 
     let base_id = renderer.current_id.clone();
     let scope = markup_scope(renderer);
@@ -390,6 +403,11 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
     // Command, and the `_` arm below zeroes `list_index` without building
     // anything — so without this a second-layer palette would come up empty.
     match renderer.coordinate.base() {
+        // A search opened from the beginner's manual searches the manual's lines.
+        Coordinate::SimpleSearch if renderer.search_in_manual => {
+            build_manual_list(renderer);
+            return;
+        }
         Coordinate::General
         | Coordinate::Insert
         | Coordinate::InElement
@@ -408,6 +426,10 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
         }
         Coordinate::TimelineView => {
             build_timeline_list(renderer);
+            return;
+        }
+        Coordinate::Manual => {
+            build_manual_list(renderer);
             return;
         }
         Coordinate::ConfirmCloseTab => {
@@ -1512,6 +1534,28 @@ fn build_meta_list(renderer: &mut AppRenderer) {
         })
         .collect();
     renderer.total_list = items;
+}
+
+/// How many lines the beginner's manual has: `manual-01` to `manual-NN` in the locale
+/// files, in the order they are read.
+pub const MANUAL_LINES: usize = 26;
+
+/// Build the list for `Coordinate::Manual`: the beginner's manual, a dash row to a line.
+fn build_manual_list(renderer: &mut AppRenderer) {
+    renderer.list_index = 0;
+    renderer.total_list = (1..=MANUAL_LINES)
+        .map(|n| {
+            let mut id = IdArray::new();
+            id.push(n - 1);
+            RenderListItem {
+                id,
+                label: format!("- {}", crate::shortcuts::manual_line(n)),
+                data: None,
+                nav_path: None,
+                ext_prefix: None,
+            }
+        })
+        .collect();
 }
 
 /// Build the list for `Coordinate::Command`.

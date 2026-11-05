@@ -1493,52 +1493,54 @@ fn update_view(app: &mut AppState) {
     //
     // The text itself is `list::parent_line_text`, which the speech for entering
     // a list reads too.
-    let parent_info: ParentInfo = if app.renderer.current_id.depth() > 1 {
-        let mut parent_id = app.renderer.current_id.clone();
-        parent_id.pop();
-        let parent_idx = parent_id.last();
-        let parent_slice = sicompass_sdk::ffon::get_ffon_at_id(&app.renderer.ffon, &parent_id);
-        parent_slice
-            .zip(parent_idx)
-            .and_then(|(slice, idx)| {
-                let elem = slice.get(idx)?;
-                let display_text = crate::list::parent_line_text(&app.renderer);
-                let (is_radio, radio_summary) =
-                    if let sicompass_sdk::ffon::FfonElement::Obj(obj) = elem {
-                        if sicompass_sdk::tags::has_radio(&obj.key) {
-                            let checked = obj.children.iter().find_map(|child| {
-                                if let sicompass_sdk::ffon::FfonElement::Str(s) = child
-                                    && sicompass_sdk::tags::has_checked(s)
-                                {
-                                    return sicompass_sdk::tags::extract_checked(s);
-                                }
-                                None
-                            });
-                            (true, checked)
+    // The beginner's manual is a list of its own, with no parent.
+    let parent_info: ParentInfo =
+        if app.renderer.current_id.depth() > 1 && app.renderer.coordinate != Coordinate::Manual {
+            let mut parent_id = app.renderer.current_id.clone();
+            parent_id.pop();
+            let parent_idx = parent_id.last();
+            let parent_slice = sicompass_sdk::ffon::get_ffon_at_id(&app.renderer.ffon, &parent_id);
+            parent_slice
+                .zip(parent_idx)
+                .and_then(|(slice, idx)| {
+                    let elem = slice.get(idx)?;
+                    let display_text = crate::list::parent_line_text(&app.renderer);
+                    let (is_radio, radio_summary) =
+                        if let sicompass_sdk::ffon::FfonElement::Obj(obj) = elem {
+                            if sicompass_sdk::tags::has_radio(&obj.key) {
+                                let checked = obj.children.iter().find_map(|child| {
+                                    if let sicompass_sdk::ffon::FfonElement::Str(s) = child
+                                        && sicompass_sdk::tags::has_checked(s)
+                                    {
+                                        return sicompass_sdk::tags::extract_checked(s);
+                                    }
+                                    None
+                                });
+                                (true, checked)
+                            } else {
+                                (false, None)
+                            }
                         } else {
                             (false, None)
-                        }
-                    } else {
-                        (false, None)
-                    };
-                Some(ParentInfo {
-                    display_text,
-                    is_radio,
-                    radio_summary,
+                        };
+                    Some(ParentInfo {
+                        display_text,
+                        is_radio,
+                        radio_summary,
+                    })
                 })
-            })
-            .unwrap_or(ParentInfo {
+                .unwrap_or(ParentInfo {
+                    display_text: String::new(),
+                    is_radio: false,
+                    radio_summary: None,
+                })
+        } else {
+            ParentInfo {
                 display_text: String::new(),
                 is_radio: false,
                 radio_summary: None,
-            })
-    } else {
-        ParentInfo {
-            display_text: String::new(),
-            is_radio: false,
-            radio_summary: None,
-        }
-    };
+            }
+        };
 
     // ---- Scroll-into-view: compute start_index from scroll_offset/list_index --
     // Pre-compute per-item line counts (needed before item_metrics so the scroll

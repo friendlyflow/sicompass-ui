@@ -43,7 +43,8 @@ hint-enter-follow-link = Enter  Suivre lien
 hint-enter-go-to-element = Enter  Aller à élém.
 hint-enter-go-to-match = Enter  Aller corresp.
 
-hint-tab-search = Tab    Recherche
+hint-f-search = F      Recherche
+hint-tab-manual = Tab    Manuel
 hint-tab-next-field = Tab    Champ suiv.
 
 hint-bspc-backspace = Bspc   Retour arr.
@@ -110,6 +111,7 @@ mode-input-search = mode recherche saisie
 mode-dashboard = mode tableau de bord
 mode-meta = mode méta
 mode-timeline = mode chronologie
+mode-manual = mode manuel
 mode-tab-switcher = mode sélecteur d'onglets
 mode-confirm-close-tab = mode confirmation fermeture onglet
 
@@ -176,3 +178,31 @@ video-paused = en pause
 video-unavailable = Cette version de Sicompass ne peut pas lire de vidéo
 
 search-no-matches = aucun résultat
+
+# The beginner's manual (Tab): one line each, read in order.
+manual-01 = Manuel du débutant. Appuyez maintenant sur la flèche du bas pour entendre la ligne suivante, et sur la flèche du haut pour revenir d'une ligne. Échap quitte le manuel.
+manual-02 = Tout dans Sicompass est une liste, et vous êtes dans une liste maintenant. Chaque ligne est un élément, et votre lecteur d'écran lit la ligne où vous êtes. Lisez ce manuel de haut en bas. Pour le rouvrir plus tard, appuyez sur Tab en mode général.
+manual-03 = Début va à la première ligne d'une liste et Fin à la dernière. Page suivante et Page précédente avancent d'une page à la fois.
+manual-04 = Droite entre dans une ligne qui commence par une flèche vers la droite, et Gauche en ressort. La ligne au-dessus de la liste, avec une flèche vers la gauche, nomme l'endroit où vous êtes.
+manual-05 = Appuyez deux fois sur Début pour atteindre le tout haut, où tous vos programmes sont listés. Ouvrez-en un, comme le navigateur de fichiers, les notes ou le store, avec Droite.
+manual-06 = Chaque ligne commence par une marque. Une flèche vers la droite veut dire qu'il y a plus à l'intérieur. Un tiret veut dire qu'il n'y a rien dedans. Les lettres après disent de quel type d'élément il s'agit, et les lignes suivantes les passent en revue.
+manual-07 = Un tiret sans lettre est du texte simple. Vous pouvez le lire et c'est tout.
+manual-08 = i est une saisie, une ligne de texte que vous pouvez changer. Appuyez sur i pour taper, ou sur a pour taper à la fin. Entrée garde ce que vous avez tapé, et Échap le jette.
+manual-09 = c est une case à cocher. Appuyez sur Entrée pour la cocher ou la décocher.
+manual-10 = R est un groupe de choix, et r est un choix dedans. Appuyez sur Droite pour entrer dans le groupe, allez à un choix et appuyez sur Entrée. Un seul peut être choisi.
+manual-11 = b est un bouton. Appuyez sur Entrée pour l'exécuter. Sicompass dit de quel bouton il s'agit.
+manual-12 = l est un lien. Appuyez sur Entrée pour le suivre, et sur Gauche pour revenir. Droite ne fait rien sur un lien. La ligne au-dessus de la nouvelle liste montre quel lien vous avez suivi.
+manual-13 = Une ligne peut contenir plusieurs liens ou boutons. Appuyez sur i pour commencer par le premier, ou sur a pour commencer par le dernier. Ensuite Gauche et Droite passent de l'un à l'autre, Bas et Haut changent de ligne quand la rangée passe à la ligne, Entrée utilise celui où vous êtes, et Échap quitte le mode.
+manual-14 = p est une image. Appuyez sur Entrée pour la voir en grand, et sur Échap pour revenir. v est une vidéo. Appuyez sur Entrée pour la lire, et encore sur Entrée pour la mettre en pause.
+manual-15 = Voyons maintenant les modes. Un mode, c'est ce que font les touches à ce moment, et l'en-tête en haut dit dans lequel vous êtes. La plupart du temps vous êtes en mode général, où vous vous déplacez et appuyez sur Entrée.
+manual-16 = Mode insertion : on y entre avec i ou a sur une saisie. Vous tapez, Entrée garde le texte, et Échap revient au mode général.
+manual-17 = Mode recherche : appuyez sur f en mode général et tapez pour réduire la liste. Entrée va à la correspondance et Échap annule. Ctrl+F cherche tout ce qui est sous vous, pas seulement cette liste.
+manual-18 = Mode commande : appuyez sur les deux-points pour les commandes de la ligne où vous êtes, comme ouvrir avec. Dans le terminal, cela lance un shell.
+manual-19 = Mode défilement : appuyez sur s pour lire une longue liste comme une seule page. Page précédente, Page suivante, Début et Fin la parcourent, et Échap quitte.
+manual-20 = Mode dans l'élément : appuyez sur i ou a sur une ligne avec plusieurs liens, boutons, images ou vidéos. Il se déplace entre eux dans la ligne, comme les lignes précédentes l'ont montré.
+manual-21 = Mode méta : appuyez sur m pour voir chaque touche qui marche sur la ligne où vous êtes. Mode chronologie : appuyez sur z pour voir ce que vous avez fait. Ctrl+Z annule et Ctrl+Shift+Z rétablit.
+manual-22 = Le mode manuel est cette liste. Échap vous ramène toujours au mode général, et Tab rouvre le manuel.
+manual-23 = Le mode sélecteur d'onglets garde plusieurs endroits ouverts à la fois. Appuyez sur t pour ouvrir le sélecteur et en choisir un avec Entrée, ou sur Ctrl+T pour ouvrir un nouvel endroit.
+manual-24 = Ctrl+C copie la ligne où vous êtes, Ctrl+Shift+C copie un lien ou une valeur, et Ctrl+V colle. Ctrl+W dit où vous êtes.
+manual-25 = Un lecteur d'écran lit chaque ligne où vous arrivez. Si vous êtes perdu, appuyez sur Échap, ou deux fois sur Début pour recommencer tout en haut.
+manual-26 = Ensuite, ouvrez le tutoriel dans la liste des programmes. Il vous laisse essayer chaque élément de ce manuel. Le programme des réglages change la taille du texte et les couleurs.
