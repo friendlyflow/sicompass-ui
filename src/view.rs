@@ -2228,7 +2228,7 @@ fn update_view(app: &mut AppState) {
                     scale,
                     p.text,
                 );
-                let content_x = prefix_x + fr.measure_text_width(prefix_str, scale);
+                let content_x = text_prefix_x + flow.content_x();
                 // Adjust match positions to be relative to content (subtract prefix char count)
                 let prefix_char_count = prefix_str.chars().count() as u32;
                 let content_positions: Vec<u32> = match_pos
@@ -4210,6 +4210,15 @@ fn insert_lines_from_segments(
 
 /// Lay out `[breadcrumb][prefix][content]` as one continuous flow `rest_w` wide.
 /// See [`ExtFlow`]. Pass an empty `prefix` when the caller draws no separate tag.
+impl ExtFlow {
+    /// Where the content's first line starts: after the breadcrumb and the prefix as it
+    /// is drawn. The drawn prefix is wider than the label's when it has letters (`-cl `
+    /// is `— cl `), so measuring the label's puts the text over the prefix's last letter.
+    pub(crate) fn content_x(&self) -> f32 {
+        self.content_dx + self.rest_dx
+    }
+}
+
 pub(crate) fn ext_flow(
     fr: &crate::text::FontRenderer,
     breadcrumb: &str,
@@ -4988,6 +4997,31 @@ mod tests {
         // The prefix eats 20px of the first line.
         assert!((flow.first_w - 180.0).abs() < 1e-3);
         assert_eq!(flow.total_lines, 1);
+    }
+
+    /// The content starts past the prefix as it is drawn, letters and all, whether it
+    /// stays on the breadcrumb's line or drops below it.
+    #[test]
+    fn ext_flow_content_starts_past_the_drawn_prefix() {
+        let fr = make_fr_uniform(10.0);
+        for prefix in ["-cl ", "+ci ", "-rc ", "-b ", "- ", "+ ", "-cplbv "] {
+            let shown = prefix_for_display(prefix);
+            let width = fr.measure_text_width(&shown, 1.0);
+            let inline = ext_flow(&fr, "Home > ", &shown, "Contact", 1.0, 300.0, EM);
+            assert_eq!(inline.content_line, 0);
+            assert!(
+                (inline.content_x() - (70.0 + width)).abs() < 1e-3,
+                "{prefix}"
+            );
+            let below = ext_flow(&fr, "1234567890", &shown, "Contact", 1.0, 100.0, EM);
+            assert_eq!(below.content_line, 1, "{prefix}");
+            assert!((below.content_x() - width).abs() < 1e-3, "{prefix}");
+        }
+        // The case that overlapped: the drawn prefix is a character longer.
+        assert_eq!(
+            fr.measure_text_width(&prefix_for_display("-cl "), 1.0),
+            fr.measure_text_width("-cl ", 1.0) + 10.0
+        );
     }
 
     #[test]
