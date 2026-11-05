@@ -1525,7 +1525,7 @@ pub fn readable_color(wanted: Option<u32>, background: u32, fallback: u32) -> u3
     }
 }
 
-/// The background of the row the cursor is on, or `fallback` where it would not show
+/// The colour that marks the row the cursor is on, or `fallback` where it would not show
 /// against the list's own: no stylesheet gets to hide the cursor.
 pub fn visible_focus(wanted: Option<u32>, list_background: u32, fallback: u32) -> u32 {
     const MIN_FOCUS_CONTRAST: f64 = 1.2;

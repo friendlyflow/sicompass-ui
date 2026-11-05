@@ -1791,10 +1791,10 @@ fn update_view(app: &mut AppState) {
             crate::layout::RowBoxStyle::resolve(&ul_style, &style_env, max_content_w).radius;
         rr.prepare_rectangle(content_x, top, content_w, win_h - top, color, radius);
     }
-    // In element mode the cursor is on a target inside the row, and it is the target that
-    // is marked, by a border in the colour the row is usually filled with. The row
-    // itself has no fill then.
-    let outline_focus = app.renderer.coordinate == Coordinate::InElement;
+    // The cursor's row is the list's own background with a border in the selection
+    // colour, rounded like every background. In element mode the cursor is on a target
+    // inside the row instead, which the row's fill and the target's highlight show.
+    let outline_focus = app.renderer.coordinate != Coordinate::InElement;
     // What is drawn behind a row: its border and its background, the cursor's row
     // always having one.
     for (
@@ -1839,15 +1839,11 @@ fn update_view(app: &mut AppState) {
                 img_y + layout.img_h + crate::text::TEXT_PADDING
             };
             if let Some(rr) = app.rect_renderer.as_mut() {
-                if !outline_focus {
-                    rr.prepare_rectangle(
-                        x,
-                        bg_top,
-                        bg_right - x,
-                        bg_bottom - bg_top,
-                        background.unwrap_or(p.selected),
-                        radius,
-                    );
+                let (w, h) = (bg_right - x, bg_bottom - bg_top);
+                if outline_focus {
+                    focus_outline(rr, (x, bg_top, w, h), radius, p.selected, list_background);
+                } else {
+                    rr.prepare_rectangle(x, bg_top, w, h, background.unwrap_or(p.selected), radius);
                 }
                 // In element mode's selected image: its frame shows in the 2 px the
                 // image is inset by.
@@ -1857,7 +1853,7 @@ fn update_view(app: &mut AppState) {
                         img_y,
                         layout.img_w,
                         layout.img_h,
-                        p.selected,
+                        p.scroll_search,
                         0.0,
                     );
                 }
@@ -1866,7 +1862,16 @@ fn update_view(app: &mut AppState) {
         }
         if let Some(rr) = app.rect_renderer.as_mut() {
             let border = row.style.border;
-            if border > 0.0 {
+            if *is_selected && outline_focus {
+                let inner = style.unfocused_background.unwrap_or(list_background);
+                focus_outline(
+                    rr,
+                    (x, row.box_y, row.highlight_w, row.box_h),
+                    radius,
+                    p.selected,
+                    inner,
+                );
+            } else if border > 0.0 {
                 let color = style.li.border_color.or(style.li.color).unwrap_or(p.text);
                 rr.prepare_rectangle(x, row.box_y, row.highlight_w, row.box_h, color, radius);
                 let inner = background.unwrap_or(list_background);
@@ -2566,22 +2571,13 @@ fn update_view(app: &mut AppState) {
                                 }
                                 let before: String = chars[..start].iter().collect();
                                 let lit: String = chars[start..i].iter().collect();
-                                let (bx, by) = (
+                                rr.prepare_rectangle(
                                     x + fr.measure_text_width(&before, row_scale) - pad,
                                     line_y - ascender * row_scale - crate::text::TEXT_PADDING,
-                                );
-                                let bw = fr.measure_text_width(&lit, row_scale) + 2.0 * pad;
-                                // A border and nothing inside it: the colour of the frame,
-                                // then the row's own background in the middle.
-                                let edge = 3.0;
-                                rr.prepare_rectangle(bx, by, bw, row_line_h, p.selected, 3.0);
-                                rr.prepare_rectangle(
-                                    bx + edge,
-                                    by + edge,
-                                    (bw - 2.0 * edge).max(0.0),
-                                    (row_line_h - 2.0 * edge).max(0.0),
-                                    background,
-                                    1.0,
+                                    fr.measure_text_width(&lit, row_scale) + 2.0 * pad,
+                                    row_line_h,
+                                    p.scroll_search,
+                                    3.0,
                                 );
                             }
                         }
@@ -2590,17 +2586,21 @@ fn update_view(app: &mut AppState) {
                         {
                             let piece: String = chars[from - first..to - first].iter().collect();
                             // The target the cursor is on shows the focus and nothing the
-                            // content gave it: no pill, no link colour, just the border.
+                            // content gave it: no pill, no link colour.
                             let lit = in_element_target
                                 && content_positions.binary_search(&(from as u32)).is_ok();
                             let run = run.filter(|_| !lit);
-                            let color = run.map_or(text_color, |run| {
-                                crate::style::readable_color(
-                                    run.color.or(wanted),
-                                    run.background.unwrap_or(background),
-                                    p.text,
-                                )
-                            });
+                            let color = if lit {
+                                crate::style::readable_color(None, p.scroll_search, p.text)
+                            } else {
+                                run.map_or(text_color, |run| {
+                                    crate::style::readable_color(
+                                        run.color.or(wanted),
+                                        run.background.unwrap_or(background),
+                                        p.text,
+                                    )
+                                })
+                            };
                             fr.set_bold(run.map_or(bold, |run| run.bold));
                             let width = fr.measure_text_width(&piece, row_scale);
                             if let (Some(back), Some(rr)) =
@@ -3922,9 +3922,30 @@ fn draw_box_row(
             (x, y, t, h),
             (x + w - t, y, t, h),
         ] {
-            rr.prepare_rectangle(fx, fy, fw, fh, p.selected, 0.0);
+            rr.prepare_rectangle(fx, fy, fw, fh, p.text, 0.0);
         }
     }
+}
+
+/// The cursor's row: a border of `edge` in `color` round a plain `inside`, with the
+/// corners rounded the way every background is.
+fn focus_outline(
+    rr: &mut crate::rectangle::RectangleRenderer,
+    (x, y, w, h): (f32, f32, f32, f32),
+    radius: f32,
+    color: u32,
+    inside: u32,
+) {
+    let edge = 2.0;
+    rr.prepare_rectangle(x, y, w, h, color, radius);
+    rr.prepare_rectangle(
+        x + edge,
+        y + edge,
+        (w - 2.0 * edge).max(0.0),
+        (h - 2.0 * edge).max(0.0),
+        inside,
+        (radius - edge).max(0.0),
+    );
 }
 
 /// What a styled row has behind it, `None` for nothing. The cursor's row always has
