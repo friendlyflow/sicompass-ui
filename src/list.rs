@@ -281,6 +281,9 @@ impl MarkupScope {
             }
             FfonElement::Obj(obj) => {
                 let key = self.text(id, &obj.key);
+                if is_followed_radio_choice(&key, parent_has_radio) {
+                    return build_str_label(&key, true);
+                }
                 if key == obj.key {
                     return build_obj_label(obj);
                 }
@@ -361,7 +364,7 @@ fn prepare_list_style(r: &mut AppRenderer) {
     }
     // A list takes the classes of the row it belongs to, when that row is markup too.
     let ul_classes = if scope.covers(&parent) {
-        let nodes = sicompass_sdk::markup::parse(&parent_text);
+        let nodes = sicompass_sdk::markup::parse(&without_toggle_tags(&parent_text));
         sicompass_sdk::markup::whole_row_element(&nodes)
             .map(|e| e.classes.clone())
             .unwrap_or_default()
@@ -756,8 +759,93 @@ fn masked_password_display(s: &str) -> String {
 fn build_label_for_element(elem: &FfonElement, parent_has_radio: bool) -> String {
     match elem {
         FfonElement::Str(s) => build_str_label(s, parent_has_radio),
+        FfonElement::Obj(obj) if is_followed_radio_choice(&obj.key, parent_has_radio) => {
+            build_str_label(&obj.key, true)
+        }
         FfonElement::Obj(obj) => build_obj_label(obj),
     }
+}
+
+/// A radio choice holds no rows, except the page of a link in it that was followed,
+/// which made it an `Obj`. It is still a choice, and a dash like any link.
+fn is_followed_radio_choice(key: &str, parent_has_radio: bool) -> bool {
+    parent_has_radio && tags::has_link(key)
+}
+
+/// `text` with `tag` swapped for `with`, once. A tag with a backslash before it is
+/// text, and is skipped.
+pub(crate) fn replace_tag(text: &str, tag: &str, with: &str) -> String {
+    let mut from = 0;
+    while let Some(found) = text[from..].find(tag) {
+        let at = from + found;
+        if !text[..at].ends_with('\\') {
+            return format!("{}{with}{}", &text[..at], &text[at + tag.len()..]);
+        }
+        from = at + tag.len();
+    }
+    text.to_owned()
+}
+
+/// A row without the tags that make it a checkbox or a radio choice. They are not
+/// markup, so reading the row as markup would keep them as text: on screen in a row of
+/// boxes, in a link's name, and counted in where every style run starts.
+pub(crate) fn without_toggle_tags(row: &str) -> std::borrow::Cow<'_, str> {
+    if !row.contains("<checkbox") && !row.contains("<checked>") {
+        return row.into();
+    }
+    let mut row = row.to_owned();
+    if tags::has_checkbox_checked(&row) || tags::has_checkbox(&row) {
+        row = replace_tag(&row, "<checkbox checked>", "");
+        row = replace_tag(&row, "<checkbox>", "");
+        row = replace_tag(&row, "</checkbox>", "");
+    }
+    if tags::has_checked(&row) {
+        row = replace_tag(&row, "<checked>", "");
+        row = replace_tag(&row, "</checked>", "");
+    }
+    row.into()
+}
+
+/// What a checkbox or a radio choice holds, in the letters the other rows use.
+fn held_letters(row: &str) -> String {
+    let counts = tags::target_counts(row);
+    [
+        (counts.images, 'p'),
+        (counts.links, 'l'),
+        (counts.buttons, 'b'),
+        (counts.videos, 'v'),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(_, letter)| letter)
+    .collect()
+}
+
+/// A checkbox's or a radio choice's prefix, with or without letters for what it holds:
+/// `-c`, `+cc`, `-rcl`. `-ci` is the editor's, and stays out because `i` is not a
+/// letter for something held.
+pub(crate) fn is_toggle_prefix(prefix: &str) -> bool {
+    let holds = |rest: &str| rest.chars().all(|c| "plbv".contains(c));
+    ["-cc", "-c", "+cc", "+c", "-rc", "-r"]
+        .iter()
+        .any(|toggle| prefix.strip_prefix(toggle).is_some_and(holds))
+}
+
+/// The text of a row, whether or not it has rows under it.
+pub(crate) fn element_text(elem: &FfonElement) -> &str {
+    match elem {
+        FfonElement::Str(s) => s,
+        FfonElement::Obj(o) => &o.key,
+    }
+}
+
+/// The name of the choice a radio group has picked, for showing beside the group.
+pub(crate) fn checked_choice(children: &[FfonElement]) -> Option<String> {
+    children
+        .iter()
+        .map(element_text)
+        .find(|text| tags::has_checked(text))
+        .map(tags::strip_display)
 }
 
 /// A row of markup holding a video says so in its prefix, the way `p` says a picture:
@@ -772,6 +860,7 @@ fn with_video_letter(label: String, row: &str) -> String {
         return label;
     }
     match label.split_once(' ') {
+        Some((prefix, rest)) if is_toggle_prefix(prefix) => format!("{prefix}v {rest}"),
         Some(("-", rest)) => format!("-v {rest}"),
         Some(("-p", rest)) => format!("-pv {rest}"),
         Some(("-l", rest)) => format!("-lv {rest}"),
@@ -812,23 +901,25 @@ fn build_str_label(s: &str, parent_has_radio: bool) -> String {
         return format!("-ci {}", tags::strip_display(s));
     }
 
+    // A checkbox or a radio choice says so whatever else it holds, because that is
+    // what Enter does on it, and then says what it holds, for `i` and `a`.
+    let toggle = if tags::has_checkbox_checked(s) {
+        Some("-cc")
+    } else if tags::has_checkbox(s) {
+        Some("-c")
+    } else if tags::has_checked(s) {
+        Some("-rc")
+    } else if parent_has_radio && !tags::has_input(s) && !tags::has_password(s) {
+        Some("-r")
+    } else {
+        None
+    };
+    if let Some(toggle) = toggle {
+        return format!("{toggle}{} {}", held_letters(s), tags::strip_display(s));
+    }
+
     let (prefix, content): (&str, String) = if tags::has_image(s) {
         ("-p", tags::strip_display(s))
-    } else if tags::has_checkbox_checked(s) {
-        (
-            "-cc",
-            tags::extract_checkbox_checked(s).unwrap_or_else(|| tags::strip_display(s)),
-        )
-    } else if tags::has_checkbox(s) {
-        (
-            "-c",
-            tags::extract_checkbox(s).unwrap_or_else(|| tags::strip_display(s)),
-        )
-    } else if tags::has_checked(s) {
-        (
-            "-rc",
-            tags::extract_checked(s).unwrap_or_else(|| tags::strip_display(s)),
-        )
     } else if tags::has_button(s) {
         ("-b", tags::strip_display(s))
     } else if tags::has_password(s) {
@@ -842,8 +933,6 @@ fn build_str_label(s: &str, parent_has_radio: bool) -> String {
             return "i".to_owned();
         }
         ("-i", content)
-    } else if parent_has_radio {
-        ("-r", tags::strip_display(s))
     } else if tags::has_link(s) {
         // A row holding a link, like `+l` for a link that has a page under it. Other
         // letters win: they say what Enter or `i` does on the row.
@@ -887,29 +976,26 @@ fn build_obj_label(obj: &FfonObject) -> String {
         return format!("+fi {}", tags::strip_display(key));
     }
 
-    if tags::has_checkbox_checked(key) {
-        let content =
-            tags::extract_checkbox_checked(key).unwrap_or_else(|| tags::strip_display(key));
-        return format!("+cc {content}");
-    } else if tags::has_checkbox(key) {
-        let content = tags::extract_checkbox(key).unwrap_or_else(|| tags::strip_display(key));
-        return format!("+c {content}");
+    if tags::has_checkbox_checked(key) || tags::has_checkbox(key) {
+        // A link is never opened with Right, so a checkbox with one has a dash too.
+        let sign = if tags::has_link(key) { '-' } else { '+' };
+        let box_letters = if tags::has_checkbox_checked(key) {
+            "cc"
+        } else {
+            "c"
+        };
+        return format!(
+            "{sign}{box_letters}{} {}",
+            held_letters(key),
+            tags::strip_display(key)
+        );
     } else if tags::has_link(key) {
         // A link is followed with Enter, never opened with Right, so it is a dash like a
         // row of links: `-l`, whether or not it has a page under it.
         return format!("-l {}", tags::strip_display(key));
     } else if tags::has_radio(key) {
         let group = tags::extract_radio(key).unwrap_or_else(|| tags::strip_display(key));
-        let state = obj
-            .children
-            .iter()
-            .find_map(|c| match c {
-                FfonElement::Str(s) if tags::has_checked(s) => {
-                    Some(tags::extract_checked(s).unwrap_or_else(|| tags::strip_display(s)))
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
+        let state = checked_choice(&obj.children).unwrap_or_default();
         return format!("+R {group} [{state}]");
     } else if tags::has_password(key) {
         return format!("+i {}", masked_password_display(key));
@@ -3028,5 +3114,80 @@ mod markup_scope_tests {
         let mut r = tree(false, obj("fixture", &[sub]), &[0, 0]);
         create_list_scroll(&mut r);
         assert_eq!(labels(&r), ["+ <b>Sub</b>", "- <style>x {}</style>"]);
+    }
+
+    /// Enter changes the row, so the box or the circle comes first, and the letters
+    /// after it say what `i` and `a` reach.
+    #[test]
+    fn a_toggle_says_what_it_holds_after_its_own_letters() {
+        let row = |text: &str, radio: bool| {
+            let label = build_str_label(text, radio);
+            label.split_once(' ').unwrap().0.to_owned()
+        };
+        assert_eq!(row("<checkbox>x", false), "-c");
+        assert_eq!(row("<checkbox checked>x", false), "-cc");
+        assert_eq!(row("<checkbox>x <link>u</link>", false), "-cl");
+        assert_eq!(
+            row("<checkbox checked>x <button>f</button>y", false),
+            "-ccb"
+        );
+        assert_eq!(row("<checkbox>x <image>a.png</image>", false), "-cp");
+        assert_eq!(
+            row(
+                "<checkbox>x <image>a.png</image> <link>u</link> <button>f</button>y",
+                false
+            ),
+            "-cplb"
+        );
+        assert_eq!(row("x", true), "-r");
+        assert_eq!(row("x <link>u</link>", true), "-rl");
+        assert_eq!(row("<checked>x", true), "-rc");
+        assert_eq!(row("<checked>x <button>f</button>y", true), "-rcb");
+        // An input in a group is still edited with `i`, and says so.
+        assert_eq!(row("x <input>y</input>", true), "-i");
+    }
+
+    #[test]
+    fn a_checkbox_with_a_link_has_a_dash_with_or_without_a_page_under_it() {
+        let label = |key: &str| {
+            build_obj_label(&FfonObject {
+                key: key.to_owned(),
+                children: vec![FfonElement::new_str("page")],
+            })
+        };
+        assert_eq!(label("<checkbox>x"), "+c x");
+        assert_eq!(label("<checkbox checked>x <button>f</button>y"), "+ccb x y");
+        assert_eq!(label("<checkbox>x <link>u</link>"), "-cl x u");
+        assert_eq!(label("<checkbox checked>x <link>u</link>"), "-ccl x u");
+    }
+
+    #[test]
+    fn only_toggle_prefixes_count_as_toggles() {
+        for p in [
+            "-c", "-cc", "+c", "+cc", "-r", "-rc", "-cl", "-ccb", "-rcl", "-cplbv",
+        ] {
+            assert!(is_toggle_prefix(p), "{p}");
+        }
+        for p in ["-", "-l", "-b", "-ci", "+ci", "+R", "+r", "-i", "-rx", "c"] {
+            assert!(!is_toggle_prefix(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn a_row_without_its_toggle_tags() {
+        let without = |row: &'static str| without_toggle_tags(row).into_owned();
+        assert_eq!(without("plain <b>x</b>"), "plain <b>x</b>");
+        assert_eq!(
+            without("<checkbox>Go <a href=\"u\">t</a>"),
+            "Go <a href=\"u\">t</a>"
+        );
+        assert_eq!(
+            without("<checkbox checked>Go</checkbox> <b>x</b>"),
+            "Go <b>x</b>"
+        );
+        assert_eq!(without("<checked>Go</checked> x"), "Go x");
+        // Escaped, it is the row's own text.
+        assert_eq!(without("\\<checkbox> x"), "\\<checkbox> x");
+        assert_eq!(without("<checkbox>\\<checkbox> x"), "\\<checkbox> x");
     }
 }

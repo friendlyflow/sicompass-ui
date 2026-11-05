@@ -4,7 +4,8 @@
 //! Left and Right go target by target, skipping plain text, and Up and Down go to
 //! the line above or below. Enter activates, Escape leaves. Outside this mode the
 //! arrow keys do what they always did, so a row with several targets costs nothing
-//! until it is asked for.
+//! until it is asked for. On a checkbox or a radio choice this mode is the only way to
+//! a link or a button, because Enter in General changes the row.
 //!
 //! Enter and `d` on an image open the big view, also here, which is the dashboard
 //! showing that one image instead of asking the provider what to show.
@@ -20,7 +21,7 @@ fn focused_targets(r: &AppRenderer) -> Vec<Target> {
         return Vec::new();
     };
     if r.sheets.markup_here() {
-        sicompass_sdk::markup::targets(&raw)
+        sicompass_sdk::markup::targets(&list::without_toggle_tags(&raw))
     } else {
         tags::targets(&raw)
     }
@@ -281,9 +282,10 @@ fn press_button(r: &mut AppRenderer, target: &Target) {
     let row = r.current_id.clone();
     let return_to = r.nav_return;
     r.coordinate = return_to;
-    if r.nav_targets.len() == 1 {
+    if r.nav_targets.len() == 1 && !handlers::focused_is_toggle(r) {
         // The row's only button goes through everything Enter does for a button:
-        // a session list's commands and a history row's refill.
+        // a session list's commands and a history row's refill. On a checkbox or a
+        // radio choice that would toggle the row and never press the button.
         handlers::handle_enter_general(r);
     } else {
         provider::notify_button_function(r, &target.value);
@@ -351,10 +353,7 @@ pub fn handle_enter_link(r: &mut AppRenderer) {
     } else {
         raw
     };
-    let is_plain_link = !tags::has_button(&raw)
-        && !tags::has_checkbox(&raw)
-        && !tags::has_checkbox_checked(&raw)
-        && !tags::has_input(&raw);
+    let is_plain_link = !tags::has_button(&raw) && !tags::has_input(&raw);
     if !is_plain_link {
         handlers::handle_enter_general(r);
         return;
@@ -803,6 +802,282 @@ mod tests {
             r.total_list[0].label.contains("page two"),
             "{:?}",
             r.total_list[0].label
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A radio group under the provider's root, with the cursor on `choices[at]`.
+    fn radio_renderer(choices: &[&str], at: usize) -> AppRenderer {
+        let mut group = FfonElement::new_obj("<radio>Pick");
+        for choice in choices {
+            group
+                .as_obj_mut()
+                .unwrap()
+                .push(FfonElement::new_str(*choice));
+        }
+        let mut root = FfonElement::new_obj("root");
+        root.as_obj_mut().unwrap().push(group);
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        let mut id = IdArray::new();
+        id.push(0);
+        id.push(0);
+        id.push(at);
+        r.current_id = id;
+        list::create_list_current_layer(&mut r);
+        r
+    }
+
+    fn page(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("nav-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("p.json");
+        std::fs::write(&file, r#"["the page"]"#).unwrap();
+        (dir, file)
+    }
+
+    fn focused(r: &AppRenderer) -> String {
+        handlers::focused_element_raw(r).unwrap()
+    }
+
+    /// The provider under the cursor. It gives back the same rows on a refresh, and
+    /// records the buttons pressed and the toggles it is told about.
+    #[derive(Clone, Default)]
+    struct Recording {
+        rows: Vec<String>,
+        pressed: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        toggled: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl Recording {
+        fn new(rows: &[&str]) -> Self {
+            Self {
+                rows: rows.iter().map(|row| (*row).to_owned()).collect(),
+                ..Self::default()
+            }
+        }
+        fn pressed(&self) -> Vec<String> {
+            self.pressed.lock().unwrap().clone()
+        }
+        fn toggled(&self) -> Vec<String> {
+            self.toggled.lock().unwrap().clone()
+        }
+    }
+    impl sicompass_sdk::provider::Provider for Recording {
+        fn name(&self) -> &str {
+            "recording"
+        }
+        fn fetch(&mut self) -> Vec<FfonElement> {
+            self.rows
+                .iter()
+                .map(|row| FfonElement::new_str(row.clone()))
+                .collect()
+        }
+        fn on_button_press(&mut self, function_name: &str) {
+            self.pressed.lock().unwrap().push(function_name.to_owned());
+        }
+        fn on_checkbox_change(&mut self, label: &str, checked: bool) {
+            self.toggled
+                .lock()
+                .unwrap()
+                .push(format!("{label}={checked}"));
+        }
+        fn on_radio_change(&mut self, group: &str, value: &str) {
+            self.toggled
+                .lock()
+                .unwrap()
+                .push(format!("{group}={value}"));
+        }
+    }
+
+    #[test]
+    fn enter_toggles_a_checkbox_holding_a_link_and_i_follows_it() {
+        let (dir, file) = page("checkbox-link");
+        let row = format!("<checkbox>Accept <link>{}</link>", file.display());
+        let shown = |prefix: &str| format!("{prefix} Accept {}", file.display());
+        let mut r = renderer(&[row.as_str()], 0);
+        assert_eq!(r.total_list[0].label, shown("-cl"), "no tags on screen");
+
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.current_id.depth(), 2, "Enter stays on the row");
+        assert_eq!(r.total_list[0].label, shown("-ccl"));
+        assert!(tags::has_link(&focused(&r)), "{}", focused(&r));
+
+        // Right does nothing on a link, on a checkbox too.
+        press(&mut r, Keycode::Right);
+        assert_eq!(r.current_id.depth(), 2);
+
+        press(&mut r, Keycode::I);
+        assert_eq!(r.coordinate, Coordinate::InElement);
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.current_id.depth(), 3, "inside the page");
+        assert!(r.total_list[0].label.contains("the page"));
+
+        // Back on the row it is still ticked and still a dash, with the page under it.
+        // Enter still unticks it, Right still does nothing, and `i` Enter goes back in.
+        press(&mut r, Keycode::Left);
+        assert_eq!(r.total_list[0].label, shown("-ccl"));
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.total_list[0].label, shown("-cl"));
+        press(&mut r, Keycode::Right);
+        assert_eq!(r.current_id.depth(), 2);
+        press(&mut r, Keycode::A);
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.current_id.depth(), 3, "inside the page again");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// In a provider's markup, a real `<a href>` counts the same as the older tag.
+    #[test]
+    fn a_checkbox_in_markup_holding_an_anchor_toggles_and_i_reaches_it() {
+        struct Markup;
+        impl sicompass_sdk::provider::Provider for Markup {
+            fn name(&self) -> &str {
+                "markup"
+            }
+            fn fetch(&mut self) -> Vec<FfonElement> {
+                Vec::new()
+            }
+            fn markup(&self) -> bool {
+                true
+            }
+        }
+        let (dir, file) = page("checkbox-anchor");
+        let row = format!(r#"<checkbox>Accept <a href="{}">terms</a>"#, file.display());
+        let mut r = renderer(&[row.as_str()], 0);
+        r.providers.push(Box::new(Markup));
+        list::create_list_current_layer(&mut r);
+        assert!(
+            r.total_list[0].label.starts_with("-cl "),
+            "{:?}",
+            r.total_list[0].label
+        );
+
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.current_id.depth(), 2, "Enter stays on the row");
+        assert!(
+            r.total_list[0].label.starts_with("-ccl "),
+            "{:?}",
+            r.total_list[0].label
+        );
+
+        press(&mut r, Keycode::I);
+        assert_eq!(r.coordinate, Coordinate::InElement);
+        assert!(!announced(&r).contains("checkbox"), "{}", announced(&r));
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.current_id.depth(), 3, "inside the page");
+        assert!(r.total_list[0].label.contains("the page"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_closed_checkbox_keeps_the_link_after_it_when_toggled() {
+        let row = "<checkbox>Accept</checkbox> the <link>u</link>";
+        let mut r = renderer(&[row], 0);
+        assert_eq!(r.total_list[0].label, "-cl Accept the u");
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.total_list[0].label, "-ccl Accept the u");
+        press(&mut r, Keycode::Return);
+        assert_eq!(focused(&r), row);
+    }
+
+    #[test]
+    fn enter_toggles_a_checkbox_holding_a_picture() {
+        let mut r = renderer(&["<checkbox>Look <image>/no/such.png</image>"], 0);
+        press(&mut r, Keycode::Return);
+        assert!(tags::has_checkbox_checked(&focused(&r)));
+        assert!(r.total_list[0].label.starts_with("-ccp "));
+    }
+
+    /// The row's only button: `i` Enter presses it and leaves the box alone, and Enter
+    /// ticks the box and leaves the button alone.
+    #[test]
+    fn a_checkbox_with_one_button_presses_in_element_mode_and_toggles_on_enter() {
+        let row = "<checkbox>Run <button>go</button>now";
+        let mut r = renderer(&[row], 0);
+        let provider = Recording::new(&[row]);
+        r.providers.push(Box::new(provider.clone()));
+        list::create_list_current_layer(&mut r);
+
+        press(&mut r, Keycode::I);
+        press(&mut r, Keycode::Return);
+        assert_eq!(provider.pressed(), ["go"]);
+        assert!(provider.toggled().is_empty(), "{:?}", provider.toggled());
+        assert_eq!(r.coordinate, Coordinate::InElement, "stays in the mode");
+        assert!(tags::has_checkbox(&focused(&r)), "{}", focused(&r));
+        press(&mut r, Keycode::Escape);
+
+        press(&mut r, Keycode::Return);
+        assert_eq!(provider.pressed().len(), 1, "Enter pressed it");
+        assert_eq!(provider.toggled().len(), 1);
+        assert!(tags::has_checkbox_checked(&focused(&r)));
+        assert!(!announced(&r).contains("pressed"), "{}", announced(&r));
+    }
+
+    #[test]
+    fn a_radio_choice_with_one_button_presses_in_element_mode_and_selects_on_enter() {
+        let rows = ["<checked>one", "two <button>go</button>now"];
+        let mut r = radio_renderer(&rows, 1);
+        let provider = Recording::new(&rows);
+        r.providers.push(Box::new(provider.clone()));
+        list::create_list_current_layer(&mut r);
+        assert_eq!(r.total_list[1].label, "-rb two now");
+
+        press(&mut r, Keycode::A);
+        press(&mut r, Keycode::Return);
+        assert_eq!(provider.pressed(), ["go"]);
+        assert!(provider.toggled().is_empty(), "{:?}", provider.toggled());
+        assert_eq!(r.total_list[1].label, "-rb two now", "not selected");
+        press(&mut r, Keycode::Escape);
+
+        press(&mut r, Keycode::Return);
+        assert_eq!(provider.pressed().len(), 1, "Enter pressed it");
+        assert_eq!(provider.toggled(), ["Pick=two now"], "the plain name");
+        assert_eq!(r.total_list[0].label, "-r one");
+        assert_eq!(r.total_list[1].label, "-rcb two now");
+        assert!(tags::has_button(&focused(&r)), "the button stays");
+    }
+
+    /// Selecting used to strip the choice's tags, and a followed choice used to be an
+    /// `Obj` nothing could select or show as selected.
+    #[test]
+    fn enter_selects_a_radio_choice_holding_a_link_and_i_follows_it() {
+        let (dir, file) = page("radio-link");
+        let choice = format!("two <link>{}</link>", file.display());
+        let mut r = radio_renderer(&["<checked>one", choice.as_str()], 1);
+        let two = |prefix: &str| format!("{prefix} two {}", file.display());
+        assert_eq!(r.total_list[1].label, two("-rl"));
+
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.current_id.depth(), 3, "Enter stays on the choice");
+        assert_eq!(r.total_list[0].label, "-r one");
+        assert_eq!(r.total_list[1].label, two("-rcl"));
+        assert!(tags::has_link(&focused(&r)), "{}", focused(&r));
+
+        press(&mut r, Keycode::I);
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.current_id.depth(), 4, "inside the page");
+        press(&mut r, Keycode::Left);
+        assert_eq!(
+            r.total_list[1].label,
+            two("-rcl"),
+            "still the selected choice"
+        );
+
+        // Move the selection away and back, with the page under the choice.
+        press(&mut r, Keycode::Up);
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.total_list[0].label, "-rc one");
+        assert_eq!(r.total_list[1].label, two("-rl"));
+        press(&mut r, Keycode::Down);
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.total_list[0].label, "-r one");
+        assert_eq!(r.total_list[1].label, two("-rcl"));
+
+        // The group shows the choice by its name.
+        press(&mut r, Keycode::Left);
+        assert_eq!(
+            r.total_list[0].label,
+            format!("+R Pick [two {}]", file.display())
         );
         std::fs::remove_dir_all(&dir).ok();
     }

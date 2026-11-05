@@ -1508,15 +1508,7 @@ fn update_view(app: &mut AppState) {
                     let (is_radio, radio_summary) =
                         if let sicompass_sdk::ffon::FfonElement::Obj(obj) = elem {
                             if sicompass_sdk::tags::has_radio(&obj.key) {
-                                let checked = obj.children.iter().find_map(|child| {
-                                    if let sicompass_sdk::ffon::FfonElement::Str(s) = child
-                                        && sicompass_sdk::tags::has_checked(s)
-                                    {
-                                        return sicompass_sdk::tags::extract_checked(s);
-                                    }
-                                    None
-                                });
-                                (true, checked)
+                                (true, crate::list::checked_choice(&obj.children))
                             } else {
                                 (false, None)
                             }
@@ -1996,6 +1988,20 @@ fn update_view(app: &mut AppState) {
             };
             app.renderer.row_scroll = scroll;
             let top = top - scroll;
+            if let Some(rr) = app.rect_renderer.as_mut() {
+                render_toggle_indicator(
+                    rr,
+                    label,
+                    (item_prefix_x, item_y),
+                    LineMetrics {
+                        scale,
+                        ascender,
+                        line_h: line_height as f32,
+                        em_width,
+                    },
+                    &p,
+                );
+            }
             if let Some(fr) = app.font_renderer.as_mut() {
                 let (prefix, _) = split_label(label.as_str());
                 let marker = crate::style::readable_color(style.marker_color, background, p.text);
@@ -2027,29 +2033,10 @@ fn update_view(app: &mut AppState) {
         // Draw graphical indicator (radio/checkbox) and compute x shift.
         // When any item has an indicator, all items shift their text right by the
         // same indicator_width so prefixes align across the entire list.
-        let radio = get_radio_type(label);
-        let checkbox = get_checkbox_type(label);
-        if radio != RadioType::None {
-            if let Some(rr) = app.rect_renderer.as_mut() {
-                render_radio_indicator(
-                    rr,
-                    &radio,
-                    (item_prefix_x, item_y),
-                    LineMetrics {
-                        scale,
-                        ascender,
-                        line_h: line_height as f32,
-                        em_width,
-                    },
-                    &p,
-                );
-            }
-        } else if checkbox != CheckboxType::None
-            && let Some(rr) = app.rect_renderer.as_mut()
-        {
-            render_checkbox_indicator(
+        if let Some(rr) = app.rect_renderer.as_mut() {
+            render_toggle_indicator(
                 rr,
-                &checkbox,
+                label,
                 (item_prefix_x, item_y),
                 LineMetrics {
                     scale,
@@ -2336,7 +2323,7 @@ fn update_view(app: &mut AppState) {
             } else {
                 if let Some(fr) = app.font_renderer.as_mut() {
                     fr.prepare_text_for_rendering(
-                        &prefix_for_display("-p"),
+                        &prefix_for_display(split_label(prefix_text).0.trim_end()),
                         text_prefix_x,
                         current_y,
                         scale,
@@ -3142,35 +3129,18 @@ fn render_scroll_item(
         };
         // Graphical radio/checkbox indicator (matches general mode).
         if let Some(rr) = rr {
-            let radio = get_radio_type(label);
-            let checkbox = get_checkbox_type(label);
-            if radio != RadioType::None {
-                render_radio_indicator(
-                    rr,
-                    &radio,
-                    (prefix_x, baseline),
-                    LineMetrics {
-                        scale,
-                        ascender,
-                        line_h: lh,
-                        em_width,
-                    },
-                    p,
-                );
-            } else if checkbox != CheckboxType::None {
-                render_checkbox_indicator(
-                    rr,
-                    &checkbox,
-                    (prefix_x, baseline),
-                    LineMetrics {
-                        scale,
-                        ascender,
-                        line_h: lh,
-                        em_width,
-                    },
-                    p,
-                );
-            }
+            render_toggle_indicator(
+                rr,
+                label,
+                (prefix_x, baseline),
+                LineMetrics {
+                    scale,
+                    ascender,
+                    line_h: lh,
+                    em_width,
+                },
+                p,
+            );
         }
         if !list_prefix.is_empty() {
             fr.prepare_text_for_rendering(
@@ -3819,7 +3789,12 @@ fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<List
                 },
                 ext_prefix: item.ext_prefix.clone(),
                 style,
-                markup: if boxed { markup } else { None },
+                // The box or the circle is drawn beside the row, so its tag is not in it.
+                markup: if boxed {
+                    markup.map(|row| crate::list::without_toggle_tags(&row).into_owned())
+                } else {
+                    None
+                },
             });
         }
     }
@@ -4040,7 +4015,7 @@ fn followed_link_span(r: &AppRenderer) -> Option<std::ops::Range<usize>> {
         return None;
     }
     let raw = crate::list::text_ref_at(&r.ffon, row)?;
-    let links: Vec<_> = sicompass_sdk::markup::targets(raw)
+    let links: Vec<_> = sicompass_sdk::markup::targets(&crate::list::without_toggle_tags(raw))
         .into_iter()
         .filter(|t| t.kind == sicompass_sdk::tags::TargetKind::Link)
         .collect();
@@ -4492,23 +4467,26 @@ enum CheckboxType {
     Checked,
 }
 
+/// A label's first word, the list prefix. A label with no text after it has none, so
+/// a colon command called `-c` is not a checkbox.
+fn toggle_prefix(label: &str) -> Option<&str> {
+    let (prefix, _) = label.split_once(' ')?;
+    crate::list::is_toggle_prefix(prefix).then_some(prefix)
+}
+
 fn get_radio_type(label: &str) -> RadioType {
-    if label.starts_with("-rc ") {
-        RadioType::Checked
-    } else if label.starts_with("-r ") {
-        RadioType::Unchecked
-    } else {
-        RadioType::None
+    match toggle_prefix(label) {
+        Some(p) if p.starts_with("-rc") => RadioType::Checked,
+        Some(p) if p.starts_with("-r") => RadioType::Unchecked,
+        _ => RadioType::None,
     }
 }
 
 fn get_checkbox_type(label: &str) -> CheckboxType {
-    if label.starts_with("-cc ") || label.starts_with("+cc ") {
-        CheckboxType::Checked
-    } else if label.starts_with("-c ") || label.starts_with("+c ") {
-        CheckboxType::Unchecked
-    } else {
-        CheckboxType::None
+    match toggle_prefix(label) {
+        Some(p) if p[1..].starts_with("cc") => CheckboxType::Checked,
+        Some(p) if p[1..].starts_with('c') => CheckboxType::Unchecked,
+        _ => CheckboxType::None,
     }
 }
 
@@ -4526,6 +4504,23 @@ struct LineMetrics {
 }
 
 /// Draw a radio indicator. Returns the x offset to add before drawing text.
+/// The circle of a radio choice or the box of a checkbox, if `label` is one.
+fn render_toggle_indicator(
+    rr: &mut crate::rectangle::RectangleRenderer,
+    label: &str,
+    at: (f32, f32),
+    metrics: LineMetrics,
+    p: &crate::app_state::ColorPalette,
+) {
+    let radio = get_radio_type(label);
+    let checkbox = get_checkbox_type(label);
+    if radio != RadioType::None {
+        render_radio_indicator(rr, &radio, at, metrics, p);
+    } else if checkbox != CheckboxType::None {
+        render_checkbox_indicator(rr, &checkbox, at, metrics, p);
+    }
+}
+
 fn render_radio_indicator(
     rr: &mut crate::rectangle::RectangleRenderer,
     radio_type: &RadioType,
@@ -4612,7 +4607,8 @@ const LIST_PREFIXES: &[&str] = &[
 /// comes back as it was. Keeps a trailing space.
 pub(crate) fn prefix_for_display(prefix: &str) -> std::borrow::Cow<'_, str> {
     use crate::fonts::{ICON_ARROW_RIGHT, ICON_DASH};
-    if !LIST_PREFIXES.contains(&prefix.trim_end_matches(' ')) {
+    let bare = prefix.trim_end_matches(' ');
+    if !LIST_PREFIXES.contains(&bare) && !crate::list::is_toggle_prefix(bare) {
         return prefix.into();
     }
     let icon = match prefix.as_bytes().first() {
@@ -4662,12 +4658,12 @@ pub(crate) fn split_label(label: &str) -> (&str, &str) {
 /// For image items, splits the label around the image path into (prefix, suffix,
 /// has_meaningful_prefix). Prefix is everything before the path (including "-p "),
 /// suffix is everything after. has_meaningful_prefix is true when there is text
-/// beyond the bare "-p " marker (prefix.len() > 3).
+/// beyond the bare marker, which is longer than "-p " on a checkbox or a radio choice.
 pub(crate) fn split_image_label<'a>(label: &'a str, path: &str) -> (&'a str, &'a str, bool) {
     if let Some(pos) = label.find(path) {
         let prefix = &label[..pos];
         let suffix = &label[pos + path.len()..];
-        let has_prefix = prefix.len() > 3;
+        let has_prefix = !split_label(prefix).1.is_empty();
         (prefix, suffix, has_prefix)
     } else {
         ("-p ", "", false)
@@ -4676,8 +4672,78 @@ pub(crate) fn split_image_label<'a>(label: &'a str, path: &str) -> (&'a str, &'a
 
 #[cfg(test)]
 mod prefix_display_tests {
-    use super::{LIST_PREFIXES, label_for_display, positions_for_display, prefix_for_display};
+    use super::{
+        AppRenderer, CheckboxType, LIST_PREFIXES, RadioType, get_checkbox_type, get_radio_type,
+        label_for_display, positions_for_display, prefix_for_display,
+    };
     use crate::fonts::{ICON_ARROW_RIGHT as ARROW, ICON_DASH as DASH};
+
+    /// A row of boxes is a checkbox like any row: its prefix says so, which is what draws
+    /// the box, and the tag is not left in the boxes as text.
+    #[test]
+    fn a_checkbox_that_is_a_row_of_boxes_leaves_its_tag_out_of_them() {
+        use sicompass_sdk::ffon::{FfonElement, IdArray};
+        struct Markup;
+        impl sicompass_sdk::provider::Provider for Markup {
+            fn name(&self) -> &str {
+                "markup"
+            }
+            fn fetch(&mut self) -> Vec<FfonElement> {
+                Vec::new()
+            }
+            fn markup(&self) -> bool {
+                true
+            }
+        }
+        let row = r#"<checkbox checked>Pick <img src="a.png" alt="A"><img src="b.png" alt="B">"#;
+        let mut root = FfonElement::new_obj("root");
+        root.as_obj_mut().unwrap().push(FfonElement::new_str(row));
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        r.providers.push(Box::new(Markup));
+        let mut id = IdArray::new();
+        id.push(0);
+        id.push(0);
+        r.current_id = id;
+        crate::list::create_list_current_layer(&mut r);
+        let env = crate::style::StyleEnv {
+            base_em: 16.0,
+            base_ch: 8.0,
+            px_scale: 1.0,
+            scheme: crate::style::Scheme::Dark,
+        };
+        let items = super::collect_list_items(&r, &env);
+        assert!(items[0].style.boxed);
+        assert!(items[0].label.starts_with("-ccp "), "{}", items[0].label);
+        assert!(get_checkbox_type(&items[0].label) == CheckboxType::Checked);
+        let markup = items[0].markup.as_deref().unwrap();
+        assert!(!markup.contains("checkbox"), "{markup}");
+        assert!(markup.starts_with("Pick <img"), "{markup}");
+    }
+
+    /// The box and the circle are drawn whatever the row holds, and the letters stay.
+    #[test]
+    fn a_toggle_with_letters_is_still_drawn_as_a_toggle() {
+        assert!(get_checkbox_type("-cl x") == CheckboxType::Unchecked);
+        assert!(get_checkbox_type("-ccb x") == CheckboxType::Checked);
+        assert!(get_checkbox_type("+cc x") == CheckboxType::Checked);
+        assert!(get_radio_type("-rl x") == RadioType::Unchecked);
+        assert!(get_radio_type("-rcb x") == RadioType::Checked);
+        assert!(get_checkbox_type("-ci x") == CheckboxType::None);
+        assert!(get_radio_type("-cl x") == RadioType::None);
+        assert!(get_checkbox_type("-rcl x") == CheckboxType::None);
+        assert_eq!(prefix_for_display("-cl"), format!("{DASH} cl"));
+        assert_eq!(prefix_for_display("-rcb "), format!("{DASH} rcb "));
+    }
+
+    /// A picture in a checkbox: the tag is not a caption, however long it is.
+    #[test]
+    fn a_longer_tag_on_a_picture_is_not_a_caption() {
+        use super::split_image_label;
+        assert!(!split_image_label("-p a.png", "a.png").2);
+        assert!(!split_image_label("-cp a.png", "a.png").2);
+        assert!(split_image_label("-cp look a.png", "a.png").2);
+    }
 
     /// Every prefix swaps its sign and keeps every letter after it, one space on.
     #[test]

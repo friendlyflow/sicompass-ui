@@ -1396,7 +1396,7 @@ fn cursor_inside_radio(id: &IdArray, elem: &FfonElement) -> IdArray {
         && let Some(checked_idx) = o
             .children
             .iter()
-            .position(|c| c.as_str().is_some_and(tags::has_checked))
+            .position(|c| tags::has_checked(crate::list::element_text(c)))
     {
         let mut cursor = id.clone();
         cursor.push(checked_idx);

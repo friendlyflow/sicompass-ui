@@ -1213,17 +1213,8 @@ pub fn notify_radio_changed(
     // Find the checked child value
     let selected_value = {
         let arr = get_ffon_at_id(&renderer.ffon, &renderer.current_id);
-        arr.and_then(|children| {
-            children.iter().find_map(|e| {
-                let s = e.as_str()?;
-                if tags::has_checked(s) {
-                    Some(tags::extract_checked(s).unwrap_or(s.to_string()))
-                } else {
-                    None
-                }
-            })
-        })
-        .unwrap_or_default()
+        arr.and_then(crate::list::checked_choice)
+            .unwrap_or_default()
     };
 
     if let Some(p) = get_active_provider(renderer) {

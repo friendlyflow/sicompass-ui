@@ -560,6 +560,11 @@ fn avail_copy_value(r: &AppRenderer) -> bool {
     tags::has_link(raw) || tags::has_image(raw) || tags::has_input(raw)
 }
 
+/// Enter "Toggle" — focused item is a checkbox or a radio choice.
+fn avail_enter_toggle(r: &AppRenderer) -> bool {
+    not_at_root(r) && handlers::focused_is_toggle(r)
+}
+
 /// Enter "Activate" — focused item is a button.
 fn avail_enter_activate(r: &AppRenderer) -> bool {
     not_at_root(r) && focused_is_button(r)
@@ -904,7 +909,8 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_shift_down_insert,
     },
     // ---- Right / L -------------------------------------------------------
-    // A link is followed with Enter, so Right does nothing on a row that is one.
+    // A link is followed with Enter, or with `i` or `a` and Enter on a checkbox or a
+    // radio choice, so Right does nothing on a row that is one.
     Shortcut {
         key: Keycode::Right,
         key2: Some(Keycode::L),
@@ -1367,6 +1373,18 @@ pub static SHORTCUTS: &[Shortcut] = &[
         label: "Enter  Append",
         is_available: is_editor,
         handle: handlers::handle_append,
+    },
+    // General: Enter → change a checkbox or a radio choice, whatever it holds. Before
+    // the rows below: a link or a button in it is reached with `i` or `a`.
+    Shortcut {
+        key: Keycode::Return,
+        key2: Some(Keycode::KpEnter),
+        ctrl: false,
+        shift: false,
+        modes: &[Coordinate::General],
+        label: "Enter  Toggle",
+        is_available: avail_enter_toggle,
+        handle: handlers::handle_enter_general,
     },
     // General: Enter → activate element
     Shortcut {

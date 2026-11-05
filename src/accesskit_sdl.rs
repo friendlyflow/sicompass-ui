@@ -405,7 +405,20 @@ impl AccessKitAdapter {
 // Label-to-speech helpers (mirrors listPrefixToWord / labelToSpeech in render.c)
 // ---------------------------------------------------------------------------
 
-fn list_prefix_to_word(prefix: &str) -> Option<&'static str> {
+fn list_prefix_to_word(prefix: &str) -> Option<std::borrow::Cow<'static, str>> {
+    // A checkbox or a radio choice says what it holds too: "dash cl".
+    if crate::list::is_toggle_prefix(prefix) {
+        let sign = if prefix.starts_with('+') {
+            "arrow right"
+        } else {
+            "dash"
+        };
+        return Some(format!("{sign} {}", &prefix[1..]).into());
+    }
+    fixed_prefix_word(prefix).map(Into::into)
+}
+
+fn fixed_prefix_word(prefix: &str) -> Option<&'static str> {
     match prefix {
         "-" => Some("dash"),
         "-p" => Some("dash p"),
@@ -415,15 +428,9 @@ fn list_prefix_to_word(prefix: &str) -> Option<&'static str> {
         "+v" => Some("arrow right v"),
         "+lv" => Some("arrow right lv"),
         "-pv" => Some("dash pv"),
-        "-cc" => Some("dash cc"),
-        "-c" => Some("dash c"),
-        "-rc" => Some("dash rc"),
         "-b" => Some("dash b"),
         "-i" => Some("dash i"),
-        "-r" => Some("dash r"),
         "+" => Some("arrow right"),
-        "+cc" => Some("arrow right cc"),
-        "+c" => Some("arrow right c"),
         "+l" => Some("arrow right l"),
         "+R" => Some("arrow right R"),
         "+i" => Some("arrow right i"),
@@ -1248,6 +1255,10 @@ mod tests {
     #[test]
     fn label_to_speech_plus_l() {
         assert_eq!(label_to_speech("+l foo"), "arrow right l foo");
+        assert_eq!(label_to_speech("-c foo"), "dash c foo");
+        assert_eq!(label_to_speech("-cl foo"), "dash cl foo");
+        assert_eq!(label_to_speech("+cc foo"), "arrow right cc foo");
+        assert_eq!(label_to_speech("-rcb foo"), "dash rcb foo");
     }
 
     #[test]

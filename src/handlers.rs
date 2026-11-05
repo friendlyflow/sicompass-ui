@@ -2595,7 +2595,8 @@ fn insert_returned_element(r: &mut AppRenderer, new_elem: sicompass_sdk::ffon::F
     handle_i(r);
 }
 
-/// Enter in General — toggle checkbox/radio, activate input, or open file.
+/// Enter in General — toggle checkbox/radio, activate input, or open file. A checkbox
+/// or a radio choice holding a link or a button still toggles, see [`focused_is_toggle`].
 pub fn handle_enter_general(r: &mut AppRenderer) {
     use sicompass_sdk::ffon::{FfonElement, get_ffon_at_id};
     use sicompass_sdk::tags;
@@ -3071,14 +3072,13 @@ fn handle_enter_extended_search(r: &mut AppRenderer) {
 
                 let mut checked_count = 0usize;
                 for child in &children {
-                    if child.is_obj() {
+                    // A followed link's page is the one thing a choice can hold.
+                    if child.is_obj() && !tags::has_link(list::element_text(child)) {
                         blocked_error = Some("Radio group children must be strings, not objects");
                         blocked_ancestor_id = ancestor_id.clone();
                         break 'outer;
                     }
-                    if let Some(s) = child.as_str()
-                        && tags::has_checked(s)
-                    {
+                    if tags::has_checked(list::element_text(child)) {
                         checked_count += 1;
                     }
                 }
@@ -3193,93 +3193,65 @@ fn snapshot_radio_parent(
     Some((before, parent_id))
 }
 
+/// The focused row changes when Enter is pressed on it: a checkbox, or a choice in a
+/// radio group. Whatever else it holds, a link or a button say, is for `i` and `a`.
+pub(crate) fn focused_is_toggle(r: &AppRenderer) -> bool {
+    parent_is_radio(r, &r.current_id)
+        || focused_element_raw(r)
+            .is_some_and(|raw| tags::has_checkbox(&raw) || tags::has_checkbox_checked(&raw))
+}
+
+/// Only the tag changes, so what the row holds besides its text stays.
 fn toggle_checkbox(elem: &sicompass_sdk::ffon::FfonElement) -> Option<String> {
-    use sicompass_sdk::tags;
-    let text = match elem {
-        sicompass_sdk::ffon::FfonElement::Str(s) => s.as_str(),
-        sicompass_sdk::ffon::FfonElement::Obj(o) => o.key.as_str(),
-    };
+    let text = list::element_text(elem);
     if tags::has_checkbox_checked(text) {
-        let content = tags::extract_checkbox_checked(text).unwrap_or_default();
-        Some(tags::format_checkbox(&content))
+        Some(list::replace_tag(text, "<checkbox checked>", "<checkbox>"))
     } else if tags::has_checkbox(text) {
-        let content = tags::extract_checkbox(text).unwrap_or_default();
-        Some(tags::format_checkbox_checked(&content))
+        Some(list::replace_tag(text, "<checkbox>", "<checkbox checked>"))
     } else {
         None
     }
 }
 
+fn set_element_text(elem: &mut FfonElement, text: String) {
+    match elem {
+        FfonElement::Str(s) => *s = text,
+        FfonElement::Obj(o) => o.key = text,
+    }
+}
+
+/// Pick the focused choice of a radio group. A choice can hold a link and the page
+/// that link opened, so only its `<checked>` changes.
 fn toggle_radio(r: &mut AppRenderer) -> bool {
-    use sicompass_sdk::ffon::{FfonElement, get_ffon_at_id};
-    use sicompass_sdk::tags;
-
     // Validate: must be depth ≥ 2 and parent must have <radio> tag
-    if r.current_id.depth() < 2 {
+    if r.current_id.depth() < 2 || !parent_is_radio(r, &r.current_id) {
         return false;
     }
-    let mut parent_id = r.current_id.clone();
-    let child_idx = parent_id.pop().unwrap_or(0);
-
-    // Check parent has radio tag
-    let parent_is_radio = {
-        let arr = match get_ffon_at_id(&r.ffon, &parent_id) {
-            Some(a) => a,
-            None => return false,
-        };
-        let pidx = parent_id.last().unwrap_or(0);
-        arr.get(pidx)
-            .and_then(|e| e.as_obj())
-            .is_some_and(|o| tags::has_radio(&o.key))
-    };
-    if !parent_is_radio {
+    let child_idx = r.current_id.last().unwrap_or(0);
+    let Some(choices) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id) else {
         return false;
-    }
-
-    // Navigate to parent's children, uncheck all, check the selected one
-    let children_len = {
-        let arr = match get_ffon_at_id(&r.ffon, &r.current_id) {
-            Some(a) => a,
-            None => return false,
-        };
-        arr.len()
     };
 
     // Uncheck all siblings, check the target
-    let parent_id_for_children = r.current_id.clone();
-    for i in 0..children_len {
-        let mut sib_id = parent_id_for_children.clone();
-        sib_id.set_last(i);
-        let has_checked_tag = {
-            let arr = get_ffon_at_id(&r.ffon, &sib_id);
-            arr.and_then(|a| a.get(i))
-                .and_then(|e| e.as_str())
-                .is_some_and(tags::has_checked)
-        };
-        if has_checked_tag {
-            // Strip <checked>
-            let text = {
-                let arr = get_ffon_at_id(&r.ffon, &sib_id).unwrap();
-                arr[i].as_str().unwrap().to_owned()
-            };
-            let content = tags::extract_checked(&text).unwrap_or(text);
-            if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &sib_id) {
-                arr[i] = FfonElement::new_str(content);
-            }
+    for choice in choices.iter_mut() {
+        let text = list::element_text(choice);
+        if tags::has_checked(text) {
+            let text = list::replace_tag(text, "<checked>", "");
+            let text = list::replace_tag(&text, "</checked>", "");
+            set_element_text(choice, text);
         }
     }
-    // Add <checked> to selected
-    let target_text = {
-        let arr = get_ffon_at_id(&r.ffon, &parent_id_for_children).unwrap();
-        arr.get(child_idx)
-            .and_then(|e| e.as_str())
-            .map(|s| s.to_owned())
-    };
-    if let Some(text) = target_text {
-        let new_text = tags::format_checked(&tags::strip_display(&text));
-        if let Some(arr) = crate::state::navigate_to_slice_pub(&mut r.ffon, &r.current_id) {
-            arr[child_idx] = FfonElement::new_str(new_text);
-        }
+    if let Some(choice) = choices.get_mut(child_idx) {
+        let text = list::element_text(choice);
+        let text = if tags::has_one_opt(text) {
+            tags::strip_one_opt(text)
+        } else if tags::has_many_opt(text) {
+            tags::strip_many_opt(text)
+        } else {
+            text
+        };
+        let text = tags::format_checked(text);
+        set_element_text(choice, text);
     }
 
     true

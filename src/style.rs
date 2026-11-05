@@ -1441,6 +1441,8 @@ impl Sheets {
         focus: bool,
         env: &StyleEnv,
     ) -> RowStyle {
+        let row = row.map(crate::list::without_toggle_tags);
+        let row = row.as_deref();
         let sheets = self.all();
         let li = |focus| StyleNode {
             focus,
@@ -2117,6 +2119,27 @@ mod tests {
         let style = sheets.row_style(Some(row), false, &StyleEnv::default());
         assert_eq!((style.runs[0].start, style.runs[0].end), (3, 6));
         assert_eq!(tags::strip_display(&markup::plain(row)), "Go now");
+    }
+
+    /// The tag of a checkbox or a radio choice is not on screen, so a run does not count it.
+    #[test]
+    fn runs_do_not_count_the_tag_of_a_checkbox() {
+        let sheets = Sheets::default();
+        for row in [
+            "<checkbox>Go <b>bold</b>",
+            "<checkbox checked>Go <b>bold</b>",
+            "<checked>Go <b>bold</b>",
+        ] {
+            let style = sheets.row_style(Some(row), false, &StyleEnv::default());
+            let shown = tags::strip_display(&markup::plain(row));
+            assert_eq!(shown, "Go bold");
+            let bold: String = shown
+                .chars()
+                .skip(style.runs[0].start)
+                .take(style.runs[0].end - style.runs[0].start)
+                .collect();
+            assert_eq!(bold, "bold", "{row} {:?}", style.runs);
+        }
     }
 
     /// An `<img>` shows its alt and its path, which is what the runs after it count past.
