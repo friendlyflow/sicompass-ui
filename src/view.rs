@@ -1793,8 +1793,7 @@ fn update_view(app: &mut AppState) {
     }
     // The cursor's row is the list's own background with a border in the selection
     // colour, rounded like every background. In element mode the cursor is on a target
-    // inside the row instead, which the row's fill and the target's highlight show.
-    let outline_focus = app.renderer.coordinate != Coordinate::InElement;
+    // inside the row, which is also marked by its own highlight.
     // What is drawn behind a row: its border and its background, the cursor's row
     // always having one.
     for (
@@ -1814,7 +1813,7 @@ fn update_view(app: &mut AppState) {
         }
         let row = &rows[i];
         let x = content_x + 4.0 * em_width + row.style.margin[3];
-        let background = row_background(style, *is_selected && !outline_focus, list_background, &p);
+        let background = row_background(style, false, list_background, &p);
         let radius = row.style.radius;
         // A picture's row fits round the picture and its text.
         if let (true, Some(layout)) = (*is_selected, &row.image) {
@@ -1840,11 +1839,7 @@ fn update_view(app: &mut AppState) {
             };
             if let Some(rr) = app.rect_renderer.as_mut() {
                 let (w, h) = (bg_right - x, bg_bottom - bg_top);
-                if outline_focus {
-                    focus_outline(rr, (x, bg_top, w, h), radius, p.selected, list_background);
-                } else {
-                    rr.prepare_rectangle(x, bg_top, w, h, background.unwrap_or(p.selected), radius);
-                }
+                focus_outline(rr, (x, bg_top, w, h), radius, p.selected, list_background);
                 // In element mode's selected image: its frame shows in the 2 px the
                 // image is inset by.
                 if selected_image_frame {
@@ -1862,7 +1857,7 @@ fn update_view(app: &mut AppState) {
         }
         if let Some(rr) = app.rect_renderer.as_mut() {
             let border = row.style.border;
-            if *is_selected && outline_focus {
+            if *is_selected {
                 let inner = style.unfocused_background.unwrap_or(list_background);
                 focus_outline(
                     rr,
@@ -1916,13 +1911,8 @@ fn update_view(app: &mut AppState) {
     {
         let (item_y, content_start_x) = (rows[i].y, rows[i].content_x);
         if let Some(laid) = rows[i].boxes.as_ref() {
-            let focus_fill = *is_selected && !outline_focus;
             let background =
-                row_background(style, focus_fill, list_background, &p).unwrap_or(if focus_fill {
-                    p.selected
-                } else {
-                    list_background
-                });
+                row_background(style, false, list_background, &p).unwrap_or(list_background);
             let top = item_y - ascender * scale - crate::text::TEXT_PADDING;
             let chrome_bottom = first_item_y - ascender * scale - crate::text::TEXT_PADDING;
             let prefix_x = if list_has_indicators {
@@ -2499,14 +2489,8 @@ fn update_view(app: &mut AppState) {
                 let font = row.style.font_scale;
                 let row_scale = scale * font;
                 let row_line_h = line_height as f32 * font;
-                let focus_fill = *is_selected && !outline_focus;
-                let background = row_background(style, focus_fill, list_background, &p).unwrap_or(
-                    if focus_fill {
-                        p.selected
-                    } else {
-                        list_background
-                    },
-                );
+                let background =
+                    row_background(style, false, list_background, &p).unwrap_or(list_background);
                 let wanted = style.li.color;
                 let text_color = crate::style::readable_color(wanted, background, p.text);
                 let marker = style.marker_color.or(wanted);
@@ -2571,11 +2555,17 @@ fn update_view(app: &mut AppState) {
                                 }
                                 let before: String = chars[..start].iter().collect();
                                 let lit: String = chars[start..i].iter().collect();
-                                rr.prepare_rectangle(
+                                let (hx, hy) = (
                                     x + fr.measure_text_width(&before, row_scale) - pad,
-                                    line_y - ascender * row_scale - crate::text::TEXT_PADDING,
-                                    fr.measure_text_width(&lit, row_scale) + 2.0 * pad,
-                                    row_line_h,
+                                    line_y - ascender * row_scale - crate::text::TEXT_PADDING
+                                        + INSIDE_THE_FOCUS_BORDER,
+                                );
+                                let hw = fr.measure_text_width(&lit, row_scale) + 2.0 * pad;
+                                rr.prepare_rectangle(
+                                    hx,
+                                    hy,
+                                    hw,
+                                    row_line_h - 2.0 * INSIDE_THE_FOCUS_BORDER,
                                     p.scroll_search,
                                     3.0,
                                 );
@@ -2601,18 +2591,26 @@ fn update_view(app: &mut AppState) {
                                     )
                                 })
                             };
-                            fr.set_bold(run.map_or(bold, |run| run.bold));
+                            fr.set_bold(lit || run.map_or(bold, |run| run.bold));
                             let width = fr.measure_text_width(&piece, row_scale);
                             if let (Some(back), Some(rr)) =
                                 (run.and_then(|r| r.background), app.rect_renderer.as_mut())
                             {
+                                // In element mode the cursor is on one target, and the rest
+                                // of the buttons are quiet so that one is what you see.
+                                let back = if in_element_target && back == p.scroll_search {
+                                    p.header_sep
+                                } else {
+                                    back
+                                };
                                 // A little wider than the word, so it reads as a button.
                                 let pad = em_width * 0.4;
                                 rr.prepare_rectangle(
                                     x - pad,
-                                    line_y - ascender * row_scale - crate::text::TEXT_PADDING,
+                                    line_y - ascender * row_scale - crate::text::TEXT_PADDING
+                                        + INSIDE_THE_FOCUS_BORDER,
                                     width + 2.0 * pad,
-                                    row_line_h,
+                                    row_line_h - 2.0 * INSIDE_THE_FOCUS_BORDER,
                                     back,
                                     row.style.radius,
                                 );
@@ -3927,6 +3925,10 @@ fn draw_box_row(
     }
 }
 
+/// How far a button's pill or a lit target stays from the top and bottom of its line, so
+/// the cursor row's border (3 px, see [`focus_outline`]) is never covered by it.
+const INSIDE_THE_FOCUS_BORDER: f32 = 4.0;
+
 /// The cursor's row: a border of `edge` in `color` round a plain `inside`, with the
 /// corners rounded the way every background is.
 fn focus_outline(
@@ -3936,7 +3938,8 @@ fn focus_outline(
     color: u32,
     inside: u32,
 ) {
-    let edge = 2.0;
+    // Thick enough to come before the target's blue highlight inside it.
+    let edge = 3.0;
     rr.prepare_rectangle(x, y, w, h, color, radius);
     rr.prepare_rectangle(
         x + edge,
