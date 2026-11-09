@@ -136,6 +136,37 @@ impl From<ash::LoadingError> for SiError {
 // Palette
 // ---------------------------------------------------------------------------
 
+/// Where the beginner's manual (Tab, [`Coordinate::Manual`]) takes its lines: the
+/// Fluent keys `<prefix>-01` to `<prefix>-<lines>`, read in that order. The
+/// default is the application's own manual, `manual-01` to `manual-26` in this
+/// crate's locale files. An embedder with its own manual registers its keys in
+/// every language it offers and sets [`AppRenderer::manual`]. The rules the
+/// lines are written to are in `docs/manual-guidelines.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManualText {
+    pub prefix: &'static str,
+    pub lines: usize,
+}
+
+impl Default for ManualText {
+    fn default() -> Self {
+        Self {
+            prefix: crate::list::MANUAL_PREFIX,
+            lines: crate::list::MANUAL_LINES,
+        }
+    }
+}
+
+impl ManualText {
+    /// Line `n` (from 1), in the language in use. Empty when the key is missing.
+    pub fn line(&self, n: usize) -> String {
+        crate::shortcuts::register_translations();
+        let key = format!("{}-{n:02}", self.prefix);
+        let line = sicompass_sdk::localize::t(&key);
+        if line == key { String::new() } else { line }
+    }
+}
+
 /// The setting of the text editor's section that says how its lines are numbered. The
 /// app hands its value to [`LineNumbers::from_setting`].
 pub const LINE_NUMBERS_SETTING: &str = "textEditorLineNumbers";
@@ -1035,6 +1066,20 @@ pub struct AppRenderer {
     /// See [`LineNumbers`].
     pub line_numbers: LineNumbers,
 
+    // ---- Embedder ----------------------------------------------------------
+    /// Which lines the beginner's manual (Tab) reads. See [`ManualText`]. The
+    /// application keeps the default, the app's own 26 lines. The greeter names
+    /// its own, because the app's lines speak of programs, tabs and a Store that a
+    /// login screen does not have.
+    pub manual: ManualText,
+    /// The window shows one provider's page and nothing above it: the list of
+    /// providers (one row, the provider's name) is out of reach. The page has no
+    /// parent line, Left does nothing on it, double Home and a double Ctrl+F stop
+    /// at it, and Ctrl+W leaves the provider's name out of the path. Off for the
+    /// application, on for the greeter, whose page used to sit under a "Sign in"
+    /// row that held nothing else.
+    pub single_page: bool,
+
     // ---- Launcher ----------------------------------------------------------
     /// The embedder is a launcher (desicompass-superkey): the list lives in
     /// simple search, Enter activates the row it lands on (a button is
@@ -1329,6 +1374,8 @@ impl AppRenderer {
             typed_speech_seq: 0,
             privacy_blank: false,
             line_numbers: LineNumbers::None,
+            manual: ManualText::default(),
+            single_page: false,
             launcher_mode: false,
             launcher_window: false,
             suspended: false,
@@ -2119,12 +2166,34 @@ impl AppRenderer {
         format!("{mode}, layer: {depth} list: {position}/{total}")
     }
 
+    /// The shallowest depth the cursor's list can be at: 1, the list of
+    /// providers, or 2, the provider's own page, when the window is a
+    /// [`single_page`](Self::single_page). No parent line is drawn at it, and
+    /// nothing climbs above it.
+    pub fn top_depth(&self) -> usize {
+        if self.single_page { 2 } else { 1 }
+    }
+
     /// The Ctrl+F-style absolute breadcrumb path to the current focus, e.g.
     /// "Files > home > projects > main.rs". Empty at a provider root (depth 0/1
     /// with no descended segment). Uses the same builder the tab switcher and
     /// extended search render with, so the spoken path matches what is shown.
     pub(crate) fn focus_path(&self) -> String {
-        let path = crate::list::tab_breadcrumb(&self.ffon, &self.current_id);
+        let mut path = crate::list::tab_breadcrumb(&self.ffon, &self.current_id);
+        // A single page leaves its provider's name out: it is not a place the
+        // user can reach.
+        if self.single_page
+            && let Some(FfonElement::Obj(root)) =
+                self.current_id.get(0).and_then(|i| self.ffon.get(i))
+        {
+            let name = sicompass_sdk::tags::strip_display(&root.key);
+            let name = name.trim();
+            if let Some(rest) = path.strip_prefix(&format!("{name} > ")) {
+                path = rest.to_owned();
+            } else if path == name {
+                path.clear();
+            }
+        }
         if self.sheets.markup_here() {
             sicompass_sdk::markup::plain(&path)
         } else {

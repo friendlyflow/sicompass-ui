@@ -1088,7 +1088,7 @@ fn check_parent_has_radio(renderer: &AppRenderer) -> bool {
 /// the prompt a new session was started with. Cleared on every way back out, so a
 /// stale name cannot outlive the session it described.
 pub fn parent_line_text(r: &AppRenderer) -> String {
-    if r.current_id.depth() <= 1 {
+    if r.current_id.depth() <= r.top_depth() {
         return String::new();
     }
     if let Some(label) = r
@@ -1660,16 +1660,21 @@ fn build_meta_list(renderer: &mut AppRenderer) {
 /// files, in the order they are read.
 pub const MANUAL_LINES: usize = 26;
 
+/// The Fluent key prefix of the application's beginner's manual: `manual-01` and on.
+pub const MANUAL_PREFIX: &str = "manual";
+
 /// Build the list for `Coordinate::Manual`: the beginner's manual, a dash row to a line.
+/// The lines are the embedder's (`AppRenderer::manual`).
 fn build_manual_list(renderer: &mut AppRenderer) {
     renderer.list_index = 0;
-    renderer.total_list = (1..=MANUAL_LINES)
+    let manual = renderer.manual;
+    renderer.total_list = (1..=manual.lines)
         .map(|n| {
             let mut id = IdArray::new();
             id.push(n - 1);
             RenderListItem {
                 id,
-                label: format!("- {}", crate::shortcuts::manual_line(n)),
+                label: format!("- {}", manual.line(n)),
                 data: None,
                 nav_path: None,
                 ext_prefix: None,

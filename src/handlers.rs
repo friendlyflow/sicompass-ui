@@ -897,7 +897,7 @@ pub(crate) fn finish_right(r: &mut AppRenderer, pre_nav_id: IdArray, path_before
 /// The shallowest depth Left can reach. A launcher's world is its one provider:
 /// the list of providers above it is not something its user can do anything with.
 fn left_floor(r: &AppRenderer) -> usize {
-    if r.launcher_mode { 2 } else { 1 }
+    if r.launcher_mode { 2 } else { r.top_depth() }
 }
 
 /// True when Left would leave the current list for its parent, which is what the
@@ -6160,7 +6160,9 @@ pub fn handle_home(r: &mut AppRenderer) {
         }
         Coordinate::General => {
             let now = sdl_ticks();
-            if now.saturating_sub(r.last_keypress_time) <= DELTA_MS && r.current_id.depth() > 1 {
+            if now.saturating_sub(r.last_keypress_time) <= DELTA_MS
+                && r.current_id.depth() > r.top_depth()
+            {
                 // Double-tap: navigate to root — but never out of a colon
                 // command layer, which only Escape leaves.
                 if in_escape_only_layer(r) {
@@ -6168,7 +6170,7 @@ pub fn handle_home(r: &mut AppRenderer) {
                     refuse_leaving_command_layer(r);
                     return;
                 }
-                while r.current_id.depth() > 1 {
+                while r.current_id.depth() > r.top_depth() {
                     let depth = r.current_id.depth();
                     handle_left(r);
                     if r.current_id.depth() >= depth {
@@ -7311,7 +7313,7 @@ pub fn handle_ctrl_f(r: &mut AppRenderer) {
             // Double-tap: reset to root of current provider
             let now = sdl_ticks();
             if now.saturating_sub(r.last_keypress_time) <= DELTA_MS {
-                while r.current_id.depth() > 1 {
+                while r.current_id.depth() > r.top_depth() {
                     r.current_id.pop();
                 }
                 r.input_buffer.clear();

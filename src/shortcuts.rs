@@ -2915,15 +2915,13 @@ pub(crate) fn label_fluent_key(label: &str) -> String {
     key
 }
 
-/// Register this crate's translation bundles (keyboard hints). Idempotent.
-/// Line `n` (from 1) of the beginner's manual, in the language in use.
+/// Line `n` (from 1) of the application's beginner's manual, in the language in
+/// use. An embedder's own manual is read through [`crate::app_state::ManualText`].
 pub fn manual_line(n: usize) -> String {
-    register_translations();
-    let key = format!("manual-{n:02}");
-    let line = sicompass_sdk::localize::t(&key);
-    if line == key { String::new() } else { line }
+    crate::app_state::ManualText::default().line(n)
 }
 
+/// Register this crate's translation bundles (keyboard hints). Idempotent.
 pub fn register_translations() {
     use std::sync::OnceLock;
     static ONCE: OnceLock<()> = OnceLock::new();

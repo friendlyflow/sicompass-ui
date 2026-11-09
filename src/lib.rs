@@ -35,6 +35,7 @@ pub mod checkmark;
 pub mod events;
 pub mod fonts;
 pub mod handlers;
+pub mod help_text;
 pub mod http;
 pub mod icon;
 pub mod image;
@@ -55,6 +56,8 @@ pub mod video;
 
 #[cfg(test)]
 mod launcher_mode_tests;
+#[cfg(test)]
+mod single_page_tests;
 
-pub use app_state::{AppConfig, AppRenderer, AppState, SiError};
+pub use app_state::{AppConfig, AppRenderer, AppState, ManualText, SiError};
 pub use registry::{HostHooks, NoHooks, SettingsQueue, register_provider};

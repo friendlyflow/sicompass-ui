@@ -113,6 +113,21 @@ relative to the executable. Every embedder has to ship the font license texts,
 since the fonts are inside its binary. `fonts::LICENSES` exposes them so an
 embedder can check its shipped copies.
 
+## The beginner's manual
+
+Tab in general mode opens the beginner's manual, a list of its own read from the
+top (`Coordinate::Manual`). Its lines are `manual-01` to `manual-NN` in
+`locales/*.ftl`, with `NN` equal to `list::MANUAL_LINES`. An embedder can give it its
+own lines through `AppRenderer::manual` (`ManualText`), as the greeter does. Follow
+[docs/manual-guidelines.md](docs/manual-guidelines.md) when writing them, and update
+the manual in the same change as any key, mode, element mark or speech it describes.
+`help_text::check_manual` holds the rules in the tests.
+
+An embedder that shows one provider's page and nothing above it sets
+`AppRenderer::single_page`: no parent line on the page, and nothing (Left, double
+Home, a double Ctrl+F) climbs to the provider list. `AppRenderer::top_depth()` is the
+shallowest depth a list can be at.
+
 ## Code Style
 
 Follow standard Rust idioms. Use `#[allow(...)]` sparingly and only when

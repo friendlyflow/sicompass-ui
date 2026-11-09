@@ -14,6 +14,74 @@ use sdl3::keyboard::{Keycode, Mod};
 use sdl3::mouse::MouseButton;
 use tracing;
 
+/// The beginner's manual is what the list shows: the manual itself, a search over
+/// its lines, or scroll mode reading it as one page. Its rows are not the
+/// provider's, so a provider refresh must not rebuild them or restore the cursor
+/// through them (a manual row's id is one level deep, and would replace the
+/// cursor's real place in the provider's tree).
+pub(crate) fn manual_on_screen(r: &AppRenderer) -> bool {
+    // The two flags are only meaningful in their own modes: `manual_scroll` is
+    // set when scroll mode starts and never cleared.
+    match r.coordinate.base() {
+        Coordinate::Manual => true,
+        Coordinate::SimpleSearch | Coordinate::ExtendedSearch => r.search_in_manual,
+        Coordinate::Scroll | Coordinate::ScrollSearch => r.manual_scroll,
+        _ => false,
+    }
+}
+
+/// Act on the active provider's `needs_refresh` signal: re-read its directory,
+/// rebuild the list and put the cursor back on the row it was on.
+///
+/// Only the *active* provider's flag is read, so another provider's pending
+/// signal is not cleared before the user has navigated there. Nothing happens
+/// while the user types (the caret must not jump mid-typing) or while the
+/// beginner's manual is on screen ([`manual_on_screen`]). The flag stays set
+/// then, so the refresh runs as soon as the user is back.
+pub(crate) fn drain_needs_refresh(r: &mut AppRenderer) {
+    if is_insert_mode(r.coordinate) || manual_on_screen(r) {
+        return;
+    }
+    let active_refresh = r
+        .current_id
+        .get(0)
+        .and_then(|i| r.providers.get(i))
+        .map(|p| p.needs_refresh())
+        .unwrap_or(false);
+    if !active_refresh {
+        return;
+    }
+    // Save the current list-item label so we can restore the cursor after rebuild.
+    let saved_label = r.current_list_item().map(|it| it.label.clone());
+
+    // Clear flag before rebuild so a signal that arrives *during*
+    // rebuild (e.g. IDLE push arriving mid-frame) is preserved.
+    if let Some(i) = r.current_id.get(0)
+        && let Some(p) = r.providers.get_mut(i)
+    {
+        p.clear_needs_refresh();
+    }
+    crate::provider::refresh_current_directory(r);
+    crate::list::create_list_current_layer(r);
+    // After the rebuild, which clears the header (see the tick path).
+    crate::events::drain_provider_errors(r);
+
+    // Restore cursor to the same labelled item when possible.
+    if let Some(label) = saved_label {
+        if let Some(pos) = r.total_list.iter().position(|it| it.label == label) {
+            if let Some(id) = r.total_list.get(pos).map(|it| it.id.clone()) {
+                r.current_id = id;
+                r.list_index = pos;
+            }
+        } else {
+            r.sync_list_index_from_current_id();
+        }
+    } else {
+        r.sync_list_index_from_current_id();
+    }
+    r.needs_redraw = true;
+}
+
 // Modes where the caret blinks and we need continuous redraw
 pub(crate) fn is_insert_mode(c: Coordinate) -> bool {
     matches!(
@@ -429,9 +497,13 @@ pub fn main_loop(app: &mut AppState) {
                 app.renderer.scroll_offset = -1;
             }
             // Rebuild the rendered list from the updated ffon tree — same as
-            // what handlers.rs does after notify_button_pressed.
-            crate::list::create_list_current_layer(&mut app.renderer);
-            app.renderer.sync_list_index_from_current_id();
+            // what handlers.rs does after notify_button_pressed. Not while the
+            // beginner's manual is on screen: its rows are not the provider's,
+            // and rebuilding them would put the reader back on its first line.
+            if !manual_on_screen(&app.renderer) {
+                crate::list::create_list_current_layer(&mut app.renderer);
+                app.renderer.sync_list_index_from_current_id();
+            }
             crate::events::drain_provider_errors(&mut app.renderer);
             app.renderer.needs_redraw = true;
         }
@@ -445,54 +517,7 @@ pub fn main_loop(app: &mut AppState) {
         }
 
         // ---- Drain needs_refresh signals (e.g. async folder load, IMAP IDLE) -
-        // Only act on the *active* provider's flag so we don't clear another
-        // provider's pending signal before the user has navigated there.
-        // Skip while the user is in insert mode — the caret must not jump mid-typing.
-        let in_insert = is_insert_mode(app.renderer.coordinate);
-        let active_refresh = !in_insert
-            && app
-                .renderer
-                .current_id
-                .get(0)
-                .and_then(|i| app.renderer.providers.get(i))
-                .map(|p| p.needs_refresh())
-                .unwrap_or(false);
-        if active_refresh {
-            // Save the current list-item label so we can restore the cursor after rebuild.
-            let saved_label = app.renderer.current_list_item().map(|it| it.label.clone());
-
-            // Clear flag before rebuild so a signal that arrives *during*
-            // rebuild (e.g. IDLE push arriving mid-frame) is preserved.
-            if let Some(i) = app.renderer.current_id.get(0)
-                && let Some(p) = app.renderer.providers.get_mut(i)
-            {
-                p.clear_needs_refresh();
-            }
-            crate::provider::refresh_current_directory(&mut app.renderer);
-            crate::list::create_list_current_layer(&mut app.renderer);
-            // After the rebuild, which clears the header (see the tick path).
-            crate::events::drain_provider_errors(&mut app.renderer);
-
-            // Restore cursor to the same labelled item when possible.
-            if let Some(label) = saved_label {
-                if let Some(pos) = app
-                    .renderer
-                    .total_list
-                    .iter()
-                    .position(|it| it.label == label)
-                {
-                    if let Some(id) = app.renderer.total_list.get(pos).map(|it| it.id.clone()) {
-                        app.renderer.current_id = id;
-                        app.renderer.list_index = pos;
-                    }
-                } else {
-                    app.renderer.sync_list_index_from_current_id();
-                }
-            } else {
-                app.renderer.sync_list_index_from_current_id();
-            }
-            app.renderer.needs_redraw = true;
-        }
+        drain_needs_refresh(&mut app.renderer);
 
         // ---- Suspended: off screen, so draw nothing -------------------------
         // A launcher the compositor has unmapped keeps its loop (events, hooks,
@@ -1505,46 +1530,48 @@ fn update_view(app: &mut AppState) {
     //
     // The text itself is `list::parent_line_text`, which the speech for entering
     // a list reads too.
-    // The beginner's manual is a list of its own, with no parent.
-    let parent_info: ParentInfo =
-        if app.renderer.current_id.depth() > 1 && app.renderer.coordinate != Coordinate::Manual {
-            let mut parent_id = app.renderer.current_id.clone();
-            parent_id.pop();
-            let parent_idx = parent_id.last();
-            let parent_slice = sicompass_sdk::ffon::get_ffon_at_id(&app.renderer.ffon, &parent_id);
-            parent_slice
-                .zip(parent_idx)
-                .and_then(|(slice, idx)| {
-                    let elem = slice.get(idx)?;
-                    let display_text = crate::list::parent_line_text(&app.renderer);
-                    let (is_radio, radio_summary) =
-                        if let sicompass_sdk::ffon::FfonElement::Obj(obj) = elem {
-                            if sicompass_sdk::tags::has_radio(&obj.key) {
-                                (true, crate::list::checked_choice(&obj.children))
-                            } else {
-                                (false, None)
-                            }
+    // The beginner's manual is a list of its own, with no parent, and so is a
+    // single page (`AppRenderer::single_page`).
+    let parent_info: ParentInfo = if app.renderer.current_id.depth() > app.renderer.top_depth()
+        && app.renderer.coordinate != Coordinate::Manual
+    {
+        let mut parent_id = app.renderer.current_id.clone();
+        parent_id.pop();
+        let parent_idx = parent_id.last();
+        let parent_slice = sicompass_sdk::ffon::get_ffon_at_id(&app.renderer.ffon, &parent_id);
+        parent_slice
+            .zip(parent_idx)
+            .and_then(|(slice, idx)| {
+                let elem = slice.get(idx)?;
+                let display_text = crate::list::parent_line_text(&app.renderer);
+                let (is_radio, radio_summary) =
+                    if let sicompass_sdk::ffon::FfonElement::Obj(obj) = elem {
+                        if sicompass_sdk::tags::has_radio(&obj.key) {
+                            (true, crate::list::checked_choice(&obj.children))
                         } else {
                             (false, None)
-                        };
-                    Some(ParentInfo {
-                        display_text,
-                        is_radio,
-                        radio_summary,
-                    })
+                        }
+                    } else {
+                        (false, None)
+                    };
+                Some(ParentInfo {
+                    display_text,
+                    is_radio,
+                    radio_summary,
                 })
-                .unwrap_or(ParentInfo {
-                    display_text: String::new(),
-                    is_radio: false,
-                    radio_summary: None,
-                })
-        } else {
-            ParentInfo {
+            })
+            .unwrap_or(ParentInfo {
                 display_text: String::new(),
                 is_radio: false,
                 radio_summary: None,
-            }
-        };
+            })
+    } else {
+        ParentInfo {
+            display_text: String::new(),
+            is_radio: false,
+            radio_summary: None,
+        }
+    };
 
     // ---- Scroll-into-view: compute start_index from scroll_offset/list_index --
     // Pre-compute per-item line counts (needed before item_metrics so the scroll
