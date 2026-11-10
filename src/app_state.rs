@@ -1145,8 +1145,9 @@ pub struct AppRenderer {
     pub tab_timelines: Vec<Timeline>,
     /// Most-recently-used tab order (VS Code style switcher). Holds every tab
     /// index exactly once, most-recent first; `tab_mru[0]` is always the active
-    /// tab. Maintained at the three `tabs` mutation sites (new/close/switch);
-    /// runtime-only, not persisted. Drives the `Coordinate::TabSwitcher` list.
+    /// tab. Maintained at the three `tabs` mutation sites (new/close/switch),
+    /// saved as `sicompass.tabMru` by `persist_tabs` and restored by the app at
+    /// startup. Drives the `Coordinate::TabSwitcher` list.
     pub tab_mru: Vec<usize>,
     /// True while a `Coordinate::TabSwitcher` overlay was opened by held
     /// Ctrl+Tab / Ctrl+Shift+Tab (releasing Ctrl commits the highlighted tab).

@@ -8311,10 +8311,6 @@ fn insert_ffon_element(
 // Tab management
 // ---------------------------------------------------------------------------
 
-/// Persist `tabs` and `activeTab` to settings.json via the settings provider.
-///
-/// Stores the tab list as a JSON-encoded string so each tab can carry both
-/// its `current_id` indices and the provider path to restore on next launch.
 /// How a tab's live navigation should be written down so it can be restored.
 ///
 /// `on_path` asks the restore to locate `path` by rebuilding the tree from the
@@ -8373,6 +8369,13 @@ pub fn restorable_nav(
     }
 }
 
+/// Persist `tabs`, `activeTab` and `tabMru` to settings.json via the settings
+/// provider.
+///
+/// Stores the tab list as a JSON-encoded string so each tab can carry both
+/// its `current_id` indices and the provider path to restore on next launch.
+/// `tabMru` is the switcher's most-recent-first order (`tab_mru`), also a
+/// JSON-encoded array, so the `t` list comes back in the order it was left.
 pub(crate) fn persist_tabs(r: &mut AppRenderer) {
     let arr: Vec<serde_json::Value> = r
         .tabs
@@ -8418,10 +8421,12 @@ pub(crate) fn persist_tabs(r: &mut AppRenderer) {
     let serialized = serde_json::to_string(&serde_json::Value::Array(arr))
         .unwrap_or_else(|_| String::from("[]"));
     let active = r.active_tab.to_string();
+    let mru = serde_json::to_string(&r.tab_mru).unwrap_or_else(|_| String::from("[]"));
     for p in r.providers.iter_mut() {
         if p.name() == "settings" {
             p.write_text_setting("sicompass", "tabs", &serialized);
             p.write_text_setting("sicompass", "activeTab", &active);
+            p.write_text_setting("sicompass", "tabMru", &mru);
             break;
         }
     }
