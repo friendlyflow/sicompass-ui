@@ -519,6 +519,9 @@ pub fn main_loop(app: &mut AppState) {
         // ---- Drain needs_refresh signals (e.g. async folder load, IMAP IDLE) -
         drain_needs_refresh(&mut app.renderer);
 
+        // ---- Ctrl+F: what the provider's walk found since the last frame ----
+        crate::live_search::drain(&mut app.renderer);
+
         // ---- Suspended: off screen, so draw nothing -------------------------
         // A launcher the compositor has unmapped keeps its loop (events, hooks,
         // provider ticks all ran above) but must not present: nothing shows
@@ -1492,9 +1495,13 @@ fn update_view(app: &mut AppState) {
             Coordinate::SecondCommand if handlers::in_insert_palette(&app.renderer) => {
                 format!(" [{} items]", list_items.len())
             }
-            Coordinate::SimpleSearch | Coordinate::ExtendedSearch => {
-                format!(" [{} items]", list_items.len())
-            }
+            Coordinate::SimpleSearch => format!(" [{} items]", list_items.len()),
+            // A provider's walk may still be adding rows (`live_search`).
+            Coordinate::ExtendedSearch => format!(
+                " [{} items{}]",
+                list_items.len(),
+                crate::live_search::header_suffix(&app.renderer)
+            ),
             // Not `list_items.len()`: the first row is the new-tab button.
             Coordinate::TabSwitcher => format!(" [{} tabs]", app.renderer.tabs.len()),
             Coordinate::InputSearch => {

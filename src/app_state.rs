@@ -919,6 +919,9 @@ pub struct AppRenderer {
     /// `current_id` at the moment SimpleSearch/ExtendedSearch was entered.
     /// Restored on Escape so search navigation doesn't permanently move the cursor.
     pub search_origin_id: IdArray,
+    /// The provider's own walk behind an open Ctrl+F, with what it found so
+    /// far (see [`crate::live_search`]).
+    pub live_search: Option<crate::live_search::LiveSearch>,
 
     // ---- Caret (cursor blink) ----------------------------------------------
     pub caret: crate::caret::CaretState,
@@ -1333,6 +1336,7 @@ impl AppRenderer {
             last_keypress_time: 0,
             search_string: String::new(),
             search_origin_id: IdArray::new(),
+            live_search: None,
             caret: crate::caret::CaretState::new(),
             clipboard: None,
             file_clipboard_path: String::new(),
@@ -2290,8 +2294,10 @@ impl AppRenderer {
         if self.search_in_manual {
             return;
         }
+        // Nor is a row a Ctrl+F walk found: its id names no element.
         if let Some(item_id) = self.current_list_item_id()
             && let Some(last_idx) = item_id.last()
+            && last_idx != crate::live_search::NOT_IN_TREE
         {
             self.current_id.set_last(last_idx);
         }

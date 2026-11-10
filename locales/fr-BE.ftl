@@ -179,6 +179,17 @@ video-paused = en pause
 video-unavailable = Cette version de Sicompass ne peut pas lire de vidéo
 
 search-no-matches = aucun résultat
+search-no-matches-yet = aucun résultat pour l'instant, recherche en cours
+search-searching = recherche en cours
+search-stopped-at-limit = arrêtée à la limite
+search-finished = recherche terminée, { $count ->
+    [one] 1 élément
+   *[other] { $count } éléments
+}
+search-finished-at-limit = recherche arrêtée à la limite, { $count ->
+    [one] 1 élément
+   *[other] { $count } éléments
+}
 
 # The beginner's manual (Tab): one line each, read in order.
 manual-01 = Manuel du débutant. Appuyez maintenant sur la flèche du bas pour entendre la ligne suivante, et sur la flèche du haut pour revenir d'une ligne. Échap quitte le manuel, et Tab le rouvre.
@@ -197,7 +208,7 @@ manual-13 = Une ligne peut contenir plusieurs liens, boutons, images ou vidéos,
 manual-14 = p est une image. Appuyez sur Entrée pour la voir en grand, et sur Échap pour revenir. v est une vidéo. Appuyez sur Entrée pour la lire, et encore sur Entrée pour la mettre en pause.
 manual-15 = Voyons maintenant les modes. Un mode, c'est ce que font les touches à ce moment, et l'en-tête en haut dit dans lequel vous êtes. La plupart du temps vous êtes en mode général, où vous vous déplacez et appuyez sur Entrée.
 manual-16 = Mode insertion : on y entre avec i ou a sur une saisie. Vous tapez, Entrée garde le texte, et Échap revient au mode général.
-manual-17 = Mode recherche : appuyez sur f en mode général et tapez pour réduire la liste. Entrée va à la correspondance et Échap annule. Ctrl+F cherche tout ce qui est sous vous, pas seulement cette liste.
+manual-17 = Mode recherche : appuyez sur f en mode général et tapez pour réduire la liste. Entrée va à la correspondance et Échap annule. Ctrl+F cherche tout ce qui est sous vous, et vous dit quand une longue recherche est finie.
 manual-18 = Mode commande : appuyez sur les deux-points pour les commandes de la ligne où vous êtes, comme ouvrir avec. Dans le terminal, cela lance un shell.
 manual-19 = Mode défilement : appuyez sur s pour lire une longue liste comme une seule page. Page précédente, Page suivante, Début et Fin la parcourent, et Échap quitte.
 manual-20 = Mode dans l'élément : appuyez sur Droite sur une ligne avec plusieurs liens, boutons, images ou vidéos. Les flèches passent de l'un à l'autre, comme les lignes précédentes l'ont montré. Sur une ligne avec une flèche vers la droite, Droite sur le dernier entre dans la ligne.

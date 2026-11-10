@@ -179,6 +179,17 @@ video-paused = pausiert
 video-unavailable = Diese Version von Sicompass kann kein Video abspielen
 
 search-no-matches = keine Treffer
+search-no-matches-yet = noch keine Treffer, sucht weiter
+search-searching = sucht noch
+search-stopped-at-limit = an der Grenze gestoppt
+search-finished = Suche fertig, { $count ->
+    [one] 1 Eintrag
+   *[other] { $count } Einträge
+}
+search-finished-at-limit = Suche an der Grenze gestoppt, { $count ->
+    [one] 1 Eintrag
+   *[other] { $count } Einträge
+}
 
 # The beginner's manual (Tab): one line each, read in order.
 manual-01 = Handbuch für Anfänger. Drücke jetzt die Pfeiltaste nach unten, um die nächste Zeile zu hören, und die Pfeiltaste nach oben, um eine Zeile zurückzugehen. Escape verlässt das Handbuch, und Tab öffnet es wieder.
@@ -197,7 +208,7 @@ manual-13 = Eine Zeile kann mehrere Links, Schaltflächen, Bilder oder Videos en
 manual-14 = p ist ein Bild. Drücke Enter, um es groß zu sehen, und Escape, um zurückzukommen. v ist ein Video. Drücke Enter zum Abspielen und noch einmal Enter zum Pausieren.
 manual-15 = Nun die Modi. Ein Modus ist das, was die Tasten im Moment tun, und die Kopfzeile oben sagt, in welchem du bist. Meistens bist du im allgemeinen Modus, in dem du dich bewegst und Enter drückst.
 manual-16 = Einfügemodus: Du kommst mit i oder a auf einer Eingabe hinein. Du tippst, Enter behält den Text, und Escape geht zurück zum allgemeinen Modus.
-manual-17 = Suchmodus: Drücke f im allgemeinen Modus und tippe, um die Liste einzugrenzen. Enter geht zum Treffer und Escape bricht ab. Strg+F sucht alles unter dir, nicht nur diese Liste.
+manual-17 = Suchmodus: Drücke f im allgemeinen Modus und tippe, um die Liste einzugrenzen. Enter geht zum Treffer und Escape bricht ab. Strg+F sucht alles unter dir und sagt, wann eine lange Suche fertig ist.
 manual-18 = Befehlsmodus: Drücke den Doppelpunkt für die Befehle der Zeile, auf der du bist, zum Beispiel öffnen mit. Im Terminal startet er eine Shell.
 manual-19 = Scroll-Modus: Drücke s, um eine lange Liste als eine Seite zu lesen. Bild hoch, Bild runter, Pos1 und Ende gehen hindurch, und Escape verlässt ihn.
 manual-20 = Im-Element-Modus: Drücke Rechts auf einer Zeile mit mehreren Links, Schaltflächen, Bildern oder Videos. Die Pfeiltasten wechseln zwischen ihnen, wie die früheren Zeilen gezeigt haben. Auf einer Zeile mit einem Pfeil nach rechts geht Rechts beim letzten in die Zeile hinein.

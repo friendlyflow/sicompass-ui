@@ -1310,7 +1310,7 @@ pub fn handle_s(r: &mut AppRenderer) {
     if r.manual_scroll {
         r.manual_index = r.list_index;
     } else {
-        prefetch_scroll_subtree(r);
+        prefetch_subtree(r);
     }
     r.previous_coordinate = r.coordinate;
     r.coordinate = Coordinate::Scroll;
@@ -1332,12 +1332,13 @@ const SCROLL_PREFETCH_MAX_ELEMENTS: usize = 5000;
 const SCROLL_PREFETCH_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Load the levels under the current list that the user has not opened yet,
-/// so scroll mode can show them flattened.
+/// so scroll mode can show them flattened, and Ctrl+F can find them when the
+/// provider has no walk of its own ([`crate::live_search`]).
 ///
 /// Most providers hand a folder, room or note over as an `Obj` with no
-/// children and fill it on Right (`navigate_right_raw`). Scroll mode only
-/// flattens what is in the tree, so without this it shows one level for
-/// them. Each empty `Obj` is fetched the way Right does it (`push_path`,
+/// children and fill it on Right (`navigate_right_raw`). Scroll mode and
+/// extended search only use what is in the tree, so without this they reach
+/// one level for them. Each empty `Obj` is fetched the way Right does it (`push_path`,
 /// `fetch`, `pop_path`) and the result grafted on, breadth first, so the
 /// levels nearest the cursor fill before the caps above stop the walk.
 ///
@@ -1348,7 +1349,7 @@ const SCROLL_PREFETCH_BUDGET: std::time::Duration = std::time::Duration::from_mi
 /// level), `<link>` objects (a web fetch) and `meta`.
 /// An `Obj` that comes back empty stays empty, without Right's `i`
 /// placeholder, so scroll mode does not list it; Right still fetches it.
-fn prefetch_scroll_subtree(r: &mut AppRenderer) {
+pub(crate) fn prefetch_subtree(r: &mut AppRenderer) {
     use std::collections::VecDeque;
 
     let Some(provider_idx) =
@@ -3006,6 +3007,8 @@ pub fn handle_enter_search(r: &mut AppRenderer) {
 }
 
 fn handle_enter_extended_search(r: &mut AppRenderer) {
+    // Whatever Enter does next, the search is over.
+    crate::live_search::stop(r);
     let item = match r.current_list_item().cloned() {
         Some(i) => i,
         None => {
@@ -3131,6 +3134,7 @@ fn handle_enter_extended_search(r: &mut AppRenderer) {
     }
 
     // Regular FFON-tree item: navigate by id
+    push_filesystem_path_to(r, &search_from_id, &item.id);
     r.current_id = item.id;
     // Re-sync the in-memory provider path to the jumped-to cursor (see
     // sync_inmemory_provider_path_to_cursor). Without this, activating a matched
@@ -3154,6 +3158,47 @@ fn handle_enter_extended_search(r: &mut AppRenderer) {
         sicompass_sdk::timeline::NavKind::ArrowRight,
     );
     r.needs_redraw = true;
+}
+
+/// Bring a filesystem provider's path down to the list holding `target`, a row
+/// of an extended search opened at `origin`.
+///
+/// Right and Left keep a provider's path in step with the cursor, but a search
+/// jumps the cursor to a row deep in what is loaded. A provider whose path is
+/// not a filesystem path is re-synced from the tree afterwards
+/// (`sync_inmemory_provider_path_to_cursor`); a filesystem path cannot be
+/// rebuilt from display keys, so it is walked down here from where the search
+/// opened, one `push_path` per level, as Right would have. A row outside the
+/// list the search opened in (after a double Ctrl+F) is left as it was.
+fn push_filesystem_path_to(r: &mut AppRenderer, origin: &IdArray, target: &IdArray) {
+    if origin.depth() < 2 || target.depth() <= origin.depth() || !active_path_is_filesystem(r) {
+        return;
+    }
+    let list = origin.depth() - 1;
+    if origin.as_slice()[..list] != target.as_slice()[..list] {
+        return;
+    }
+    let mut segments = Vec::new();
+    let mut prefix = IdArray::new();
+    for (level, &i) in target.as_slice()[..target.depth() - 1].iter().enumerate() {
+        prefix.push(i);
+        if level < list {
+            continue;
+        }
+        let key = get_ffon_at_id(&r.ffon, &prefix)
+            .and_then(|s| s.get(i))
+            .and_then(|e| e.as_obj())
+            .map(|o| o.key.clone());
+        match key {
+            // Right pushes nothing for a link: its page is grafted in place.
+            Some(key) if tags::has_link(&key) => {}
+            Some(key) => segments.push(nav_segment(&key, true)),
+            None => return,
+        }
+    }
+    for segment in &segments {
+        crate::provider::push_path(r, segment);
+    }
 }
 
 /// Split a nav_path like `/a/b/c` into (`/a/b`, `c`).
@@ -4515,6 +4560,7 @@ pub fn handle_escape(r: &mut AppRenderer) {
             return;
         }
         Coordinate::ExtendedSearch => {
+            crate::live_search::stop(r);
             r.coordinate = r.previous_coordinate;
             r.speak_mode_change(None);
             r.input_buffer.clear();
@@ -7313,6 +7359,9 @@ pub fn handle_ctrl_f(r: &mut AppRenderer) {
             // Double-tap: reset to root of current provider
             let now = sdl_ticks();
             if now.saturating_sub(r.last_keypress_time) <= DELTA_MS {
+                // The provider's path stays where the search began, so nothing
+                // is fetched from up here: the search covers what is loaded.
+                crate::live_search::stop(r);
                 while r.current_id.depth() > r.top_depth() {
                     r.current_id.pop();
                 }
@@ -7345,6 +7394,8 @@ pub fn handle_ctrl_f(r: &mut AppRenderer) {
             r.cursor_position = 0;
             r.selection_anchor = None;
             r.scroll_offset = 0;
+            // Reach below what the user has opened.
+            crate::live_search::prepare(r);
             list::create_list_extended_search(r);
             // The extended-search list is a recursive flatten of the subtree,
             // so `current_id.last()` (an index into the immediate layer) does
@@ -7895,6 +7946,7 @@ pub fn handle_search_left(r: &mut AppRenderer) {
             if r.coordinate == Coordinate::ExtendedSearch {
                 r.input_buffer.clear();
                 r.cursor_position = 0;
+                crate::live_search::prepare(r);
                 list::create_list_extended_search(r);
             } else {
                 r.search_string.clear();
@@ -7954,6 +8006,7 @@ pub fn handle_search_right(r: &mut AppRenderer) {
                 let (parent_dir, filename) = split_nav_path(nav_path);
                 crate::provider::navigate_to_path(r, root_idx, parent_dir, filename);
             } else {
+                push_filesystem_path_to(r, &search_from_id, &item.id);
                 r.current_id = item.id;
             }
             if navigate_right_raw(r) {
@@ -7966,6 +8019,7 @@ pub fn handle_search_right(r: &mut AppRenderer) {
                     sicompass_sdk::timeline::NavKind::ArrowRight,
                 );
                 r.search_origin_id = r.current_id.clone();
+                crate::live_search::prepare(r);
                 list::create_list_extended_search(r);
                 r.list_index = r
                     .current_id
@@ -11084,6 +11138,419 @@ mod tests {
         handle_s(&mut r);
         assert_eq!(fetched.lock().unwrap().len(), 1);
         assert_eq!(crate::provider::current_path(&r), "/");
+    }
+
+    // -----------------------------------------------------------------------
+    // Ctrl+F below what the user has opened
+    // -----------------------------------------------------------------------
+
+    /// Ctrl+F in a provider with no walk of its own loads the levels below
+    /// first, the way scroll mode does, and finds what is in them.
+    #[test]
+    fn ctrl_f_loads_levels_the_user_has_not_opened() {
+        let (mut r, fetched) = lazy_renderer(folders, true);
+        handle_ctrl_f(&mut r);
+        assert_eq!(r.coordinate, Coordinate::ExtendedSearch);
+        let shown = labels(&r);
+        assert!(shown.iter().any(|l| l.contains("draft one")), "{shown:?}");
+        assert_eq!(
+            *fetched.lock().unwrap(),
+            ["/docs", "/empty", "/docs/drafts"]
+        );
+        assert_eq!(crate::provider::current_path(&r), "/");
+        assert!(r.live_search.is_none());
+    }
+
+    /// A provider whose fetch does more than read is not fetched ahead for
+    /// Ctrl+F either: it searches what the user has opened.
+    #[test]
+    fn ctrl_f_fetches_nothing_for_a_provider_that_opts_out() {
+        let (mut r, fetched) = lazy_renderer(folders, false);
+        handle_ctrl_f(&mut r);
+        assert_eq!(r.coordinate, Coordinate::ExtendedSearch);
+        assert!(fetched.lock().unwrap().is_empty());
+        assert_eq!(r.total_list.len(), 4, "only the level already open");
+    }
+
+    /// What a provider's walk is told and asked, for the tests below.
+    #[derive(Default)]
+    struct WalkLog {
+        fetched: Vec<String>,
+        starts: Vec<String>,
+        stops: usize,
+        /// Batches still to hand over, the first one next.
+        batches: std::collections::VecDeque<Vec<sicompass_sdk::SearchResultItem>>,
+        /// The walk's budget stopped it before it saw everything.
+        cut_short: bool,
+    }
+
+    /// A `LazyTree` whose path is a filesystem path, with a walk of its own
+    /// when `walks`.
+    struct WalkTree {
+        path: String,
+        walks: bool,
+        log: std::sync::Arc<std::sync::Mutex<WalkLog>>,
+    }
+
+    impl sicompass_sdk::provider::Provider for WalkTree {
+        fn name(&self) -> &str {
+            "walker"
+        }
+        fn fetch(&mut self) -> Vec<FfonElement> {
+            self.log.lock().unwrap().fetched.push(self.path.clone());
+            folders(&self.path)
+        }
+        fn push_path(&mut self, segment: &str) {
+            if !self.path.ends_with('/') {
+                self.path.push('/');
+            }
+            self.path.push_str(segment);
+        }
+        fn pop_path(&mut self) {
+            match self.path.rfind('/') {
+                Some(0) | None => self.path = "/".to_owned(),
+                Some(i) => self.path.truncate(i),
+            }
+        }
+        fn current_path(&self) -> &str {
+            &self.path
+        }
+        fn set_current_path(&mut self, path: &str) {
+            self.path = path.to_owned();
+        }
+        fn path_is_filesystem(&self) -> bool {
+            true
+        }
+        fn start_extended_search(&mut self) -> bool {
+            if self.walks {
+                self.log.lock().unwrap().starts.push(self.path.clone());
+            }
+            self.walks
+        }
+        fn take_extended_search_items(&mut self) -> sicompass_sdk::ExtendedSearchProgress {
+            let mut log = self.log.lock().unwrap();
+            let items = log.batches.pop_front().unwrap_or_default();
+            let done = log.batches.is_empty();
+            sicompass_sdk::ExtendedSearchProgress {
+                items,
+                done,
+                cut_short: done && log.cut_short,
+            }
+        }
+        fn stop_extended_search(&mut self) {
+            self.log.lock().unwrap().stops += 1;
+        }
+    }
+
+    fn found(label: &str, breadcrumb: &str, nav_path: &str) -> sicompass_sdk::SearchResultItem {
+        sicompass_sdk::SearchResultItem {
+            label: label.into(),
+            breadcrumb: breadcrumb.into(),
+            nav_path: nav_path.into(),
+        }
+    }
+
+    /// A renderer on the root of a `WalkTree`, the cursor on "docs".
+    fn walk_renderer(walks: bool) -> (AppRenderer, std::sync::Arc<std::sync::Mutex<WalkLog>>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(WalkLog::default()));
+        let mut root = FfonElement::new_obj("walker");
+        root.as_obj_mut().unwrap().children = folders("/");
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        r.providers.push(Box::new(WalkTree {
+            path: "/".to_owned(),
+            walks,
+            log: log.clone(),
+        }));
+        r.current_id = IdArray::new();
+        r.current_id.push(0);
+        r.current_id.push(1);
+        list::create_list_current_layer(&mut r);
+        r.coordinate = Coordinate::General;
+        (r, log)
+    }
+
+    /// The walk's first two batches: what the tree already shows ("docs") is
+    /// left out, the rest comes after the tree's rows with its breadcrumb.
+    fn two_batches() -> std::collections::VecDeque<Vec<sicompass_sdk::SearchResultItem>> {
+        std::collections::VecDeque::from([
+            vec![
+                found("+ docs", "", "/docs"),
+                found("- readme", "docs > ", "/docs/readme"),
+            ],
+            vec![found(
+                "- draft one",
+                "docs > drafts > ",
+                "/docs/drafts/draft one",
+            )],
+        ])
+    }
+
+    /// Ctrl+F starts the provider's walk from where the user is, fetches
+    /// nothing itself, and opens on the focused row as before.
+    #[test]
+    fn ctrl_f_starts_the_providers_walk_instead_of_fetching() {
+        let (mut r, log) = walk_renderer(true);
+        handle_ctrl_f(&mut r);
+        assert_eq!(r.coordinate, Coordinate::ExtendedSearch);
+        assert_eq!(log.lock().unwrap().starts, ["/"]);
+        assert!(log.lock().unwrap().fetched.is_empty());
+        assert!(r.live_search.is_some());
+        assert_eq!(r.current_list_item().unwrap().label, "+ docs");
+    }
+
+    /// What the walk finds is added as it arrives, after the tree's rows.
+    #[test]
+    fn the_walks_rows_arrive_frame_by_frame() {
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = two_batches();
+        handle_ctrl_f(&mut r);
+        let tree_rows = r.total_list.len();
+        crate::live_search::drain(&mut r);
+        assert_eq!(r.total_list.len(), tree_rows + 1, "{:?}", labels(&r));
+        let readme = r.total_list.last().unwrap();
+        assert_eq!(readme.label, "- readme");
+        assert_eq!(readme.data.as_deref(), Some("docs > "));
+        assert_eq!(readme.nav_path.as_deref(), Some("/docs/readme"));
+        assert!(crate::live_search::is_walk_row(readme));
+
+        crate::live_search::take_next_frame(&mut r);
+        crate::live_search::drain(&mut r);
+        assert_eq!(r.total_list.last().unwrap().label, "- draft one");
+        // Typing rebuilds the list from the tree, and keeps what was found.
+        handle_input(&mut r, "draft");
+        assert!(
+            r.filtered_list_indices
+                .iter()
+                .any(|&i| r.total_list[i].label == "- draft one")
+        );
+    }
+
+    /// Rows arriving while the user has typed a query are filtered too, and the
+    /// cursor stays on the row it was on.
+    #[test]
+    fn new_rows_keep_the_cursor_on_its_row() {
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = std::collections::VecDeque::from([
+            vec![found("- readme", "docs > ", "/docs/readme")],
+            vec![found("- read", "docs > ", "/docs/read")],
+        ]);
+        handle_ctrl_f(&mut r);
+        handle_input(&mut r, "read");
+        crate::live_search::drain(&mut r);
+        let on = r.current_list_item().unwrap().label.clone();
+        crate::live_search::take_next_frame(&mut r);
+        crate::live_search::drain(&mut r);
+        assert!(
+            r.filtered_list_indices
+                .iter()
+                .any(|&i| r.total_list[i].label == "- read")
+        );
+        assert_eq!(r.current_list_item().unwrap().label, on);
+    }
+
+    /// Escape ends the search, and the walk with it.
+    #[test]
+    fn escape_stops_the_walk() {
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = two_batches();
+        handle_ctrl_f(&mut r);
+        handle_escape(&mut r);
+        assert_eq!(log.lock().unwrap().stops, 1);
+        assert!(r.live_search.is_none());
+    }
+
+    /// Leaving the search any other way stops it at the next frame.
+    #[test]
+    fn leaving_the_search_otherwise_stops_the_walk() {
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = two_batches();
+        handle_ctrl_f(&mut r);
+        r.coordinate = Coordinate::General;
+        crate::live_search::drain(&mut r);
+        assert_eq!(log.lock().unwrap().stops, 1);
+        assert!(r.live_search.is_none());
+    }
+
+    /// The cursor id never takes a walk row's id, which names no element.
+    #[test]
+    fn a_walk_row_never_becomes_the_cursor_id() {
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = two_batches();
+        handle_ctrl_f(&mut r);
+        crate::live_search::drain(&mut r);
+        r.list_index = r.total_list.len() - 1;
+        r.sync_current_id_from_list();
+        assert_ne!(r.current_id.last(), Some(crate::live_search::NOT_IN_TREE));
+    }
+
+    /// Enter on a walk row goes to it the way the user would have, folder by
+    /// folder, and leaves the provider's path there.
+    #[test]
+    fn enter_on_a_walk_row_goes_there() {
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = two_batches();
+        handle_ctrl_f(&mut r);
+        crate::live_search::drain(&mut r);
+        crate::live_search::take_next_frame(&mut r);
+        crate::live_search::drain(&mut r);
+        r.list_index = r
+            .total_list
+            .iter()
+            .position(|it| it.label == "- draft one")
+            .unwrap();
+        handle_enter_search(&mut r);
+        assert_eq!(r.coordinate, Coordinate::General);
+        assert_eq!(crate::provider::current_path(&r), "/docs/drafts");
+        assert!(r.current_list_item().unwrap().label.contains("draft one"));
+        assert!(r.live_search.is_none());
+    }
+
+    /// Enter on a row that was loaded but never opened brings a filesystem
+    /// provider's path down to it, so the next Right fetches the right folder.
+    #[test]
+    fn enter_on_a_deep_loaded_row_moves_a_filesystem_path_there() {
+        let (mut r, _) = walk_renderer(false);
+        handle_ctrl_f(&mut r);
+        r.list_index = r
+            .total_list
+            .iter()
+            .position(|it| it.label.contains("draft one"))
+            .unwrap();
+        handle_enter_search(&mut r);
+        assert_eq!(r.coordinate, Coordinate::General);
+        assert_eq!(crate::provider::current_path(&r), "/docs/drafts");
+        assert_eq!(r.current_id.depth(), 4);
+    }
+
+    /// The header's count says the walk is still looking, and says nothing
+    /// more once it is done.
+    #[test]
+    fn the_count_says_searching_until_the_walk_is_done() {
+        let searching = sicompass_sdk::localize::t("search-searching");
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = two_batches();
+        handle_ctrl_f(&mut r);
+        crate::live_search::drain(&mut r);
+        assert_eq!(
+            crate::live_search::header_suffix(&r),
+            format!(", {searching}")
+        );
+        crate::live_search::take_next_frame(&mut r);
+        crate::live_search::drain(&mut r);
+        assert_eq!(crate::live_search::header_suffix(&r), "");
+    }
+
+    /// A walk its budget stopped leaves the count saying so: the results are
+    /// incomplete.
+    #[test]
+    fn the_count_says_when_the_walk_stopped_at_its_limit() {
+        let (mut r, log) = walk_renderer(true);
+        {
+            let mut log = log.lock().unwrap();
+            log.batches = two_batches();
+            log.cut_short = true;
+        }
+        handle_ctrl_f(&mut r);
+        crate::live_search::drain(&mut r);
+        crate::live_search::take_next_frame(&mut r);
+        crate::live_search::drain(&mut r);
+        assert_eq!(
+            crate::live_search::header_suffix(&r),
+            format!(
+                ", {}",
+                sicompass_sdk::localize::t("search-stopped-at-limit")
+            )
+        );
+    }
+
+    /// The end of a long walk is spoken once, with how many rows there are,
+    /// and that it stopped at its limit when it did.
+    #[test]
+    fn the_end_of_a_long_walk_is_announced() {
+        for cut_short in [false, true] {
+            let (mut r, log) = walk_renderer(true);
+            {
+                let mut log = log.lock().unwrap();
+                log.batches = two_batches();
+                log.cut_short = cut_short;
+            }
+            handle_ctrl_f(&mut r);
+            crate::live_search::drain(&mut r);
+            r.pending_announcement = None;
+            crate::live_search::started_long_ago(&mut r);
+            crate::live_search::take_next_frame(&mut r);
+            crate::live_search::drain(&mut r);
+            let key = if cut_short {
+                "search-finished-at-limit"
+            } else {
+                "search-finished"
+            };
+            let mut args = sicompass_sdk::localize::Args::new();
+            args.set("count", r.active_list_len() as i64);
+            let want = sicompass_sdk::localize::t_args(key, &args);
+            let said = r.pending_announcement.take().expect("announced");
+            assert_eq!(said.trim_end_matches('\u{200B}'), want);
+            // Once: the next frames have nothing to add.
+            crate::live_search::take_next_frame(&mut r);
+            crate::live_search::drain(&mut r);
+            assert_eq!(r.pending_announcement, None);
+        }
+    }
+
+    /// A walk over before the mode's name was even spoken is not announced:
+    /// the count already shows it.
+    #[test]
+    fn a_quick_walk_is_not_announced() {
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = two_batches();
+        handle_ctrl_f(&mut r);
+        crate::live_search::drain(&mut r);
+        r.pending_announcement = None;
+        crate::live_search::take_next_frame(&mut r);
+        crate::live_search::drain(&mut r);
+        assert_eq!(
+            crate::live_search::status(&r),
+            Some(crate::live_search::WalkStatus::Finished)
+        );
+        assert_eq!(r.pending_announcement, None);
+    }
+
+    /// While the walk is still looking, a query with no match yet says so,
+    /// rather than that there is none.
+    #[test]
+    fn no_match_while_the_walk_looks_is_no_match_yet() {
+        let (mut r, log) = walk_renderer(true);
+        log.lock().unwrap().batches = two_batches();
+        handle_ctrl_f(&mut r);
+        handle_input(&mut r, "zzz");
+        assert!(r.search_found_nothing());
+        let (spoken, _) = crate::accesskit_sdl::current_element(&r);
+        assert!(
+            spoken.ends_with(&sicompass_sdk::localize::t("search-no-matches-yet")),
+            "{spoken}"
+        );
+        crate::live_search::drain(&mut r);
+        crate::live_search::take_next_frame(&mut r);
+        crate::live_search::drain(&mut r);
+        let (spoken, _) = crate::accesskit_sdl::current_element(&r);
+        assert!(
+            spoken.ends_with(&sicompass_sdk::localize::t("search-no-matches")),
+            "{spoken}"
+        );
+    }
+
+    /// A step right inside the search starts the walk again from there.
+    #[test]
+    fn right_inside_the_search_walks_from_the_new_folder() {
+        let (mut r, log) = walk_renderer(true);
+        handle_ctrl_f(&mut r);
+        handle_search_right(&mut r);
+        assert_eq!(r.coordinate, Coordinate::ExtendedSearch);
+        assert_eq!(crate::provider::current_path(&r), "/docs");
+        let log = log.lock().unwrap();
+        assert_eq!(log.starts, ["/", "/docs"]);
+        assert_eq!(log.stops, 1, "the walk from / was stopped");
     }
 
     #[test]

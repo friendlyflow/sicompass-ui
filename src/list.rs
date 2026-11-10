@@ -18,7 +18,8 @@ use sicompass_sdk::timeline::{ChatOpKind, FsSideEffect, ImapOpKind, TimelineEntr
 /// Rebuild `total_list` for `Coordinate::ExtendedSearch`.
 ///
 /// Recursively walks the in-memory FFON tree at `current_id`, collecting all
-/// elements with breadcrumb paths. This is consistent across all providers.
+/// elements with breadcrumb paths, then adds what the provider's own walk has
+/// found below that so far ([`crate::live_search`]).
 pub fn create_list_extended_search(renderer: &mut AppRenderer) {
     renderer.total_list.clear();
     renderer.filtered_list_indices.clear();
@@ -41,6 +42,7 @@ pub fn create_list_extended_search(renderer: &mut AppRenderer) {
     let mut items: Vec<crate::app_state::RenderListItem> = Vec::new();
     collect_items_recursive(arr, &base_id, "", false, &scope, &mut items);
     renderer.total_list = items;
+    crate::live_search::append_rows(renderer);
     renderer.list_index = renderer
         .list_index
         .min(renderer.total_list.len().saturating_sub(1));

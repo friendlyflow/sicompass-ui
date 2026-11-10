@@ -179,6 +179,17 @@ video-paused = gepauzeerd
 video-unavailable = Deze versie van Sicompass kan geen video afspelen
 
 search-no-matches = geen resultaten
+search-no-matches-yet = nog geen resultaten, zoekt verder
+search-searching = zoekt nog
+search-stopped-at-limit = gestopt bij de limiet
+search-finished = zoeken klaar, { $count ->
+    [one] 1 item
+   *[other] { $count } items
+}
+search-finished-at-limit = zoeken gestopt bij de limiet, { $count ->
+    [one] 1 item
+   *[other] { $count } items
+}
 
 # The beginner's manual (Tab): one line each, read in order.
 manual-01 = Handleiding voor beginners. Druk nu op de pijl omlaag om de volgende regel te horen, en op de pijl omhoog om een regel terug te gaan. Escape verlaat de handleiding, en Tab opent ze opnieuw.
@@ -197,7 +208,7 @@ manual-13 = Een regel kan meerdere links, knoppen, afbeeldingen of video's bevat
 manual-14 = p is een afbeelding. Druk op Enter om ze groot te zien, en op Escape om terug te komen. v is een video. Druk op Enter om af te spelen, en nogmaals op Enter om te pauzeren.
 manual-15 = Nu de modi. Een modus is wat de toetsen op dit moment doen, en de kop bovenaan zegt in welke je zit. Meestal zit je in de algemene modus, waar je rondgaat en op Enter drukt.
 manual-16 = Invoegmodus: je komt erin met i of a op een invoer. Je typt, Enter bewaart de tekst en Escape gaat terug naar de algemene modus.
-manual-17 = Zoekmodus: druk op f in de algemene modus en typ om de lijst te verkleinen. Enter gaat naar de treffer en Escape annuleert. Ctrl+F zoekt alles onder je, niet alleen deze lijst.
+manual-17 = Zoekmodus: druk op f in de algemene modus en typ om de lijst te verkleinen. Enter gaat naar de treffer en Escape annuleert. Ctrl+F zoekt alles onder je, en zegt wanneer een lange zoekopdracht klaar is.
 manual-18 = Commandomodus: druk op de dubbele punt voor de commando's van de regel waar je op staat, zoals openen met. In de terminal start het een shell.
 manual-19 = Scrolmodus: druk op s om een lange lijst als een pagina te lezen. PgUp, PgDn, Home en End gaan erdoor, en Escape verlaat de modus.
 manual-20 = In-elementmodus: druk op Rechts op een regel met meerdere links, knoppen, afbeeldingen of video's. De pijltjestoetsen gaan ertussen, zoals de vorige regels toonden. Op een regel met een pijl naar rechts gaat Rechts op de laatste erin.

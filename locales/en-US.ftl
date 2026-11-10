@@ -189,6 +189,17 @@ video-paused = paused
 video-unavailable = This version of Sicompass cannot play video
 
 search-no-matches = no matches
+search-no-matches-yet = no matches yet, still searching
+search-searching = searching
+search-stopped-at-limit = stopped at the limit
+search-finished = search finished, { $count ->
+    [one] 1 item
+   *[other] { $count } items
+}
+search-finished-at-limit = search stopped at the limit, { $count ->
+    [one] 1 item
+   *[other] { $count } items
+}
 
 # The beginner's manual (Tab): one line each, read in order.
 manual-01 = Beginner's manual. Press the Down arrow key now to hear the next line, and the Up arrow key to go back one line. Escape leaves the manual, and Tab opens it again.
@@ -207,7 +218,7 @@ manual-13 = A line can hold several links, buttons, pictures or videos, and then
 manual-14 = p is a picture. Press Enter to see it big, and Escape to come back. v is a video. Press Enter to play it, and Enter again to pause it.
 manual-15 = Now the modes. A mode is what the keys do at the moment, and the header at the top says which one you are in. Most of the time you are in general mode, where you move around and press Enter.
 manual-16 = Insert mode: you enter it with i or a on an input. You type, Enter keeps the text, and Escape goes back to general mode.
-manual-17 = Search mode: press f in general mode and type to narrow the list down. Enter goes to the match and Escape cancels. Ctrl+F searches everything below you, not only this list.
+manual-17 = Search mode: press f in general mode and type to narrow the list down. Enter goes to the match and Escape cancels. Ctrl+F searches everything below you, and tells you when a long search is done.
 manual-18 = Command mode: press the colon key for the commands of the line you are on, such as open with. In the terminal it starts a shell.
 manual-19 = Scroll mode: press s to read a long list as one page. PgUp, PgDn, Home and End move through it, and Escape leaves.
 manual-20 = Element mode: press Right on a line with several links, buttons, pictures or videos. The arrows move between them, as the earlier lines showed. On a line with an arrow right, Right on the last one goes inside it.

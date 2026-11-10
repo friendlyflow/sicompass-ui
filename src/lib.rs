@@ -42,6 +42,7 @@ pub mod image;
 pub mod in_element;
 pub mod layout;
 pub mod list;
+pub mod live_search;
 pub mod provider;
 pub mod rectangle;
 pub mod registry;

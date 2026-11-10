@@ -559,9 +559,16 @@ fn focus_is_password(renderer: &AppRenderer) -> bool {
     renderer.masks_input()
 }
 
-fn current_element(renderer: &AppRenderer) -> (String, String) {
+pub(crate) fn current_element(renderer: &AppRenderer) -> (String, String) {
     if renderer.search_found_nothing() {
-        let none = sicompass_sdk::localize::t("search-no-matches");
+        // A walk still looking may yet find one.
+        let none = if crate::live_search::status(renderer)
+            == Some(crate::live_search::WalkStatus::Searching)
+        {
+            sicompass_sdk::localize::t("search-no-matches-yet")
+        } else {
+            sicompass_sdk::localize::t("search-no-matches")
+        };
         let spoken = match &renderer.typed_speech {
             Some(typed) => format!("{typed}, {none}"),
             None => none,
