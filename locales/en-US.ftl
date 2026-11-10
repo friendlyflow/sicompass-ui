@@ -144,6 +144,7 @@ hint-insert = :      Insert
 hint-ctrl-insert = Ctrl+: Insert
 hint-enter-insert = Enter  Insert
 insert-palette-empty = nothing to insert
+speech-blank-line = blank
 escape-command-mode-first = press Escape to leave { $mode } first
 
 # In element mode

@@ -617,6 +617,148 @@ pub(crate) fn target_on_next_line(
     best.map(|(i, _)| i)
 }
 
+/// The target a screen above or below `from`: on the line nearest `page_h` away,
+/// then the one nearest across. With no line beyond `from`, the first target
+/// (paging up) or the last (paging down), so a page key at an edge still lands
+/// somewhere.
+pub(crate) fn target_a_page_away(
+    positions: &[TargetPos],
+    from: usize,
+    down: bool,
+    page_h: f32,
+) -> usize {
+    let last = positions.len().saturating_sub(1);
+    let Some(here) = positions.get(from) else {
+        return from.min(last);
+    };
+    let goal = if down {
+        here.y + page_h
+    } else {
+        here.y - page_h
+    };
+    let beyond = |p: &TargetPos| if down { p.y > here.y } else { p.y < here.y };
+    let Some(line) = positions
+        .iter()
+        .filter(|p| beyond(p))
+        .map(|p| p.y)
+        .reduce(|a, b| {
+            if (b - goal).abs() < (a - goal).abs() {
+                b
+            } else {
+                a
+            }
+        })
+    else {
+        return if down { last } else { 0 };
+    };
+    let mut best: Option<(usize, f32)> = None;
+    for (i, p) in positions.iter().enumerate() {
+        if p.y == line {
+            let off = (p.x - here.x).abs();
+            if best.is_none_or(|(_, b)| off < b) {
+                best = Some((i, off));
+            }
+        }
+    }
+    best.map_or(from, |(i, _)| i)
+}
+
+/// One screen down or up, the way scroll mode moves its text, for a list of rows
+/// `heights` tall, shown from row `first` with the cursor on row `cursor`.
+/// Returns the new first row and the new cursor.
+///
+/// Rows are whole, so the screen moves by rows: down, the row cut off at the
+/// bottom becomes the top one, and up, the old top row goes just below the
+/// bottom. The cursor lands on the row at the same height on screen it had. When
+/// the view cannot move any further, the cursor goes to the last row (down) or the
+/// first (up), so the key always reaches the end of the list.
+pub(crate) fn page_step(
+    heights: &[f32],
+    viewport_h: f32,
+    first: usize,
+    cursor: usize,
+    down: bool,
+) -> (usize, usize) {
+    let n = heights.len();
+    if n == 0 {
+        return (0, 0);
+    }
+    let h = |i: usize| heights.get(i).copied().unwrap_or(0.0).max(0.0);
+    // tops[i] is how far row i starts below row 0, tops[n] the whole list.
+    let mut tops = Vec::with_capacity(n + 1);
+    let mut y = 0.0f32;
+    for i in 0..n {
+        tops.push(y);
+        y += h(i);
+    }
+    tops.push(y);
+    let first = first.min(n - 1);
+    let cursor = cursor.min(n - 1);
+
+    // The first row of the last screen: from it on every row fits.
+    let mut max_first = n - 1;
+    let mut used = h(n - 1);
+    while max_first > 0 && used + h(max_first - 1) <= viewport_h {
+        used += h(max_first - 1);
+        max_first -= 1;
+    }
+
+    let new_first = if down {
+        let bottom = tops[first] + viewport_h;
+        // The row the bottom edge of the screen falls in.
+        let cut = (first..n).find(|&i| tops[i + 1] > bottom).unwrap_or(n - 1);
+        cut.max(first + 1).min(max_first)
+    } else {
+        let mut i = first;
+        let mut used = 0.0f32;
+        while i > 0 && used + h(i - 1) <= viewport_h {
+            used += h(i - 1);
+            i -= 1;
+        }
+        if i == first {
+            first.saturating_sub(1)
+        } else {
+            i
+        }
+    };
+    // A view that cannot move, or one left past the last screen by a shorter
+    // list, sends the cursor to the end it was heading for.
+    if new_first == first || (down && new_first < first) || (!down && new_first > first) {
+        return (first, if down { n - 1 } else { 0 });
+    }
+
+    let at = (tops[cursor] - tops[first]).clamp(0.0, viewport_h);
+    let target = tops[new_first] + at;
+    let new_cursor = (new_first..n)
+        .take_while(|&i| tops[i] <= target)
+        .last()
+        .unwrap_or(new_first);
+    (new_first, new_cursor)
+}
+
+/// The first row to draw after a page step put the view at `first`: that row
+/// itself, while the selected row is on screen from it. Otherwise the ordinary
+/// rule of [`first_visible_row`]. Unlike that rule, it shows no row above a
+/// selection on the top row, which would shift the page by one.
+pub(crate) fn first_visible_row_from(
+    heights: &[f32],
+    viewport_h: f32,
+    selected: usize,
+    first: usize,
+) -> usize {
+    let height = |i: usize| heights.get(i).copied().unwrap_or(0.0);
+    if heights.iter().sum::<f32>() <= viewport_h {
+        return 0;
+    }
+    if first <= selected && selected < heights.len() {
+        let used: f32 = (first..selected).map(height).sum();
+        if selected == first || used + height(selected) <= viewport_h {
+            return first;
+        }
+    }
+    first_visible_row(heights, viewport_h, selected, first as i32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1121,6 +1263,108 @@ mod tests {
     fn a_selection_taller_than_the_screen_is_still_shown() {
         let h = heights(&[1, 10, 1]);
         assert_eq!(first_visible_row(&h, 3.0 * LH, 1, 0), 1);
+    }
+
+    /// Ten one-line rows, a three-line screen.
+    fn ten() -> Vec<f32> {
+        heights(&[1; 10])
+    }
+
+    #[test]
+    fn paging_down_moves_a_screen_and_keeps_the_cursor_height() {
+        // Rows 0..=2 on screen, the cursor on the middle one.
+        assert_eq!(page_step(&ten(), 3.0 * LH, 0, 1, true), (3, 4));
+        assert_eq!(page_step(&ten(), 3.0 * LH, 3, 4, true), (6, 7));
+    }
+
+    #[test]
+    fn paging_up_moves_a_screen_and_keeps_the_cursor_height() {
+        assert_eq!(page_step(&ten(), 3.0 * LH, 6, 8, false), (3, 5));
+        assert_eq!(page_step(&ten(), 3.0 * LH, 3, 5, false), (0, 2));
+    }
+
+    #[test]
+    fn paging_down_stops_at_the_last_screen() {
+        // From row 5 a whole screen on would start at 8, but 7 is the last screen.
+        assert_eq!(page_step(&ten(), 3.0 * LH, 5, 5, true), (7, 7));
+    }
+
+    #[test]
+    fn paging_up_stops_at_the_first_screen() {
+        assert_eq!(page_step(&ten(), 3.0 * LH, 2, 3, false), (0, 1));
+    }
+
+    #[test]
+    fn paging_down_on_the_last_screen_goes_to_the_last_row() {
+        assert_eq!(page_step(&ten(), 3.0 * LH, 7, 7, true), (7, 9));
+    }
+
+    #[test]
+    fn paging_up_on_the_first_screen_goes_to_the_first_row() {
+        assert_eq!(page_step(&ten(), 3.0 * LH, 0, 2, false), (0, 0));
+    }
+
+    #[test]
+    fn a_list_that_fits_pages_straight_to_an_end() {
+        let h = heights(&[1, 1, 1]);
+        assert_eq!(page_step(&h, 5.0 * LH, 0, 1, true), (0, 2));
+        assert_eq!(page_step(&h, 5.0 * LH, 0, 1, false), (0, 0));
+    }
+
+    /// The row the bottom edge cuts is shown again, at the top.
+    #[test]
+    fn the_row_cut_off_at_the_bottom_becomes_the_top_one() {
+        let h = heights(&[1, 1, 2, 1, 1, 1, 1, 1]);
+        assert_eq!(page_step(&h, 3.0 * LH, 0, 0, true), (2, 2));
+    }
+
+    /// A picture taller than the screen still moves on, a row at a time.
+    #[test]
+    fn rows_taller_than_the_screen_still_advance() {
+        let h = heights(&[10, 10, 10]);
+        assert_eq!(page_step(&h, 3.0 * LH, 0, 0, true), (1, 1));
+        assert_eq!(page_step(&h, 3.0 * LH, 1, 1, true), (2, 2));
+        assert_eq!(page_step(&h, 3.0 * LH, 2, 2, false), (1, 1));
+    }
+
+    #[test]
+    fn an_empty_list_pages_nowhere() {
+        assert_eq!(page_step(&[], 3.0 * LH, 0, 0, true), (0, 0));
+    }
+
+    #[test]
+    fn a_page_step_keeps_its_first_row_even_with_the_cursor_on_it() {
+        // first_visible_row would show row 2 above the cursor.
+        assert_eq!(first_visible_row(&ten(), 3.0 * LH, 3, 3), 2);
+        assert_eq!(first_visible_row_from(&ten(), 3.0 * LH, 3, 3), 3);
+    }
+
+    #[test]
+    fn a_page_step_falls_back_when_the_cursor_is_off_its_screen() {
+        assert_eq!(first_visible_row_from(&ten(), 3.0 * LH, 9, 3), 7);
+    }
+
+    #[test]
+    fn a_page_in_a_row_goes_to_the_line_a_screen_away() {
+        // Four lines of two pictures, 100 px apart. The screen is 200 px.
+        let p: Vec<TargetPos> = (0..8)
+            .map(|i| pos((i % 2) as f32 * 50.0, (i / 2) as f32 * 100.0))
+            .collect();
+        assert_eq!(target_a_page_away(&p, 1, true, 200.0), 5);
+        assert_eq!(target_a_page_away(&p, 5, false, 200.0), 1);
+    }
+
+    #[test]
+    fn a_page_in_a_row_goes_to_the_last_line_when_the_screen_is_further() {
+        let p = vec![pos(0.0, 0.0), pos(0.0, 20.0)];
+        assert_eq!(target_a_page_away(&p, 0, true, 500.0), 1);
+    }
+
+    #[test]
+    fn a_page_in_a_row_at_an_edge_goes_to_the_end() {
+        let p = vec![pos(0.0, 0.0), pos(50.0, 0.0), pos(100.0, 0.0)];
+        assert_eq!(target_a_page_away(&p, 1, true, 200.0), 2);
+        assert_eq!(target_a_page_away(&p, 1, false, 200.0), 0);
     }
 
     #[test]

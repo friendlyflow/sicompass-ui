@@ -57,6 +57,27 @@ const NAV_UP_DOWN: &[Coordinate] = &[
     Coordinate::TabSwitcher,
 ];
 
+// Modes where PgUp/PgDn move a screen (`handlers::page`): every mode with a
+// list, a row's targets, a text field or scroll mode's text. Not the in-field
+// search, which has only its matches, nor a dashboard, which gets its keys itself.
+const PAGE_MODES: &[Coordinate] = &[
+    Coordinate::General,
+    Coordinate::Insert,
+    Coordinate::InElement,
+    Coordinate::Normal,
+    Coordinate::Visual,
+    Coordinate::SimpleSearch,
+    Coordinate::ExtendedSearch,
+    Coordinate::Command,
+    Coordinate::Scroll,
+    Coordinate::ScrollSearch,
+    Coordinate::Meta,
+    Coordinate::TimelineView,
+    Coordinate::Manual,
+    Coordinate::ConfirmCloseTab,
+    Coordinate::TabSwitcher,
+];
+
 // Every base mode (`Coordinate::base()` folds the colon-command family into
 // General and Command). For Ctrl chords that must work everywhere: they emit no
 // text event, so they never collide with type-to-filter or text editing.
@@ -1076,7 +1097,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_shift_left,
     },
     // ---- PageUp / PageDown -----------------------------------------------
-    // Hint only inside providers; dispatch fires everywhere.
+    // Hint only inside providers; dispatch fires in every mode of `PAGE_MODES`.
     Shortcut {
         key: Keycode::PageUp,
         key2: None,
@@ -1100,14 +1121,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         key2: None,
         ctrl: false,
         shift: false,
-        modes: &[
-            Coordinate::General,
-            Coordinate::SimpleSearch,
-            Coordinate::ExtendedSearch,
-            Coordinate::Command,
-            Coordinate::Scroll,
-            Coordinate::ScrollSearch,
-        ],
+        modes: PAGE_MODES,
         label: "",
         is_available: always,
         handle: handlers::handle_page_up,
@@ -1135,14 +1149,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         key2: None,
         ctrl: false,
         shift: false,
-        modes: &[
-            Coordinate::General,
-            Coordinate::SimpleSearch,
-            Coordinate::ExtendedSearch,
-            Coordinate::Command,
-            Coordinate::Scroll,
-            Coordinate::ScrollSearch,
-        ],
+        modes: PAGE_MODES,
         label: "",
         is_available: always,
         handle: handlers::handle_page_down,

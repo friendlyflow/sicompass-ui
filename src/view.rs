@@ -924,6 +924,7 @@ fn update_view(app: &mut AppState) {
         let search_current_match = app.renderer.scroll_search_current_match;
         let search_needs_position = app.renderer.scroll_search_needs_position;
         let search_snap = app.renderer.scroll_search_snap;
+        let search_page = app.renderer.scroll_search_page.take();
         let in_search = app.renderer.coordinate == Coordinate::ScrollSearch;
         // Each level below the entered list is indented so its dash or arrow
         // starts where its parent's text starts (capped at half the width, so
@@ -1002,6 +1003,7 @@ fn update_view(app: &mut AppState) {
                 search_current_match,
                 search_needs_position,
                 search_snap,
+                search_page,
                 scale,
                 line_height,
                 ascender,
@@ -1017,6 +1019,7 @@ fn update_view(app: &mut AppState) {
             app.renderer.text_scroll_total_height = result.total_height;
             app.renderer.scroll_search_match_count = result.match_count;
             app.renderer.scroll_search_current_match = result.current_match;
+            app.renderer.scroll_search_current_match_y = result.current_match_y;
             // Keep list_index on the current match so Enter navigates to it.
             app.renderer.list_index = result.current_item;
             app.renderer.text_scroll_offset = result.scroll_offset;
@@ -1655,12 +1658,23 @@ fn update_view(app: &mut AppState) {
     };
 
     let row_heights: Vec<f32> = shapes.iter().map(|s| s.height).collect();
-    let start_index = crate::layout::first_visible_row(
-        &row_heights,
-        available_lines as f32 * line_height as f32,
-        list_index,
-        app.renderer.scroll_offset,
-    );
+    let list_viewport_h = available_lines as f32 * line_height as f32;
+    let start_index = if app.renderer.scroll_offset_exact && app.renderer.scroll_offset >= 0 {
+        crate::layout::first_visible_row_from(
+            &row_heights,
+            list_viewport_h,
+            list_index,
+            app.renderer.scroll_offset as usize,
+        )
+    } else {
+        crate::layout::first_visible_row(
+            &row_heights,
+            list_viewport_h,
+            list_index,
+            app.renderer.scroll_offset,
+        )
+    };
+    app.renderer.scroll_offset_exact = false;
     app.renderer.scroll_offset = start_index as i32;
 
     // ---- Rows placed on screen, from the first visible one ------------------
@@ -1710,6 +1724,8 @@ fn update_view(app: &mut AppState) {
     app.renderer.window_height = win_h as i32;
     app.renderer.cached_line_height = line_height;
     app.renderer.cached_line_counts = crate::layout::line_counts(&shapes, line_height as f32);
+    app.renderer.cached_list_viewport_h = list_viewport_h;
+    app.renderer.cached_row_heights = row_heights;
 
     // ---- Begin rendering --------------------------------------------------
     let fr = match app.font_renderer.as_mut() {
@@ -3470,6 +3486,8 @@ struct ScrollSearchResult {
     /// announces this line on explicit Up/Down navigation — the handlers cannot.
     /// `None` when there are no matches.
     current_match_line: Option<String>,
+    /// How far below the top of the viewport the current match is, in pixels.
+    current_match_y: i32,
     scroll_offset: i32,
 }
 
@@ -3518,6 +3536,7 @@ fn render_scroll_search_full(
     search_current_match: usize,
     needs_position: bool,
     snap: bool,
+    page: Option<crate::app_state::ScrollSearchPage>,
     scale: f32,
     line_height: i32,
     ascender: f32,
@@ -3622,11 +3641,27 @@ fn render_scroll_search_full(
 
     // Select current match (see original scroll-search docs): on entry/typing
     // pick the first match visible in the viewport; on explicit nav use clamped.
+    let max_offset = (total_height - viewport_h as i32).max(0);
     let current_match = if match_count == 0 {
         0
     } else {
         let clamped = search_current_match.min(match_count - 1);
-        if needs_position {
+        if let Some(page) = page {
+            // PgUp/PgDn: the match nearest where the current one was on screen,
+            // or the end the key was heading for when the text could not move.
+            if page.moved {
+                let goal = viewport_top.clamp(0, max_offset) + page.screen_y;
+                all_matches
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, m)| (m.virtual_y - goal).abs())
+                    .map_or(clamped, |(i, _)| i)
+            } else if page.down {
+                match_count - 1
+            } else {
+                0
+            }
+        } else if needs_position {
             all_matches
                 .iter()
                 .position(|m| m.virtual_y + line_height > viewport_top)
@@ -3653,7 +3688,6 @@ fn render_scroll_search_full(
     });
 
     // Snap the viewport only on explicit Up/Down navigation.
-    let max_offset = (total_height - viewport_h as i32).max(0);
     let scroll_offset = if snap && match_count > 0 {
         let match_item = all_matches[current_match].item_idx;
         layouts
@@ -3782,12 +3816,16 @@ fn render_scroll_search_full(
         );
     }
 
+    let current_match_y = all_matches
+        .get(current_match)
+        .map_or(0, |m| m.virtual_y - scroll_offset);
     ScrollSearchResult {
         total_height,
         match_count,
         current_match,
         current_item,
         current_match_line,
+        current_match_y,
         scroll_offset,
     }
 }

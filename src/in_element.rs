@@ -256,6 +256,34 @@ pub fn handle_down(r: &mut AppRenderer) {
     move_line(r, true);
 }
 
+/// PgUp/PgDn: the target a screen above or below, on the line nearest that far
+/// and then the nearest across, or the first or last target when there is no
+/// line that way. It always speaks, like every move here.
+pub(crate) fn page(r: &mut AppRenderer, down: bool) {
+    let last = r.nav_targets.len().saturating_sub(1);
+    let screen = if r.cached_list_viewport_h > 0.0 {
+        r.cached_list_viewport_h
+    } else {
+        r.window_height as f32
+    };
+    let next = if r.nav_positions.len() == r.nav_targets.len() && !r.nav_positions.is_empty() {
+        crate::layout::target_a_page_away(&r.nav_positions, r.nav_index, down, screen)
+    } else if down {
+        last
+    } else {
+        0
+    };
+    move_to(r, next);
+}
+
+pub fn handle_page_up(r: &mut AppRenderer) {
+    page(r, false);
+}
+
+pub fn handle_page_down(r: &mut AppRenderer) {
+    page(r, true);
+}
+
 /// The list was rebuilt under the mode, by a provider refresh say. Stay on the same
 /// target if it still exists, and leave if the row has none any more.
 pub(crate) fn after_list_rebuild(r: &mut AppRenderer) {
@@ -784,6 +812,26 @@ mod tests {
         assert_eq!(r.nav_index, 2, "stops at the last");
         press(&mut r, Keycode::Left);
         assert_eq!(r.nav_index, 1);
+    }
+
+    /// With every target on one line, PgDn and PgUp go to the last and the first,
+    /// and say where they landed.
+    #[test]
+    fn page_keys_go_to_the_ends_of_one_line_and_speak() {
+        let mut r = renderer(&[THREE_LINKS], 0);
+        enter_first(&mut r);
+        r.nav_positions = (0..3)
+            .map(|i| crate::layout::TargetPos {
+                x: i as f32 * 40.0,
+                y: 0.0,
+            })
+            .collect();
+        press(&mut r, Keycode::PageDown);
+        assert_eq!(r.nav_index, 2);
+        assert!(announced(&r).contains("Three"), "{}", announced(&r));
+        press(&mut r, Keycode::PageUp);
+        assert_eq!(r.nav_index, 0);
+        assert!(!announced(&r).is_empty());
     }
 
     /// A key at an edge is never silent: the current target is said again, and a

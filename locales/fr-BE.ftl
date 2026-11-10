@@ -134,6 +134,7 @@ hint-insert = :      Insérer
 hint-ctrl-insert = Ctrl+: Insérer
 hint-enter-insert = Enter  Insérer
 insert-palette-empty = rien à insérer
+speech-blank-line = vide
 escape-command-mode-first = appuyez sur Échap pour quitter d'abord { $mode }
 
 # Mode dans l'élément

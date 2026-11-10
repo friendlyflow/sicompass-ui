@@ -25,6 +25,22 @@ fn open_flow_list_nav(r: &AppRenderer) -> bool {
     r.pending_file_browser_open && r.coordinate.is_general()
 }
 
+/// Whether moving in the active list moves `current_id` with it. Not in the
+/// lists the app builds itself rather than reads off the FFON level: the colon
+/// palettes (by `base()`, so the second colon layer too), meta, the timeline,
+/// the manual and the tab overlays.
+fn list_row_is_cursor_id(r: &AppRenderer) -> bool {
+    r.coordinate.base() != Coordinate::Command
+        && !matches!(
+            r.coordinate,
+            Coordinate::Meta
+                | Coordinate::TimelineView
+                | Coordinate::Manual
+                | Coordinate::ConfirmCloseTab
+                | Coordinate::TabSwitcher
+        )
+}
+
 /// Move selection up in the current list.
 pub fn handle_up(r: &mut AppRenderer) {
     if open_flow_list_nav(r) {
@@ -65,16 +81,7 @@ pub fn handle_up(r: &mut AppRenderer) {
             r.error_message.clear();
             if r.list_index > 0 {
                 r.list_index -= 1;
-                // `base()`, matching the arm above: these lists are built by
-                // the app, not read off the FFON level, so the cursor id must
-                // not follow the row. The second colon layer is one of them.
-                if r.coordinate.base() != Coordinate::Command
-                    && r.coordinate != Coordinate::Meta
-                    && r.coordinate != Coordinate::TimelineView
-                    && r.coordinate != Coordinate::Manual
-                    && r.coordinate != Coordinate::ConfirmCloseTab
-                    && r.coordinate != Coordinate::TabSwitcher
-                {
+                if list_row_is_cursor_id(r) {
                     r.sync_current_id_from_list();
                 }
                 r.speak_current_element();
@@ -133,16 +140,7 @@ pub fn handle_down(r: &mut AppRenderer) {
             let max_index = r.active_list_len().saturating_sub(1);
             if r.list_index < max_index {
                 r.list_index += 1;
-                // `base()`, matching the arm above: these lists are built by
-                // the app, not read off the FFON level, so the cursor id must
-                // not follow the row. The second colon layer is one of them.
-                if r.coordinate.base() != Coordinate::Command
-                    && r.coordinate != Coordinate::Meta
-                    && r.coordinate != Coordinate::TimelineView
-                    && r.coordinate != Coordinate::Manual
-                    && r.coordinate != Coordinate::ConfirmCloseTab
-                    && r.coordinate != Coordinate::TabSwitcher
-                {
+                if list_row_is_cursor_id(r) {
                     r.sync_current_id_from_list();
                 }
                 r.speak_current_element();
@@ -1092,129 +1090,230 @@ fn step_forward_by_lines(line_counts: &[usize], cur: usize, max_id: usize, budge
     i
 }
 
-/// Page up (scroll a full screen up).
+/// Page up: one screen up (see [`page`]).
 pub fn handle_page_up(r: &mut AppRenderer) {
-    if r.coordinate.base() == Coordinate::Insert {
-        return;
-    }
+    page(r, false);
+}
 
-    let line_height = r.cached_line_height.max(1);
-    let page_size = ((r.window_height / line_height) - 3).max(1) as usize;
+/// Page down: one screen down (see [`page`]).
+pub fn handle_page_down(r: &mut AppRenderer) {
+    page(r, true);
+}
 
+/// PgUp/PgDn. Everywhere the view moves one screen, the way scroll mode moves its
+/// text, and the cursor lands on whatever is at about the same height on screen as
+/// before: a row, a target in element mode, a line in a text field, a match in
+/// scroll search. When the view cannot move any further the cursor goes to the end
+/// it was heading for. It always speaks, except in scroll mode and its search,
+/// which are for reading with the eyes.
+fn page(r: &mut AppRenderer, down: bool) {
     match r.coordinate.base() {
-        Coordinate::Scroll | Coordinate::ScrollSearch => {
+        Coordinate::Scroll => {
             let viewport_h = r.text_scroll_viewport_h;
-            r.text_scroll_offset = (r.text_scroll_offset - viewport_h).max(0);
-        }
-        Coordinate::SimpleSearch
-        | Coordinate::Command
-        | Coordinate::ExtendedSearch
-        | Coordinate::Manual => {
-            r.error_message.clear();
-            let new_idx = if r.cached_line_counts.is_empty() {
-                r.list_index.saturating_sub(page_size)
+            let max_offset = (r.text_scroll_total_height - viewport_h).max(0);
+            r.text_scroll_offset = if down {
+                (r.text_scroll_offset + viewport_h).min(max_offset)
             } else {
-                step_back_by_lines(&r.cached_line_counts, r.list_index, page_size)
+                (r.text_scroll_offset - viewport_h).max(0)
             };
-            r.list_index = new_idx;
-            r.scroll_offset = r.list_index as i32;
-            r.speak_current_element();
         }
+        Coordinate::ScrollSearch => {
+            let viewport_h = r.text_scroll_viewport_h;
+            let max_offset = (r.text_scroll_total_height - viewport_h).max(0);
+            let old = r.text_scroll_offset.clamp(0, max_offset);
+            let new = if down {
+                (old + viewport_h).min(max_offset)
+            } else {
+                (old - viewport_h).max(0)
+            };
+            r.text_scroll_offset = new;
+            r.scroll_search_needs_position = false;
+            r.scroll_search_page = Some(crate::app_state::ScrollSearchPage {
+                screen_y: r.scroll_search_current_match_y,
+                down,
+                moved: new != old,
+            });
+        }
+        Coordinate::Insert | Coordinate::Normal | Coordinate::Visual => page_caret(r, down),
+        Coordinate::InElement => crate::in_element::page(r, down),
         // The open dialog lists a filtered subset, so page by list position.
         Coordinate::General if open_flow_list_nav(r) => {
             r.error_message.clear();
-            r.list_index = if r.cached_line_counts.is_empty() {
-                r.list_index.saturating_sub(page_size)
-            } else {
-                step_back_by_lines(&r.cached_line_counts, r.list_index, page_size)
-            };
-            r.sync_current_id_from_list();
-            r.scroll_offset = r.list_index as i32;
+            let before = focused_label(r);
+            let len = r.active_list_len();
+            if len > 0 {
+                let cursor = r.list_index.min(len - 1);
+                r.list_index = page_list(r, cursor, len, down);
+                r.sync_current_id_from_list();
+            }
+            speak_if_unchanged(r, before);
         }
         Coordinate::General => {
+            let before = focused_label(r);
             if let Some(slice) = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &r.current_id) {
-                let max_id = slice.len().saturating_sub(1);
-                let cur = r.current_id.last().unwrap_or(0).min(max_id);
-                let new_id = if r.cached_line_counts.is_empty() {
-                    cur.saturating_sub(page_size)
-                } else {
-                    step_back_by_lines(&r.cached_line_counts, cur, page_size)
-                };
-                r.current_id.set_last(new_id);
-                list::create_list_current_layer(r);
-                r.scroll_offset = r.list_index as i32;
+                let len = slice.len();
+                if len > 0 {
+                    let cursor = r.current_id.last().unwrap_or(0).min(len - 1);
+                    let new_id = page_list(r, cursor, len, down);
+                    let view = (r.scroll_offset_exact, r.scroll_offset);
+                    r.current_id.set_last(new_id);
+                    list::create_list_current_layer(r);
+                    // Rebuilding the list may reset the view: keep the page's.
+                    (r.scroll_offset_exact, r.scroll_offset) = view;
+                }
             }
+            speak_if_unchanged(r, before);
+        }
+        Coordinate::SimpleSearch
+        | Coordinate::ExtendedSearch
+        | Coordinate::Command
+        | Coordinate::Manual
+        | Coordinate::Meta
+        | Coordinate::TimelineView
+        | Coordinate::TabSwitcher
+        | Coordinate::ConfirmCloseTab => {
+            r.error_message.clear();
+            let len = r.active_list_len();
+            if len > 0 {
+                let cursor = r.list_index.min(len - 1);
+                r.list_index = page_list(r, cursor, len, down);
+                if list_row_is_cursor_id(r) {
+                    r.sync_current_id_from_list();
+                }
+            }
+            r.speak_current_element();
         }
         _ => {}
     }
     r.needs_redraw = true;
 }
 
-/// Page down (scroll a full screen down).
-pub fn handle_page_down(r: &mut AppRenderer) {
-    if r.coordinate.base() == Coordinate::Insert {
-        return;
-    }
+/// A page in a list of `len` rows with the cursor on `cursor`: sets the view's
+/// first row and returns the new cursor ([`crate::layout::page_step`]).
+///
+/// It pages through the rows as the last frame laid them out, starting from the
+/// row the next frame would draw first. Before a frame has drawn this list, each
+/// row is as many lines tall as `cached_line_counts` says (one when it says
+/// nothing), in the window less its header.
+fn page_list(r: &mut AppRenderer, cursor: usize, len: usize, down: bool) -> usize {
+    let (heights, viewport_h) =
+        if r.cached_row_heights.len() == len && r.cached_list_viewport_h > 0.0 {
+            (r.cached_row_heights.clone(), r.cached_list_viewport_h)
+        } else {
+            let line_height = r.cached_line_height.max(1);
+            let heights = (0..len)
+                .map(|i| {
+                    let lines = r.cached_line_counts.get(i).copied().unwrap_or(1).max(1);
+                    (lines as i32 * line_height) as f32
+                })
+                .collect();
+            let lines = ((r.window_height / line_height) - 3).max(1);
+            (heights, (lines * line_height) as f32)
+        };
+    let first = if r.scroll_offset_exact && r.scroll_offset >= 0 {
+        crate::layout::first_visible_row_from(
+            &heights,
+            viewport_h,
+            cursor,
+            r.scroll_offset as usize,
+        )
+    } else {
+        crate::layout::first_visible_row(&heights, viewport_h, cursor, r.scroll_offset)
+    };
+    let (new_first, new_cursor) =
+        crate::layout::page_step(&heights, viewport_h, first, cursor, down);
+    r.scroll_offset = new_first as i32;
+    r.scroll_offset_exact = true;
+    new_cursor
+}
 
-    let line_height = r.cached_line_height.max(1);
-    let page_size = ((r.window_height / line_height) - 3).max(1) as usize;
+/// The text of the row the cursor is on, to tell afterwards whether a key moved
+/// the screen reader's focus.
+fn focused_label(r: &AppRenderer) -> Option<String> {
+    r.current_list_item().map(|item| item.label.clone())
+}
 
-    match r.coordinate.base() {
-        Coordinate::Scroll | Coordinate::ScrollSearch => {
-            let viewport_h = r.text_scroll_viewport_h;
-            let max_offset = (r.text_scroll_total_height - viewport_h).max(0);
-            r.text_scroll_offset = (r.text_scroll_offset + viewport_h).min(max_offset);
-        }
-        Coordinate::SimpleSearch
-        | Coordinate::Command
-        | Coordinate::ExtendedSearch
-        | Coordinate::Manual => {
-            r.error_message.clear();
-            let count = r.active_list_len();
-            if count > 0 {
-                let max_id = count - 1;
-                let new_idx = if r.cached_line_counts.is_empty() {
-                    (r.list_index + page_size).min(max_id)
-                } else {
-                    step_forward_by_lines(&r.cached_line_counts, r.list_index, max_id, page_size)
-                };
-                r.list_index = new_idx;
-                r.scroll_offset = -1;
-                r.speak_current_element();
-            }
-        }
-        // The open dialog lists a filtered subset, so page by list position.
-        Coordinate::General if open_flow_list_nav(r) => {
-            r.error_message.clear();
-            let count = r.active_list_len();
-            if count > 0 {
-                let max_id = count - 1;
-                r.list_index = if r.cached_line_counts.is_empty() {
-                    (r.list_index + page_size).min(max_id)
-                } else {
-                    step_forward_by_lines(&r.cached_line_counts, r.list_index, max_id, page_size)
-                };
-                r.sync_current_id_from_list();
-                r.scroll_offset = -1;
-            }
-        }
-        Coordinate::General => {
-            if let Some(slice) = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &r.current_id) {
-                let max_id = slice.len().saturating_sub(1);
-                let cur = r.current_id.last().unwrap_or(0);
-                let new_id = if r.cached_line_counts.is_empty() {
-                    (cur + page_size).min(max_id)
-                } else {
-                    step_forward_by_lines(&r.cached_line_counts, cur, max_id, page_size)
-                };
-                r.current_id.set_last(new_id);
-                list::create_list_current_layer(r);
-                r.scroll_offset = -1;
-            }
-        }
-        _ => {}
+/// Say the focused row when a key in General left the cursor on a row with the
+/// same text as before: at an end of the list, or on a twin. A move to a row with
+/// other text is already spoken, by the focus moving to a fresh node
+/// (`ElementIds::for_row` in `accesskit_sdl.rs`), and saying it here as well
+/// would say it twice.
+fn speak_if_unchanged(r: &mut AppRenderer, before: Option<String>) {
+    if focused_label(r) == before {
+        r.speak_current_element();
     }
+}
+
+/// PgUp/PgDn in a text field: the caret moves a screen of wrapped lines, at the
+/// same column, and the line it lands on is spoken. From the first or last line
+/// it goes to the start or end of the text, as Up and Down do.
+fn page_caret(r: &mut AppRenderer, down: bool) {
+    let lines = insert_visual_lines(r);
+    let line_height = r.cached_line_height.max(1) as f32;
+    let screen = if r.cached_list_viewport_h > 0.0 {
+        r.cached_list_viewport_h
+    } else {
+        r.window_height as f32
+    };
+    let count = ((screen / line_height) as usize).max(1);
+    let mut pos = r.cursor_position.min(r.input_buffer.len());
+    let mut goal = r
+        .insert_goal
+        .filter(|&(at, _)| at == pos)
+        .map(|(_, col)| col);
+    clear_selection(r);
+    for _ in 0..count {
+        let (next, next_goal) =
+            sicompass_sdk::input::vertical(&r.input_buffer, &lines, pos, goal, down);
+        let stuck = next == pos;
+        pos = next;
+        goal = next_goal;
+        if stuck {
+            break;
+        }
+    }
+    r.cursor_position = pos;
+    r.insert_goal = goal.map(|col| (pos, col));
+    r.caret.reset(sdl_ticks());
+    announce_caret_line(r);
     r.needs_redraw = true;
+}
+
+/// Say the line the caret is on, after Home, End or a page key in a text field
+/// or a query. A password says a star a character, the way typing in it does,
+/// and an empty line says "blank".
+fn announce_caret_line(r: &mut AppRenderer) {
+    let query = matches!(
+        r.coordinate,
+        Coordinate::SimpleSearch | Coordinate::InputSearch
+    );
+    let buf = active_text_buf(r);
+    let pos = r.cursor_position.min(buf.len());
+    let lines = if query {
+        sicompass_sdk::input::hard_lines(buf)
+    } else {
+        insert_visual_lines(r)
+    };
+    let line = lines
+        .iter()
+        .rev()
+        .find(|l| l.start <= pos)
+        .and_then(|l| buf.get(l.start..l.end.min(buf.len())))
+        .unwrap_or("")
+        .trim_end_matches(['\n', '\r']);
+    let text = if line.trim().is_empty() {
+        let blank = sicompass_sdk::localize::t("speech-blank-line");
+        if blank == "speech-blank-line" {
+            "blank".to_string()
+        } else {
+            blank
+        }
+    } else if !query && r.masks_input() {
+        "*".repeat(line.chars().count())
+    } else {
+        line.to_string()
+    };
+    announce_text(r, &text);
 }
 
 /// Jump to first item (Ctrl+Home in SimpleSearch/Command/ExtendedSearch).
@@ -6205,6 +6304,7 @@ pub fn handle_home(r: &mut AppRenderer) {
             r.needs_redraw = true;
         }
         Coordinate::General => {
+            let before = focused_label(r);
             let now = sdl_ticks();
             if now.saturating_sub(r.last_keypress_time) <= DELTA_MS
                 && r.current_id.depth() > r.top_depth()
@@ -6234,6 +6334,7 @@ pub fn handle_home(r: &mut AppRenderer) {
             // otherwise be off-screen, so this stays correct for very long
             // lists too.
             r.scroll_offset = 0;
+            speak_if_unchanged(r, before);
             r.needs_redraw = true;
         }
         _ => {
@@ -6244,6 +6345,10 @@ pub fn handle_home(r: &mut AppRenderer) {
             let buf = active_text_buf(r);
             r.cursor_position = find_line_start(buf, pos);
             r.caret.reset(sdl_ticks());
+            // Scroll search is read with the eyes, like scroll mode.
+            if r.coordinate.base() != Coordinate::ScrollSearch {
+                announce_caret_line(r);
+            }
             r.needs_redraw = true;
         }
     }
@@ -6264,12 +6369,14 @@ pub fn handle_end(r: &mut AppRenderer) {
             r.needs_redraw = true;
         }
         Coordinate::General => {
+            let before = focused_label(r);
             if let Some(slice) = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &r.current_id) {
                 let max_id = slice.len().saturating_sub(1);
                 r.current_id.set_last(max_id);
                 list::create_list_current_layer(r);
                 r.scroll_offset = -1;
             }
+            speak_if_unchanged(r, before);
             r.needs_redraw = true;
         }
         _ => {
@@ -6279,6 +6386,10 @@ pub fn handle_end(r: &mut AppRenderer) {
             let buf = active_text_buf(r);
             r.cursor_position = find_line_end(buf, pos).min(buf_len);
             r.caret.reset(sdl_ticks());
+            // Scroll search is read with the eyes, like scroll mode.
+            if r.coordinate.base() != Coordinate::ScrollSearch {
+                announce_caret_line(r);
+            }
             r.needs_redraw = true;
         }
     }
@@ -13541,13 +13652,18 @@ mod tests {
 
     #[test]
     fn page_up_simple_search_uses_visual_lines_for_image() {
-        // counts=[1,1,1,1,8,1,1,1,1,1,1,1], page_size=10, start at 11 → land at 5, not 1
+        // counts=[1,1,1,1,8,1,1,1,1,1,1,1], a 10-line screen. From 11 the view
+        // starts at 5, the cursor 6 lines down. A screen up starts it at 2, and 6
+        // lines down from there is the image (4), not row 1.
         let counts = vec![1usize, 1, 1, 1, 8, 1, 1, 1, 1, 1, 1, 1];
         let mut r = make_renderer_general_with_counts(counts);
         r.coordinate = Coordinate::SimpleSearch;
         r.list_index = 11;
         handle_page_up(&mut r);
-        assert_eq!(r.list_index, 5, "should stop near image, not skip past it");
+        assert_eq!(
+            r.list_index, 4,
+            "should land on the image, not skip past it"
+        );
     }
 
     #[test]
@@ -13608,6 +13724,226 @@ mod tests {
         r.cached_line_height = 10;
         r.text_scroll_viewport_h = r.window_height - 2 * r.cached_line_height;
         r
+    }
+
+    /// What the screen reader was last told, without the repeat marker.
+    fn said(r: &AppRenderer) -> Option<String> {
+        r.pending_announcement
+            .as_deref()
+            .map(|s| s.trim_end_matches('\u{200B}').to_owned())
+    }
+
+    /// A renderer whose list was drawn: ten one-line rows, a three-row screen.
+    fn drawn_ten(coordinate: Coordinate) -> AppRenderer {
+        let mut r = make_renderer_general_with_counts(vec![1; 10]);
+        r.coordinate = coordinate;
+        r.cached_row_heights = vec![10.0; 10];
+        r.cached_list_viewport_h = 30.0;
+        r.scroll_offset = 0;
+        r
+    }
+
+    #[test]
+    fn page_down_keeps_the_cursor_at_its_height_in_a_drawn_list() {
+        let mut r = drawn_ten(Coordinate::SimpleSearch);
+        r.list_index = 1;
+        handle_page_down(&mut r);
+        assert_eq!(r.list_index, 4);
+        assert_eq!(r.scroll_offset, 3, "the view moved a screen");
+        assert!(r.scroll_offset_exact);
+        handle_page_up(&mut r);
+        assert_eq!(r.list_index, 1);
+        assert_eq!(r.scroll_offset, 0);
+    }
+
+    #[test]
+    fn page_down_on_the_last_screen_goes_to_the_last_row_and_speaks() {
+        // The last screen shows rows 7 to 9, the cursor on 8.
+        let mut r = drawn_ten(Coordinate::SimpleSearch);
+        r.scroll_offset = 7;
+        r.list_index = 8;
+        handle_page_down(&mut r);
+        assert_eq!(r.list_index, 9);
+        r.pending_announcement = None;
+        handle_page_down(&mut r);
+        assert_eq!(r.list_index, 9);
+        assert!(said(&r).is_some(), "a page key at the end still speaks");
+    }
+
+    /// Every list the app builds speaks the row a page key lands on.
+    #[test]
+    fn page_keys_speak_in_every_list_mode() {
+        for mode in [
+            Coordinate::SimpleSearch,
+            Coordinate::ExtendedSearch,
+            Coordinate::Command,
+            Coordinate::Manual,
+            Coordinate::Meta,
+            Coordinate::TimelineView,
+            Coordinate::TabSwitcher,
+            Coordinate::ConfirmCloseTab,
+        ] {
+            let mut r = drawn_ten(mode);
+            r.list_index = 0;
+            r.pending_announcement = None;
+            handle_page_up(&mut r);
+            assert!(said(&r).is_some(), "{mode:?} said nothing at the top");
+        }
+    }
+
+    /// In General a move to a row with other text is spoken by the focus moving,
+    /// so the key only speaks itself where the row stayed the same.
+    #[test]
+    fn page_keys_in_general_speak_at_an_end_and_leave_a_move_to_the_focus() {
+        let mut r = drawn_ten(Coordinate::General);
+        r.pending_announcement = None;
+        handle_page_down(&mut r);
+        assert_eq!(r.current_id.last(), Some(3));
+        assert_eq!(said(&r), None, "the focus move says it");
+        r.current_id.set_last(0);
+        list::create_list_current_layer(&mut r);
+        r.scroll_offset = 0;
+        handle_page_up(&mut r);
+        assert_eq!(r.current_id.last(), Some(0));
+        assert!(said(&r).unwrap_or_default().contains("item 0"));
+    }
+
+    #[test]
+    fn home_and_end_in_general_speak_when_already_there() {
+        let mut r = drawn_ten(Coordinate::General);
+        r.pending_announcement = None;
+        handle_home(&mut r);
+        assert!(said(&r).unwrap_or_default().contains("item 0"));
+        r.current_id.set_last(9);
+        list::create_list_current_layer(&mut r);
+        r.pending_announcement = None;
+        handle_end(&mut r);
+        assert!(said(&r).unwrap_or_default().contains("item 9"));
+    }
+
+    /// Scroll mode and its search are read with the eyes.
+    #[test]
+    fn page_keys_in_scroll_mode_say_nothing() {
+        for mode in [Coordinate::Scroll, Coordinate::ScrollSearch] {
+            let mut r = make_renderer_paged();
+            r.coordinate = mode;
+            r.text_scroll_total_height = 200;
+            r.pending_announcement = None;
+            handle_page_down(&mut r);
+            handle_page_up(&mut r);
+            assert_eq!(said(&r), None, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn page_down_in_scroll_search_asks_for_the_match_at_the_same_height() {
+        let mut r = make_renderer_paged();
+        r.coordinate = Coordinate::ScrollSearch;
+        r.text_scroll_total_height = 200;
+        r.text_scroll_offset = 0;
+        r.scroll_search_current_match_y = 7;
+        handle_page_down(&mut r);
+        assert_eq!(r.text_scroll_offset, 20);
+        assert_eq!(
+            r.scroll_search_page,
+            Some(crate::app_state::ScrollSearchPage {
+                screen_y: 7,
+                down: true,
+                moved: true,
+            })
+        );
+        r.scroll_search_page = None;
+        handle_page_up(&mut r);
+        handle_page_up(&mut r);
+        assert_eq!(r.scroll_search_page.map(|p| p.moved), Some(false));
+    }
+
+    /// Thirty lines, `l0` to `l29`, being edited, with a five-line screen.
+    fn editing_lines(coordinate: Coordinate) -> AppRenderer {
+        let mut r = make_renderer();
+        r.coordinate = coordinate;
+        r.input_buffer = (0..30)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        r.cursor_position = 0;
+        r.cached_line_height = 10;
+        r.cached_list_viewport_h = 50.0;
+        r
+    }
+
+    #[test]
+    fn page_keys_move_the_caret_a_screen_of_lines_and_say_the_line() {
+        for mode in [Coordinate::Insert, Coordinate::Normal, Coordinate::Visual] {
+            let mut r = editing_lines(mode);
+            r.cursor_position = 1; // after the "l" of l0
+            handle_page_down(&mut r);
+            let at = r.input_buffer.find("l5").unwrap();
+            assert_eq!(r.cursor_position, at + 1, "{mode:?} kept its column");
+            assert_eq!(said(&r).as_deref(), Some("l5"), "{mode:?}");
+            handle_page_up(&mut r);
+            assert_eq!(r.cursor_position, 1, "{mode:?}");
+            assert_eq!(said(&r).as_deref(), Some("l0"), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn page_down_from_the_last_line_goes_to_the_end_of_the_text() {
+        let mut r = editing_lines(Coordinate::Insert);
+        r.cursor_position = r.input_buffer.find("l28").unwrap();
+        handle_page_down(&mut r);
+        assert_eq!(r.cursor_position, r.input_buffer.len());
+        assert_eq!(said(&r).as_deref(), Some("l29"));
+    }
+
+    #[test]
+    fn a_password_line_is_said_as_stars() {
+        let mut r = make_renderer();
+        r.coordinate = Coordinate::Insert;
+        r.input_buffer = "secret".into();
+        r.input_is_password = true;
+        r.password_revealed = false;
+        r.cursor_position = 3;
+        handle_end(&mut r);
+        assert_eq!(said(&r).as_deref(), Some("******"));
+    }
+
+    #[test]
+    fn home_and_end_in_a_text_field_say_the_line() {
+        let mut r = editing_lines(Coordinate::Insert);
+        r.cursor_position = r.input_buffer.find("l12").unwrap() + 2;
+        handle_home(&mut r);
+        assert_eq!(said(&r).as_deref(), Some("l12"));
+        r.pending_announcement = None;
+        handle_end(&mut r);
+        assert_eq!(said(&r).as_deref(), Some("l12"));
+    }
+
+    #[test]
+    fn home_in_a_search_query_says_the_query() {
+        let mut r = make_renderer();
+        r.coordinate = Coordinate::SimpleSearch;
+        r.search_string = "notes".into();
+        r.cursor_position = 3;
+        handle_home(&mut r);
+        assert_eq!(r.cursor_position, 0);
+        assert_eq!(said(&r).as_deref(), Some("notes"));
+    }
+
+    #[test]
+    fn an_empty_line_is_said_as_blank() {
+        let mut r = make_renderer();
+        r.coordinate = Coordinate::Insert;
+        r.input_buffer = "a\n\nb".into();
+        r.cursor_position = 2;
+        handle_home(&mut r);
+        let blank = sicompass_sdk::localize::t("speech-blank-line");
+        let blank = if blank == "speech-blank-line" {
+            "blank".to_string()
+        } else {
+            blank
+        };
+        assert_eq!(said(&r), Some(blank));
     }
 
     fn make_renderer_general_with_counts(counts: Vec<usize>) -> AppRenderer {
@@ -13701,8 +14037,9 @@ mod tests {
 
     #[test]
     fn page_up_general_uses_visual_lines_for_image() {
-        // From 11, budget=10: consume items 10..5 (6 lines), image at 4 would add 8→14>10 → stop at 5
-        // Without the fix (element-index step) this would land at 1, skipping the image entirely
+        // A 10-line screen. From 11 the view starts at 5, the cursor 6 lines down.
+        // A screen up starts it at 2, and 6 lines down from there is the image (4).
+        // An element-index step would land at 1, skipping the image entirely.
         let counts = vec![1usize, 1, 1, 1, 8, 1, 1, 1, 1, 1, 1, 1];
         let mut r = make_renderer_general_with_counts(counts);
         r.coordinate = Coordinate::General;
@@ -13711,8 +14048,8 @@ mod tests {
         handle_page_up(&mut r);
         assert_eq!(
             r.current_id.last(),
-            Some(5),
-            "should stop near the image, not skip past it"
+            Some(4),
+            "should land on the image, not skip past it"
         );
     }
 

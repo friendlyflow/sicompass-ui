@@ -725,6 +725,16 @@ pub struct InsertSession {
 ///
 /// `None` inside `Option` for a palette opened from General, where there is no
 /// edit in progress to suspend.
+/// A PgUp/PgDn in ScrollSearch, waiting for the frame that can see the matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollSearchPage {
+    /// Where the current match was, below the top of the viewport, in pixels.
+    pub screen_y: i32,
+    pub down: bool,
+    /// Whether the text moved. When it could not, the first or last match is taken.
+    pub moved: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct SuspendedInputEdit {
     pub buffer: String,
@@ -891,6 +901,12 @@ pub struct AppRenderer {
     /// When true the renderer snaps the viewport to the current match on the
     /// next frame, then clears this flag. Set by Up/Down navigation in ScrollSearch.
     pub scroll_search_snap: bool,
+    /// PgUp/PgDn in ScrollSearch, for the next frame: the renderer makes the
+    /// match nearest this height on the new screen the current one, then clears it.
+    pub scroll_search_page: Option<ScrollSearchPage>,
+    /// How far below the top of the text viewport the current match was drawn,
+    /// in pixels, as of the last frame. Where PgUp/PgDn look for the next one.
+    pub scroll_search_current_match_y: i32,
 
     // ---- Dashboard state ---------------------------------------------------
     pub dashboard_image_path: String,
@@ -945,6 +961,15 @@ pub struct AppRenderer {
     /// Visual line count per list item — index matches `current_id.last()`.
     /// Populated after each render; empty until first render of a given list.
     pub cached_line_counts: Vec<usize>,
+    /// Height of each row of the list, in pixels, as the last frame laid it out.
+    /// What PgUp/PgDn page through (`layout::page_step`).
+    pub cached_row_heights: Vec<f32>,
+    /// Height of the area the list's rows are drawn in, in pixels, as of the last
+    /// frame. One screen for PgUp/PgDn.
+    pub cached_list_viewport_h: f32,
+    /// Set by PgUp/PgDn: the next frame starts the list exactly at `scroll_offset`
+    /// (`layout::first_visible_row_from`), then clears it.
+    pub scroll_offset_exact: bool,
     /// X position after the input prefix — first-line caret origin.
     pub current_element_x: f32,
     /// X position before the input prefix — continuation-line caret origin.
@@ -1329,6 +1354,8 @@ impl AppRenderer {
             scroll_search_current_match: 0,
             scroll_search_needs_position: false,
             scroll_search_snap: false,
+            scroll_search_page: None,
+            scroll_search_current_match_y: 0,
             dashboard_image_path: String::new(),
             dashboard_cell_size: (0, 0),
             dashboard_last_ctrl_c: 0,
@@ -1347,6 +1374,9 @@ impl AppRenderer {
             window_height: WINDOW_HEIGHT as i32,
             cached_line_height: 20,
             cached_line_counts: Vec::new(),
+            cached_row_heights: Vec::new(),
+            cached_list_viewport_h: 0.0,
+            scroll_offset_exact: false,
             current_element_x: 0.0,
             current_element_base_x: 0.0,
             current_element_y: 0.0,

@@ -134,6 +134,7 @@ hint-insert = :      Einfügen
 hint-ctrl-insert = Ctrl+: Einfügen
 hint-enter-insert = Enter  Einfügen
 insert-palette-empty = nichts zum Einfügen
+speech-blank-line = leer
 escape-command-mode-first = drücke Escape, um zuerst { $mode } zu verlassen
 
 # Im-Element-Modus
