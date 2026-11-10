@@ -273,48 +273,26 @@ pub enum Coordinate {
     TabSwitcher,
     // ---- The colon-command family ----------------------------------------
     //
-    // Three relabelled views of two base modes. They exist so each colon layer
+    // Two relabelled views of two base modes. They exist so each colon layer
     // can name itself: the header line and the Ctrl+W announcement both read
     // `mode_display_label`, and before these variants a shell called itself
-    // "general mode" and claude's skills palette called itself "insert mode".
-    // Behaviour is unchanged from the base mode in every case — see
-    // [`Coordinate::base`], which is what key dispatch and every mode gate read.
-    /// A browse-then-session provider's session view (the terminal's shell) for
-    /// a provider that offers nothing to layer on top of it. Behaves exactly
-    /// like [`Coordinate::General`]; it just says that `:` is what got you here.
-    /// Set only by `handlers::rest_coordinate`, never assigned literally.
-    SessionCommand,
-    /// A view reached by pressing `:` that has another `:` available on top of
-    /// it: claude's session, and the git client's opened repository. Distinct
-    /// from [`Coordinate::SessionCommand`] purely so the two are
-    /// distinguishable by ear: "first command mode" says another `:` is
-    /// available, "command mode" says this is the only layer.
+    // "general mode". Behaviour is unchanged from the base mode in every case,
+    // see [`Coordinate::base`], which is what key dispatch and every mode gate
+    // read. One ordinal per `:`: general mode, first command mode, second
+    // command mode.
+    /// A view reached by pressing `:`: the terminal's shell, claude's list of
+    /// past sessions and a session opened from it, and the git client's opened
+    /// repository. Behaves exactly like [`Coordinate::General`]. Set only by
+    /// `handlers::rest_coordinate`, never assigned literally.
     ///
-    /// What that second `:` opens differs, and names itself accordingly:
-    /// claude's is the insert palette ([`Coordinate::SecondCommand`], "second
-    /// command mode", which types into a live prompt), the git client's is the
-    /// ordinary command palette ([`Coordinate::Command`], "command mode").
+    /// What a second `:` opens differs: the terminal's and claude's is the line
+    /// they write ([`Coordinate::SecondCommand`] with
+    /// [`CommandPhase::Compose`]), the git client's its command palette
+    /// ([`Coordinate::SecondCommand`] too).
     SessionFirstCommand,
-    /// Claude's list of past sessions for the folder being browsed — the rung
-    /// between the folder listing and a session's transcript. Reached by `:`,
-    /// left by Escape (straight out to the folders) or by Left.
-    ///
-    /// Behaves exactly like [`Coordinate::General`], and is a session view, so
-    /// Left cannot pop the folder path out from under the list. Named apart
-    /// from the two above because the ladder has to read correctly by ear:
-    /// general mode, session mode, first command mode, second command mode.
-    SessionList,
-    /// The second colon layer over a live prompt — claude's skills list, what
-    /// the code still calls the insert palette. Behaves exactly like
-    /// [`Coordinate::Command`].
-    ///
-    /// Not session-specific, and deliberately so: `insert_palette_available`
-    /// keys off the shape of what a provider serves (a level ending in an
-    /// `<input>` Obj, plus a command beyond the view swap), so a WASM plugin
-    /// gets the layer for free. Such a plugin can open it straight out of
-    /// General and will then report "second command mode" with no "first"
-    /// before it. That is the honest reading of "second colon layer" and is
-    /// unreachable for the providers that ship.
+    /// The second colon layer, over a view of [`Coordinate::SessionFirstCommand`]:
+    /// the git client's palette, or the line written for a prompt
+    /// ([`CommandPhase::Compose`]). Behaves exactly like [`Coordinate::Command`].
     SecondCommand,
 }
 
@@ -336,27 +314,22 @@ impl Coordinate {
     /// only the base modes and needs no entry for the relabellings.
     pub fn base(self) -> Coordinate {
         match self {
-            Coordinate::SessionCommand
-            | Coordinate::SessionFirstCommand
-            | Coordinate::SessionList => Coordinate::General,
+            Coordinate::SessionFirstCommand => Coordinate::General,
             Coordinate::SecondCommand => Coordinate::Command,
             other => other,
         }
     }
 
-    /// True in a browse-then-session provider's session view, under either of
-    /// its two labels.
+    /// True in a view reached by `:` (a session, its list, an opened
+    /// repository), which only Escape leaves.
     pub fn is_session_view(self) -> bool {
-        matches!(
-            self,
-            Coordinate::SessionCommand | Coordinate::SessionFirstCommand | Coordinate::SessionList
-        )
+        self == Coordinate::SessionFirstCommand
     }
 
     /// Every variant. Exists so the locale-coverage test can assert that each
     /// mode resolves in all four bundles without a hand-maintained list that
     /// silently misses a new variant.
-    pub const ALL: [Coordinate; 21] = [
+    pub const ALL: [Coordinate; 19] = [
         Coordinate::General,
         Coordinate::Insert,
         Coordinate::InElement,
@@ -374,9 +347,7 @@ impl Coordinate {
         Coordinate::Manual,
         Coordinate::ConfirmCloseTab,
         Coordinate::TabSwitcher,
-        Coordinate::SessionCommand,
         Coordinate::SessionFirstCommand,
-        Coordinate::SessionList,
         Coordinate::SecondCommand,
     ];
 
@@ -386,11 +357,7 @@ impl Coordinate {
     /// window title) use [`Coordinate::display_label`] instead.
     ///
     /// The literals stay label-shaped because this is `display_label`'s
-    /// fallback when no bundle is registered, which means `Command` and
-    /// `SessionCommand` share one — they are the same mode *name* over
-    /// different behaviour. They are therefore indistinguishable in this
-    /// string by design; the `tracing::` call sites that need to tell them
-    /// apart log the `Debug` form of the coordinate alongside it.
+    /// fallback when no bundle is registered.
     pub fn as_str(self) -> &'static str {
         match self {
             Coordinate::General => "general mode",
@@ -410,9 +377,7 @@ impl Coordinate {
             Coordinate::Manual => "beginner's manual mode",
             Coordinate::ConfirmCloseTab => "confirm close tab mode",
             Coordinate::TabSwitcher => "tab switcher mode",
-            Coordinate::SessionCommand => "command mode",
             Coordinate::SessionFirstCommand => "first command mode",
-            Coordinate::SessionList => "session mode",
             Coordinate::SecondCommand => "second command mode",
         }
     }
@@ -441,11 +406,7 @@ impl Coordinate {
             Coordinate::Manual => "mode-manual",
             Coordinate::ConfirmCloseTab => "mode-confirm-close-tab",
             Coordinate::TabSwitcher => "mode-tab-switcher",
-            // Shares `mode-command` with `Coordinate::Command`: same name, and
-            // the point of the variant is the behaviour, not the wording.
-            Coordinate::SessionCommand => "mode-command",
             Coordinate::SessionFirstCommand => "mode-first-command",
-            Coordinate::SessionList => "mode-session",
             Coordinate::SecondCommand => "mode-second-command",
         };
         let resolved = sicompass_sdk::localize::t(key);
@@ -514,12 +475,17 @@ pub enum History {
 /// `Controls` → showing the window-controls palette (minimize/maximize/close),
 ///   opened with the `c` key. Reuses the `Coordinate::Command` machinery; only
 ///   `build_command_list` and `handle_enter_command` branch on it.
+/// `Compose` → writing a line for a session's prompt (the second `:` of the
+///   terminal and claude, under `Coordinate::SecondCommand`). The buffer is the
+///   line, the rows are [`AppRenderer::compose`], Tab completes and Enter puts
+///   the line in the prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CommandPhase {
     #[default]
     None,
     Provider,
     Controls,
+    Compose,
 }
 
 /// A window-management action requested from the keyboard (`c` controls palette)
@@ -735,18 +701,6 @@ pub struct ScrollSearchPage {
     pub moved: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct SuspendedInputEdit {
-    pub buffer: String,
-    pub cursor: usize,
-    pub session: Option<InsertSession>,
-    /// True when the palette was opened from Insert, so both exits know to
-    /// return there and put the parked text back. Recorded explicitly rather
-    /// than inferred from `session.is_some()`, which happens to coincide today
-    /// but is a property of the element, not of how the palette was entered.
-    pub from_insert: bool,
-}
-
 // ---------------------------------------------------------------------------
 // AppRenderer
 // ---------------------------------------------------------------------------
@@ -867,10 +821,6 @@ pub struct AppRenderer {
     /// Active per-keystroke edit session on an `<input>` tag (see
     /// [`InsertSession`]). `Some` from insert-mode entry until Enter or Escape.
     pub insert_session: Option<InsertSession>,
-    /// The edit suspended by an open insert palette, and the marker that one is
-    /// open. `Some` for exactly the palette's lifetime, whichever mode it was
-    /// opened from — see [`SuspendedInputEdit`].
-    pub suspended_input_edit: Option<SuspendedInputEdit>,
 
     // ---- Scroll state ------------------------------------------------------
     pub scroll_offset: i32,
@@ -987,6 +937,10 @@ pub struct AppRenderer {
     // ---- Command execution state ------------------------------------------
     pub current_command: CommandPhase,
     pub provider_command_name: String,
+    /// The rows second command mode writes a line from (see
+    /// [`CommandPhase::Compose`]): asked of the provider once as the mode
+    /// opens, empty the rest of the time.
+    pub compose: sicompass_sdk::provider::Completions,
 
     // ---- Palette -----------------------------------------------------------
     pub palette_theme: PaletteTheme,
@@ -1342,7 +1296,7 @@ impl AppRenderer {
             insert_lines_text: String::new(),
             insert_goal: None,
             insert_session: None,
-            suspended_input_edit: None,
+            compose: sicompass_sdk::provider::Completions::default(),
             scroll_offset: 0,
             text_scroll_offset: 0,
             text_scroll_total_height: 0,
@@ -2286,6 +2240,10 @@ impl AppRenderer {
         match self.coordinate.base() {
             Coordinate::SimpleSearch => !self.search_string.is_empty(),
             Coordinate::ExtendedSearch => !self.input_buffer.is_empty(),
+            // A line being written filters like a search (`list::filter_compose`).
+            Coordinate::Command if self.current_command == CommandPhase::Compose => {
+                !self.input_buffer.is_empty()
+            }
             _ => false,
         }
     }
@@ -2738,19 +2696,14 @@ mod tests {
 
     #[test]
     fn base_maps_every_relabelled_coordinate_and_leaves_the_rest_alone() {
-        assert_eq!(Coordinate::SessionCommand.base(), Coordinate::General);
         assert_eq!(Coordinate::SessionFirstCommand.base(), Coordinate::General);
-        assert_eq!(Coordinate::SessionList.base(), Coordinate::General);
         assert_eq!(Coordinate::SecondCommand.base(), Coordinate::Command);
         // Every other variant is its own base, so `base()` can be applied at a
         // dispatch site without changing what any existing mode matches.
         for c in Coordinate::ALL {
             if matches!(
                 c,
-                Coordinate::SessionCommand
-                    | Coordinate::SessionFirstCommand
-                    | Coordinate::SessionList
-                    | Coordinate::SecondCommand
+                Coordinate::SessionFirstCommand | Coordinate::SecondCommand
             ) {
                 continue;
             }
@@ -2765,28 +2718,17 @@ mod tests {
     #[test]
     fn is_general_covers_the_session_views_and_nothing_else() {
         for c in Coordinate::ALL {
-            let want = matches!(
-                c,
-                Coordinate::General
-                    | Coordinate::SessionCommand
-                    | Coordinate::SessionFirstCommand
-                    | Coordinate::SessionList
-            );
+            let want = matches!(c, Coordinate::General | Coordinate::SessionFirstCommand);
             assert_eq!(c.is_general(), want, "{c:?}");
         }
     }
 
     #[test]
-    fn is_session_view_is_the_three_session_labels() {
+    fn is_session_view_is_the_first_command_layer() {
         for c in Coordinate::ALL {
             // The session list is one too: it is inside the same escape-only
             // layer, and Left must not pop the folder path out from under it.
-            let want = matches!(
-                c,
-                Coordinate::SessionCommand
-                    | Coordinate::SessionFirstCommand
-                    | Coordinate::SessionList
-            );
+            let want = c == Coordinate::SessionFirstCommand;
             assert_eq!(c.is_session_view(), want, "{c:?}");
         }
     }
@@ -2795,14 +2737,12 @@ mod tests {
     fn all_lists_every_variant_exactly_once() {
         // A new variant that never reaches `ALL` would slip past the
         // locale-coverage and base() tests below without failing anything.
-        // By variant, not by label: `Command` and `SessionCommand` share a
-        // label on purpose.
         let mut seen: Vec<Coordinate> = Vec::new();
         for c in Coordinate::ALL {
             assert!(!seen.contains(&c), "{c:?} listed twice");
             seen.push(c);
         }
-        assert_eq!(Coordinate::ALL.len(), 21);
+        assert_eq!(Coordinate::ALL.len(), 19);
     }
 
     #[test]
@@ -2836,7 +2776,6 @@ mod tests {
         sicompass_sdk::localize::set_locale("en-US");
         // The whole point of the family: one name per colon layer.
         assert_eq!(Coordinate::Command.display_label(), "command mode");
-        assert_eq!(Coordinate::SessionCommand.display_label(), "command mode");
         assert_eq!(
             Coordinate::SessionFirstCommand.display_label(),
             "first command mode"
@@ -2883,8 +2822,13 @@ mod tests {
         sicompass_sdk::localize::set_locale("en-US");
         let mut r = AppRenderer::new();
         r.coordinate = Coordinate::SecondCommand;
-        // The parked live edit no longer decides the label — the coordinate does.
-        for phase in [CommandPhase::None, CommandPhase::Provider] {
+        // The coordinate decides the label, whichever palette is open on it:
+        // the git client's, or a line being written.
+        for phase in [
+            CommandPhase::None,
+            CommandPhase::Provider,
+            CommandPhase::Compose,
+        ] {
             r.current_command = phase;
             assert!(
                 r.header_text().starts_with("second command mode, layer:"),
@@ -2963,9 +2907,6 @@ mod tests {
 
     #[test]
     fn coordinate_as_str_colon_command_family() {
-        // `SessionCommand` shares the literal with `Command`: same mode name
-        // over different behaviour. Logs tell them apart by the Debug form.
-        assert_eq!(Coordinate::SessionCommand.as_str(), "command mode");
         assert_eq!(
             Coordinate::SessionFirstCommand.as_str(),
             "first command mode"

@@ -399,7 +399,7 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
     renderer.filtered_list_indices.clear();
     renderer.error_message.clear();
 
-    // Keep the at-rest mode name honest. Which of General / SessionCommand /
+    // Keep the at-rest mode name honest. Which of General /
     // SessionFirstCommand applies is a function of the view the active provider
     // is showing, and the cursor can leave or enter a session's level without
     // any handler noticing (Ctrl+Home, a Home double-tap, Ctrl+F into another
@@ -410,10 +410,7 @@ pub fn create_list_current_layer(renderer: &mut AppRenderer) {
     // entered — Insert, a search, a palette — is never clobbered.
     if matches!(
         renderer.coordinate,
-        Coordinate::General
-            | Coordinate::SessionCommand
-            | Coordinate::SessionFirstCommand
-            | Coordinate::SessionList
+        Coordinate::General | Coordinate::SessionFirstCommand
     ) {
         renderer.coordinate = crate::handlers::rest_coordinate(renderer);
     }
@@ -592,6 +589,43 @@ pub fn populate_list_current_layer(renderer: &mut AppRenderer, search: &str) {
         return;
     }
 
+    // A launcher is a list of buttons: with the `-b ` prefix in the haystack,
+    // typing "b" matched every row. There, only the text after the prefix is
+    // searched, and the highlights are moved back to where they sit in the
+    // full label.
+    let strip_prefix = renderer.launcher_mode;
+    let mut scored = fuzzy_rank(
+        renderer
+            .total_list
+            .iter()
+            .map(|it| it.label.as_str())
+            .enumerate(),
+        search,
+        strip_prefix,
+    );
+
+    // Sort by score descending; preserve original order for equal scores
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    renderer.filtered_list_indices = scored.iter().map(|(i, _, _)| *i).collect();
+    renderer.fuzzy_match_positions = scored.into_iter().map(|(_, _, pos)| pos).collect();
+
+    // Clamp list_index into the filtered range
+    let active_len = renderer.filtered_list_indices.len();
+    if renderer.list_index >= active_len {
+        renderer.list_index = active_len.saturating_sub(1);
+    }
+}
+
+/// The rows of `rows` (index, label) that `search` matches, each with its score
+/// and the positions to highlight, in the order given. The scoring behind
+/// [`populate_list_current_layer`], shared with [`filter_compose`], which ranks
+/// two kinds of row against two different texts.
+fn fuzzy_rank<'a>(
+    rows: impl Iterator<Item = (usize, &'a str)>,
+    search: &str,
+    strip_prefix: bool,
+) -> Vec<(usize, u32, Vec<u32>)> {
     let mut matcher = Matcher::new(Config::DEFAULT);
     let pattern = Pattern::parse(search, CaseMatching::Ignore, Normalization::Smart);
 
@@ -620,18 +654,12 @@ pub fn populate_list_current_layer(renderer: &mut AppRenderer, search: &str) {
     let mut char_buf: Vec<char> = Vec::new();
     let mut indices_buf: Vec<u32> = Vec::new();
 
-    // A launcher is a list of buttons: with the `-b ` prefix in the haystack,
-    // typing "b" matched every row. There, only the text after the prefix is
-    // searched, and the highlights are moved back to where they sit in the
-    // full label.
-    let strip_prefix = renderer.launcher_mode;
-
-    for (i, item) in renderer.total_list.iter().enumerate() {
+    for (i, label) in rows {
         char_buf.clear();
         let (text, offset) = if strip_prefix {
-            split_row_prefix(&item.label)
+            split_row_prefix(label)
         } else {
-            (item.label.as_str(), 0)
+            (label, 0)
         };
         // NOTE: with `nucleo`'s `unicode-segmentation` feature these positions
         // index graphemes, not codepoints, for a non-ASCII label, while `view`
@@ -661,17 +689,110 @@ pub fn populate_list_current_layer(renderer: &mut AppRenderer, search: &str) {
             scored.push((i, score, indices_buf.clone()));
         }
     }
+    scored
+}
 
-    // Sort by score descending; preserve original order for equal scores
-    scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+/// The span of the word the caret is in or at the end of, in `buf`: the run of
+/// non-whitespace around `caret` (a byte offset). Empty, at the caret, when the
+/// caret stands between two spaces or after a space.
+pub(crate) fn word_span_at(buf: &str, caret: usize) -> std::ops::Range<usize> {
+    let caret = caret.min(buf.len());
+    let caret = (0..=caret)
+        .rev()
+        .find(|&i| buf.is_char_boundary(i))
+        .unwrap_or(0);
+    let start = buf[..caret]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    let end = buf[caret..]
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(i, _)| caret + i)
+        .unwrap_or(buf.len());
+    start..end
+}
 
+/// Filter second command mode's rows (see [`CommandPhase::Compose`]): the words
+/// that start with the word at the caret, then the lines that match the whole
+/// line, words first.
+///
+/// A word is completed, so it has to start with what was typed (`ls` finds `ls`
+/// and `lsof`, `/rev` and `rev` find `/review`), the way a shell completes. A
+/// loose match would offer `hostid` for the `hi` of `echo hi`, and Enter takes
+/// the highlighted row. A line is matched loosely, like a search.
+///
+/// With nothing written every row shows. Once something is, a word row shows
+/// only while there is a word at the caret to complete, so after a space only
+/// the lines that match are left. Nothing matching leaves `filtered_list_indices`
+/// empty over a line that is not, which `search_found_nothing` reads as no
+/// matches. The highlighted row goes back to the top, since the rows changed.
+pub fn filter_compose(renderer: &mut AppRenderer) {
+    renderer.filtered_list_indices.clear();
+    renderer.fuzzy_match_positions.clear();
+    renderer.list_index = 0;
+    let line = renderer.input_buffer.clone();
+    if line.is_empty() {
+        return;
+    }
+    let word = &line[word_span_at(&line, renderer.cursor_position)];
+    let n_words = renderer.compose.words.len();
+    let labels: Vec<&str> = renderer
+        .total_list
+        .iter()
+        .map(|it| it.label.as_str())
+        .collect();
+    let n_words = n_words.min(labels.len());
+    let mut scored: Vec<(usize, u32, Vec<u32>)> = if word.is_empty() {
+        Vec::new()
+    } else {
+        let word = word.to_lowercase();
+        renderer.total_list[..n_words]
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| {
+                let data = item
+                    .nav_path
+                    .as_deref()
+                    .unwrap_or(&item.label)
+                    .to_lowercase();
+                // `rev` finds `/review` too: what leads a word up to its first
+                // letter or digit is its kind, not part of its name.
+                let bare = data.trim_start_matches(|c: char| !c.is_alphanumeric());
+                let hit = data.starts_with(&word) || bare.starts_with(&word);
+                if !hit {
+                    return None;
+                }
+                // Highlight the typed letters where they sit in the label.
+                let label = item.label.to_lowercase();
+                let at = label.find(&word).unwrap_or(0);
+                let start = label[..at].chars().count() as u32;
+                let len = word.chars().count() as u32;
+                Some((i, 0, (start..start + len).collect()))
+            })
+            .collect()
+    };
+    let mut lines = fuzzy_rank(
+        (n_words..labels.len()).zip(labels[n_words..].iter().copied()),
+        &line,
+        false,
+    );
+    lines.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    scored.extend(lines);
     renderer.filtered_list_indices = scored.iter().map(|(i, _, _)| *i).collect();
     renderer.fuzzy_match_positions = scored.into_iter().map(|(_, _, pos)| pos).collect();
+}
 
-    // Clamp list_index into the filtered range
-    let active_len = renderer.filtered_list_indices.len();
-    if renderer.list_index >= active_len {
-        renderer.list_index = active_len.saturating_sub(1);
+/// Filter Command mode's list by what is written: [`filter_compose`] for a line
+/// being written, the whole buffer as a fuzzy filter for every other palette.
+pub fn refilter_command(renderer: &mut AppRenderer) {
+    if renderer.current_command == CommandPhase::Compose {
+        filter_compose(renderer);
+    } else {
+        let filter = renderer.input_buffer.clone();
+        populate_list_current_layer(renderer, &filter);
     }
 }
 
@@ -1777,6 +1898,31 @@ fn build_command_list(renderer: &mut AppRenderer) {
                         label: build_str_label(&format!("<button>{label}</button>{label}"), false),
                         data: None,
                         nav_path: Some((*key).to_string()),
+                        ext_prefix: None,
+                    }
+                })
+                .collect();
+            renderer.total_list = items;
+        }
+        CommandPhase::Compose => {
+            // What a line is written from: the words, then the lines, each with
+            // what Tab puts in the line in `nav_path` (not `data`, which the
+            // renderer takes for an image path). `filter_compose` tells the two
+            // apart by position, words first.
+            let compose = &renderer.compose;
+            let items: Vec<RenderListItem> = compose
+                .words
+                .iter()
+                .chain(compose.lines.iter())
+                .enumerate()
+                .map(|(i, li)| {
+                    let mut id = IdArray::new();
+                    id.push(i);
+                    RenderListItem {
+                        id,
+                        label: li.label.clone(),
+                        data: None,
+                        nav_path: Some(li.data.clone()),
                         ext_prefix: None,
                     }
                 })

@@ -1619,10 +1619,8 @@ mod tests {
     fn speak_mode_change_names_each_colon_layer() {
         let _g = crate::app_state::locale_test_lock();
         // One name per colon layer, so the screen reader says which one answered.
-        // The terminal's shell and claude's session are the same *state* and
-        // differ only in whether a further layer is on offer.
         for (coord, want) in [
-            (crate::app_state::Coordinate::SessionCommand, "command mode"),
+            (crate::app_state::Coordinate::Command, "command mode"),
             (
                 crate::app_state::Coordinate::SessionFirstCommand,
                 "first command mode",

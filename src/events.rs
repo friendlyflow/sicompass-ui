@@ -29,8 +29,6 @@ pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) 
         ?keycode,
         ?keymod,
         mode = r.coordinate.as_str(),
-        // `as_str` cannot separate Command from SessionCommand (same name, by
-        // design), so log the variant too.
         coord = ?r.coordinate,
         "dispatch_key"
     );
@@ -38,7 +36,19 @@ pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) 
     let prior_active = r.active_tab;
     let prior_len = r.tabs.len();
 
+    // A line being written filters its words on the word at the caret, so a
+    // key that only moves the caret (Left, Home, a word jump) changes the rows
+    // too. Typing and Backspace refilter where they edit.
+    let compose_before = (r.input_buffer.clone(), r.cursor_position);
+
     let result = crate::shortcuts::dispatch_key(r, keycode, keymod);
+
+    if crate::handlers::in_compose(r)
+        && compose_before != (r.input_buffer.clone(), r.cursor_position)
+    {
+        crate::list::create_list_current_layer(r);
+        crate::list::filter_compose(r);
+    }
 
     // Mirror the live navigation back into the active tab slot. Compare only
     // the persisted nav fields — the slot's parked provider vectors are empty

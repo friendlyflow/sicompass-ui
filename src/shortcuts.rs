@@ -312,35 +312,27 @@ fn git_can_close(r: &AppRenderer) -> bool {
 /// and leaving this true for them would advertise two conflicting `:` hints at
 /// once. The git client does, but not while it is still picking a repository.
 fn has_command_palette(r: &AppRenderer) -> bool {
-    !handlers::is_browse_then_session_provider(r) && !git_browsing(r)
+    !handlers::is_browse_then_session_provider(r) && !git_browsing(r) && !compose_available(r)
 }
 
-/// True where `:` opens an insert palette: standing on a level that ends in a
-/// live `<input>` slot, for a provider offering something beyond the view swap.
-///
-/// Provider-agnostic on purpose — see the module comment on
-/// `handlers::insert_palette_commands`.
-fn insert_palette_available(r: &AppRenderer) -> bool {
-    handlers::insert_palette_available(r)
+/// True where `:` opens second command mode, to write a line for a session's
+/// prompt (`handlers::compose_available`).
+fn compose_available(r: &AppRenderer) -> bool {
+    handlers::compose_available(r)
 }
 
-/// True while an insert palette is open, in either phase.
-fn in_insert_palette(r: &AppRenderer) -> bool {
-    handlers::in_insert_palette(r)
+/// True while a line is being written in second command mode.
+fn in_compose(r: &AppRenderer) -> bool {
+    handlers::in_compose(r)
 }
 
-/// True while an insert palette is showing the rows to insert.
-fn in_insert_palette_items(r: &AppRenderer) -> bool {
-    handlers::in_insert_palette_items(r)
-}
-
-/// True for the generic Command-mode Enter — everything except an insert
-/// palette's row list, which has its own Enter that fills the prompt.
+/// True for the generic Command-mode Enter: every palette but a line being
+/// written, which has its own Enter that puts the line in the prompt.
 ///
 /// Without this the hint screen would advertise two different Enter actions at
 /// once: `hints_for` filters by availability but dedupes only by label.
 fn generic_command_enter(r: &AppRenderer) -> bool {
-    !handlers::in_insert_palette_items(r)
+    !handlers::in_compose(r)
 }
 
 fn is_filebrowser(r: &AppRenderer) -> bool {
@@ -746,21 +738,6 @@ pub static SHORTCUTS: &[Shortcut] = &[
     // In the terminal's shell view Escape returns to the folder listing rather
     // than popping a level, so it advertises that instead of the generic "Back".
     // Same handler either way — only the hint differs.
-    // An open insert palette owns Escape: the generic Command arm clears the
-    // buffer and returns to the mode it came from, which for a palette opened
-    // mid-typing means landing in Insert with an empty buffer over a live edit
-    // session — the next keystroke would then wipe the element. Must precede
-    // every other Escape row that covers Command mode.
-    Shortcut {
-        key: Keycode::Escape,
-        key2: None,
-        ctrl: false,
-        shift: false,
-        modes: &[Coordinate::Command],
-        label: "Esc    Back",
-        is_available: in_insert_palette,
-        handle: handlers::handle_escape_insert_palette,
-    },
     // Escape in General in a launcher's window: close it, the way Escape in
     // launcher mode does. First, so nothing below takes the key.
     Shortcut {
@@ -1314,6 +1291,17 @@ pub static SHORTCUTS: &[Shortcut] = &[
         is_available: always,
         handle: handlers::handle_tab,
     },
+    // Second command mode: Tab completes the line from the highlighted row.
+    Shortcut {
+        key: Keycode::Tab,
+        key2: None,
+        ctrl: false,
+        shift: false,
+        modes: &[Coordinate::Command],
+        label: "Tab    Complete",
+        is_available: in_compose,
+        handle: handlers::handle_tab_compose,
+    },
     // Insert Tab
     Shortcut {
         key: Keycode::Tab,
@@ -1472,17 +1460,17 @@ pub static SHORTCUTS: &[Shortcut] = &[
         is_available: always,
         handle: handlers::handle_enter_search,
     },
-    // Insert palette: Enter → splice the chosen row into the live prompt.
-    // Must precede the generic Command Enter below, which is `always`.
+    // Second command mode: Enter → put the line in the prompt and edit it
+    // there. Must precede the generic Command Enter below.
     Shortcut {
         key: Keycode::Return,
         key2: Some(Keycode::KpEnter),
         ctrl: false,
         shift: false,
         modes: &[Coordinate::Command],
-        label: "Enter  Insert",
-        is_available: in_insert_palette_items,
-        handle: handlers::handle_enter_insert_palette,
+        label: "Enter  Fill input",
+        is_available: in_compose,
+        handle: handlers::handle_enter_compose,
     },
     // Command: Enter → execute command
     Shortcut {
@@ -1599,25 +1587,26 @@ pub static SHORTCUTS: &[Shortcut] = &[
     // the hint they advertise. The browse-then-session providers have no command
     // palette — their `:` opens a session in the folder being listed — so each
     // gets its own label, and only the generic row is left for everyone else.
-    // Inside a session no row matches, so `:` does not dispatch at all: Escape is
-    // the only way back to the folders.
+    // Inside a session `:` writes a line (the Compose rows), and Escape is the
+    // only way back to the folders.
     //
     // `:` is Shift+`;` on most layouts, but SDL reports it as either
     // `Semicolon` with shift or `Colon` without, depending on the layout — hence
     // two keycodes per hint.
-    // Standing on a live prompt, `:` opens the provider's insert palette rather
-    // than starting a session — the session is already up. Keyed on the shape of
-    // the list, not on any provider name, so a plugin gets it too. Must precede
-    // the rows below, which are about the folder view.
+    // In a session with a prompt, `:` writes a line for it (second command
+    // mode) rather than swapping views. Keyed on the provider listing
+    // `COMPOSE_COMMAND`, not on its name, so a plugin gets it too. Must precede
+    // the rows below, which are about the folder view. Only in General: typing,
+    // `:` is a typed colon.
     Shortcut {
         key: Keycode::Semicolon,
         key2: None,
         ctrl: false,
         shift: true,
         modes: &[Coordinate::General],
-        label: ":      Insert",
-        is_available: insert_palette_available,
-        handle: handlers::handle_insert_palette,
+        label: ":      Compose",
+        is_available: compose_available,
+        handle: handlers::handle_colon,
     },
     Shortcut {
         key: Keycode::Colon,
@@ -1625,31 +1614,9 @@ pub static SHORTCUTS: &[Shortcut] = &[
         ctrl: false,
         shift: false,
         modes: &[Coordinate::General],
-        label: ":      Insert",
-        is_available: insert_palette_available,
-        handle: handlers::handle_insert_palette,
-    },
-    // Ctrl+: reaches the same palette from *inside* the prompt, where a bare `:`
-    // is just a typed colon. A half-typed message survives the trip.
-    Shortcut {
-        key: Keycode::Semicolon,
-        key2: None,
-        ctrl: true,
-        shift: true,
-        modes: &[Coordinate::Insert],
-        label: "Ctrl+: Insert",
-        is_available: insert_palette_available,
-        handle: handlers::handle_insert_palette,
-    },
-    Shortcut {
-        key: Keycode::Colon,
-        key2: None,
-        ctrl: true,
-        shift: false,
-        modes: &[Coordinate::Insert],
-        label: "Ctrl+: Insert",
-        is_available: insert_palette_available,
-        handle: handlers::handle_insert_palette,
+        label: ":      Compose",
+        is_available: compose_available,
+        handle: handlers::handle_colon,
     },
     Shortcut {
         key: Keycode::Semicolon,
@@ -3116,7 +3083,6 @@ mod tests {
     fn the_session_views_match_exactly_the_same_rows_as_general() {
         let general = rows_matching_mode(Coordinate::General);
         assert!(!general.is_empty(), "sanity: General matches some rows");
-        assert_eq!(rows_matching_mode(Coordinate::SessionCommand), general);
         assert_eq!(rows_matching_mode(Coordinate::SessionFirstCommand), general);
     }
 
@@ -3140,10 +3106,12 @@ mod tests {
         let want = hints_for(&r);
         assert!(!want.is_empty(), "sanity: General produces hints");
 
-        for c in [Coordinate::SessionCommand, Coordinate::SessionFirstCommand] {
-            r.coordinate = c;
-            assert_eq!(hints_for(&r), want, "{c:?} hints diverged from General");
-        }
+        r.coordinate = Coordinate::SessionFirstCommand;
+        assert_eq!(
+            hints_for(&r),
+            want,
+            "first command mode hints diverged from General"
+        );
     }
 
     /// S used to be switched off for an editor, a leftover of the vim-style

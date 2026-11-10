@@ -1467,21 +1467,13 @@ fn update_view(app: &mut AppState) {
             | Coordinate::InputSearch
     ) {
         let (prefix, text) = match app.renderer.coordinate {
-            // The second colon layer and the ordinary command palette are
-            // opened by the same key, so the prefix is the visible half of
-            // telling them apart. The spoken half is `mode_display_label`,
-            // which says "second command mode" — the two deliberately differ:
-            // the prefix names what the palette *does* (its rows are spliced
-            // into the live prompt), the mode name says which layer you are on.
-            // Both labels are 8 bytes, so `search_pin_len` below needs only an
-            // extra arm, not a new width.
-            // Both palettes are the second colon layer and both are
-            // `SecondCommand`, so the prefix is chosen by which one is open,
-            // not by the coordinate: claude's splices its rows into the live
-            // prompt, the git client's runs a command. Both labels are 8 bytes,
-            // so `search_pin_len` below needs no new arm.
+            // Both second colon layers are `SecondCommand`, so the prefix is
+            // chosen by which one is open, not by the coordinate: a line being
+            // written for a prompt reads "insert: ", the git client's palette,
+            // which runs a command, "search: ". Both labels are 8 bytes, so
+            // `search_pin_len` below needs no new arm.
             Coordinate::SecondCommand => {
-                let prefix = if handlers::in_insert_palette(&app.renderer) {
+                let prefix = if handlers::in_compose(&app.renderer) {
                     "insert: "
                 } else {
                     "search: "
@@ -1499,10 +1491,10 @@ fn update_view(app: &mut AppState) {
         // tab switcher shows a tab count. InputSearch counts substring hits
         // inside the element being edited, not list rows.
         let count_suffix = match app.renderer.coordinate {
-            // While filtering the second layer the match count is the useful
-            // readout, the same as for the search modes. The ordinary command
-            // palette keeps its bare prompt.
-            Coordinate::SecondCommand if handlers::in_insert_palette(&app.renderer) => {
+            // While writing a line the match count is the useful readout, the
+            // same as for the search modes. The ordinary command palette keeps
+            // its bare prompt.
+            Coordinate::SecondCommand if handlers::in_compose(&app.renderer) => {
                 format!(" [{} items]", list_items.len())
             }
             Coordinate::SimpleSearch => format!(" [{} items]", list_items.len()),
@@ -2864,7 +2856,7 @@ fn update_view(app: &mut AppState) {
                 Coordinate::ExtendedSearch => "ext search: ",
                 // Must match the prefix actually drawn on the search line
                 // above, or the selection rect sits a prefix-width off.
-                Coordinate::SecondCommand => "insert: ",
+                Coordinate::SecondCommand if handlers::in_compose(&app.renderer) => "insert: ",
                 _ => "search: ",
             };
             let pfx_w = app

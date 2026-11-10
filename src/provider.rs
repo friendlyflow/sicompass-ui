@@ -859,6 +859,19 @@ pub fn command_list_items(
         .unwrap_or_default()
 }
 
+/// What a line can be written from in second command mode (see
+/// [`crate::app_state::CommandPhase::Compose`]), asked of the active provider.
+pub fn completions(renderer: &mut AppRenderer) -> sicompass_sdk::provider::Completions {
+    let Some(idx) = renderer.current_id.get(0) else {
+        return Default::default();
+    };
+    renderer
+        .providers
+        .get_mut(idx)
+        .map(|p| p.completions())
+        .unwrap_or_default()
+}
+
 /// Execute a command with the selected list item.
 pub fn execute_command(renderer: &mut AppRenderer, command: &str, selected_item: &str) -> bool {
     let idx = match renderer.current_id.get(0) {
