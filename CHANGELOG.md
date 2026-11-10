@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.2.3
+
+Needs sicompass-sdk 0.9.15.
+
+- The second colon writes a line for a session's prompt. A provider that lists
+  `compose` (the terminal and Claude do) gets second command mode: the programs
+  or skills first, then what was run or sent before, Tab completes at the caret,
+  and Enter puts the line in the prompt and edits it there. It replaces Ctrl+:
+  and the history under the terminal's input. Every colon layer counts its
+  colons: the shell, Claude's session list and a session are all first command
+  mode, and "session mode" is gone.
+- Ctrl+F reaches below what the user opened: a provider's own walk runs on its
+  thread and its rows join the list as they arrive.
+- PgUp and PgDn move one screen in every mode with the cursor at the same height,
+  and they and Home and End speak.
+- A row with several links, buttons, pictures or videos starts with an arrow right,
+  and Right on it enters element mode.
+- The cursor's row and its target are marked with CSS outline, and scroll mode
+  indents each level under its parent's text.
+- The beginner's manual says Tab opens it again, is announced as its own mode, and
+  stays put while a provider refreshes. The `t` list keeps its order across a
+  restart.
+
 ## 0.2.2
 
 Needs sicompass-sdk 0.9.13.
