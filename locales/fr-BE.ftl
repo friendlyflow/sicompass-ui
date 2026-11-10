@@ -181,8 +181,8 @@ video-unavailable = Cette version de Sicompass ne peut pas lire de vidéo
 search-no-matches = aucun résultat
 
 # The beginner's manual (Tab): one line each, read in order.
-manual-01 = Manuel du débutant. Appuyez maintenant sur la flèche du bas pour entendre la ligne suivante, et sur la flèche du haut pour revenir d'une ligne. Échap quitte le manuel.
-manual-02 = Tout dans Sicompass est une liste, et vous êtes dans une liste maintenant. Chaque ligne est un élément, et votre lecteur d'écran lit la ligne où vous êtes. Lisez ce manuel de haut en bas. Pour le rouvrir plus tard, appuyez sur Tab en mode général.
+manual-01 = Manuel du débutant. Appuyez maintenant sur la flèche du bas pour entendre la ligne suivante, et sur la flèche du haut pour revenir d'une ligne. Échap quitte le manuel, et Tab le rouvre.
+manual-02 = Tout dans Sicompass est une liste, et vous êtes dans une liste maintenant. Chaque ligne est un élément, et votre lecteur d'écran lit la ligne où vous êtes. Lisez ce manuel de haut en bas.
 manual-03 = Début va à la première ligne d'une liste et Fin à la dernière. Page suivante et Page précédente avancent d'une page à la fois.
 manual-04 = Droite entre dans une ligne qui commence par une flèche vers la droite, et Gauche en ressort. La ligne au-dessus de la liste, avec une flèche vers la gauche, nomme l'endroit où vous êtes.
 manual-05 = Appuyez deux fois sur Début pour atteindre le tout haut, où tous vos programmes sont listés. Ouvrez-en un, comme le navigateur de fichiers, les notes ou le store, avec Droite.

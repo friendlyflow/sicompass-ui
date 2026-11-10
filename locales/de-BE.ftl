@@ -181,8 +181,8 @@ video-unavailable = Diese Version von Sicompass kann kein Video abspielen
 search-no-matches = keine Treffer
 
 # The beginner's manual (Tab): one line each, read in order.
-manual-01 = Handbuch für Anfänger. Drücke jetzt die Pfeiltaste nach unten, um die nächste Zeile zu hören, und die Pfeiltaste nach oben, um eine Zeile zurückzugehen. Escape verlässt das Handbuch.
-manual-02 = Alles in Sicompass ist eine Liste, und du bist jetzt in einer. Jede Zeile ist ein Element, und dein Bildschirmleser liest die Zeile, auf der du bist. Lies dieses Handbuch von oben nach unten. Um es später wieder zu öffnen, drücke im allgemeinen Modus Tab.
+manual-01 = Handbuch für Anfänger. Drücke jetzt die Pfeiltaste nach unten, um die nächste Zeile zu hören, und die Pfeiltaste nach oben, um eine Zeile zurückzugehen. Escape verlässt das Handbuch, und Tab öffnet es wieder.
+manual-02 = Alles in Sicompass ist eine Liste, und du bist jetzt in einer. Jede Zeile ist ein Element, und dein Bildschirmleser liest die Zeile, auf der du bist. Lies dieses Handbuch von oben nach unten.
 manual-03 = Pos1 springt zur ersten Zeile einer Liste und Ende zur letzten. Bild runter und Bild hoch gehen eine Seite weit.
 manual-04 = Rechts geht in eine Zeile hinein, die mit einem Pfeil nach rechts beginnt, und Links geht wieder hinaus. Die Zeile über der Liste, mit einem Pfeil nach links, nennt den Ort, an dem du bist.
 manual-05 = Drücke zweimal Pos1, um ganz nach oben zu kommen, wo alle deine Programme stehen. Öffne eines, zum Beispiel den Dateibrowser, Notizen oder den Store, mit Rechts.

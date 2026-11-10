@@ -181,8 +181,8 @@ video-unavailable = Deze versie van Sicompass kan geen video afspelen
 search-no-matches = geen resultaten
 
 # The beginner's manual (Tab): one line each, read in order.
-manual-01 = Handleiding voor beginners. Druk nu op de pijl omlaag om de volgende regel te horen, en op de pijl omhoog om een regel terug te gaan. Escape verlaat de handleiding.
-manual-02 = Alles in Sicompass is een lijst, en nu sta je in een lijst. Elke regel is een element, en je schermlezer leest de regel waar je op staat. Lees deze handleiding van boven naar onder. Om ze later weer te openen, druk je in de algemene modus op Tab.
+manual-01 = Handleiding voor beginners. Druk nu op de pijl omlaag om de volgende regel te horen, en op de pijl omhoog om een regel terug te gaan. Escape verlaat de handleiding, en Tab opent ze opnieuw.
+manual-02 = Alles in Sicompass is een lijst, en nu sta je in een lijst. Elke regel is een element, en je schermlezer leest de regel waar je op staat. Lees deze handleiding van boven naar onder.
 manual-03 = Home springt naar de eerste regel van een lijst en End naar de laatste. PgDn en PgUp gaan een pagina per keer.
 manual-04 = Rechts gaat binnen in een regel die begint met een pijl naar rechts, en Links gaat weer naar buiten. De regel boven de lijst, met een pijl naar links, noemt de plek waar je bent.
 manual-05 = Druk twee keer op Home om helemaal bovenaan te komen, waar al je programma's staan. Open er een, zoals de bestandsbeheerder, notities of de store, met Rechts.

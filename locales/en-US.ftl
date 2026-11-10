@@ -191,8 +191,8 @@ video-unavailable = This version of Sicompass cannot play video
 search-no-matches = no matches
 
 # The beginner's manual (Tab): one line each, read in order.
-manual-01 = Beginner's manual. Press the Down arrow key now to hear the next line, and the Up arrow key to go back one line. Escape leaves the manual.
-manual-02 = Everything in Sicompass is a list, and you are in one now. Each line is one element, and your screen reader reads the line you are on. Read this manual from top to bottom. To open it again later, press Tab in general mode.
+manual-01 = Beginner's manual. Press the Down arrow key now to hear the next line, and the Up arrow key to go back one line. Escape leaves the manual, and Tab opens it again.
+manual-02 = Everything in Sicompass is a list, and you are in one now. Each line is one element, and your screen reader reads the line you are on. Read this manual from top to bottom.
 manual-03 = Home jumps to the first line of a list and End to the last. PgDn and PgUp move a page at a time.
 manual-04 = Right goes into a line that starts with an arrow right, and Left goes back out. The line above the list, with an arrow left, names the place you are in.
 manual-05 = Press Home twice to reach the very top, where all your programs are listed. Open one, such as the file browser, notes or the store, with Right.
