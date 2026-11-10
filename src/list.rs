@@ -153,7 +153,8 @@ pub fn create_list_scroll(renderer: &mut AppRenderer) {
 
 /// How many levels below the list scroll mode was entered on each item of a
 /// scroll list sits: 0 for that list's own items, 1 for their children, and so
-/// on. Scroll mode indents each level by four spaces. The first item is always
+/// on. Scroll mode indents each level so a child's dash or arrow starts where
+/// its parent's text starts. The first item is always
 /// one of the entered list's own, so its depth is the base.
 pub fn scroll_indent_levels(items: &[RenderListItem]) -> Vec<usize> {
     let base = items.first().map(|it| it.id.depth()).unwrap_or(0);

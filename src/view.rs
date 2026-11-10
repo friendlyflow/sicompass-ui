@@ -925,11 +925,18 @@ fn update_view(app: &mut AppState) {
         let search_needs_position = app.renderer.scroll_search_needs_position;
         let search_snap = app.renderer.scroll_search_snap;
         let in_search = app.renderer.coordinate == Coordinate::ScrollSearch;
-        // Each level below the entered list is indented four spaces (capped at
-        // half the width, so a deep level still has room to wrap).
+        // Each level below the entered list is indented so its dash or arrow
+        // starts where its parent's text starts (capped at half the width, so
+        // a deep level still has room to wrap).
+        let indicator_gutter = if list_has_indicators {
+            indicator_width(line_height as f32, em_width)
+        } else {
+            0.0
+        };
+        let indent_step = scroll_indent_step(max_prefix_px, indicator_gutter);
         let scroll_indents: Vec<f32> = crate::list::scroll_indent_levels(&app.renderer.total_list)
             .into_iter()
-            .map(|level| (level as f32 * list_indent_px).min(max_content_w.max(1.0) / 2.0))
+            .map(|level| (level as f32 * indent_step).min(max_content_w.max(1.0) / 2.0))
             .collect();
         // Content viewport = window minus tabs band + header (+ search bar in
         // search modes). Cached so scroll handlers clamp to the exact area the
@@ -2982,7 +2989,8 @@ struct ScrollItemLayout {
     top: i32,
     /// Full item height in pixels.
     height: i32,
-    /// Horizontal indent in pixels: four spaces per level below the entered list.
+    /// Horizontal indent in pixels: one [`scroll_indent_step`] per level below
+    /// the entered list.
     indent: f32,
     /// Image layout for image items; `None` for text items.
     img: Option<ScrollImg>,
@@ -3016,6 +3024,14 @@ fn scroll_item_parts(label: &str) -> (String, String) {
     let display = sicompass_sdk::tags::strip_display(label);
     let (prefix, content) = split_label(&display);
     (prefix.trim_end().to_string(), content.to_string())
+}
+
+/// How far scroll mode indents each level. An item's dash or arrow is drawn
+/// `gutter` (the radio/checkbox indicator's room, 0 when the list has none)
+/// right of its prefix column, and its text `max_prefix_px` right of it, so
+/// this step puts a child's dash or arrow under its parent's first letter.
+fn scroll_indent_step(max_prefix_px: f32, gutter: f32) -> f32 {
+    (max_prefix_px - gutter).max(0.0)
 }
 
 /// Width an item's content wraps at: the content column minus its indent.
@@ -5397,6 +5413,20 @@ mod tests {
         assert!((g - 0.0).abs() < 1e-6);
         assert!((b - 0.0).abs() < 1e-6);
         assert!((a - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scroll_child_dash_starts_under_the_parents_text() {
+        // An item's dash is at indent + gutter, its text at indent + prefix
+        // column, so a child's dash lands on its parent's text column.
+        for (prefix_col, gutter) in [(30.0_f32, 0.0_f32), (52.0, 22.0), (75.5, 33.25)] {
+            let step = scroll_indent_step(prefix_col, gutter);
+            let parent_text = 0.0 + prefix_col;
+            let child_dash = step + gutter;
+            assert_eq!(child_dash, parent_text);
+        }
+        assert_eq!(scroll_indent_step(10.0, 0.0), 10.0);
+        assert_eq!(scroll_indent_step(10.0, 25.0), 0.0);
     }
 
     #[test]
