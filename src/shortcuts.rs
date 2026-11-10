@@ -909,8 +909,20 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_shift_down_insert,
     },
     // ---- Right / L -------------------------------------------------------
-    // A link is followed with Enter, or with `i` or `a` and Enter on a checkbox or a
-    // radio choice, so Right does nothing on a row that is one.
+    // A row with several targets, or a checkbox or a radio choice holding one: Right
+    // goes into element mode. First, so it wins over the rows below. Right on the
+    // last target there goes into the row's children, if it has any.
+    Shortcut {
+        key: Keycode::Right,
+        key2: Some(Keycode::L),
+        ctrl: false,
+        shift: false,
+        modes: GENERAL,
+        label: "Right  In element",
+        is_available: crate::in_element::wants_element_mode,
+        handle: crate::in_element::handle_enter_mode,
+    },
+    // A row's one link is followed with Enter, so Right does nothing on it.
     Shortcut {
         key: Keycode::Right,
         key2: Some(Keycode::L),
@@ -1375,7 +1387,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_append,
     },
     // General: Enter → change a checkbox or a radio choice, whatever it holds. Before
-    // the rows below: a link or a button in it is reached with `i` or `a`.
+    // the rows below: a link or a button in it is reached with Right.
     Shortcut {
         key: Keycode::Return,
         key2: Some(Keycode::KpEnter),
@@ -1796,28 +1808,6 @@ pub static SHORTCUTS: &[Shortcut] = &[
         label: "A      Append",
         is_available: avail_insert_on_input,
         handle: handlers::handle_a,
-    },
-    // A row with images, links or buttons and nothing to edit: in element mode.
-    // After the rows above, so `i` and `a` still edit where they edit.
-    Shortcut {
-        key: Keycode::I,
-        key2: None,
-        ctrl: false,
-        shift: false,
-        modes: GENERAL,
-        label: "I      In element",
-        is_available: crate::in_element::can_enter,
-        handle: crate::in_element::handle_first,
-    },
-    Shortcut {
-        key: Keycode::A,
-        key2: None,
-        ctrl: false,
-        shift: false,
-        modes: GENERAL,
-        label: "A      In element from last",
-        is_available: crate::in_element::can_enter,
-        handle: crate::in_element::handle_last,
     },
     // ---- Ctrl+I / Ctrl+A (structural insert/append) ----------------------
     // General: insert/append placeholder

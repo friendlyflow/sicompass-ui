@@ -1,11 +1,12 @@
 //! In element mode: moving between the images, links and buttons in one row.
 //!
-//! Entered from General with `i` (first target) or `a` (last), like insert mode.
-//! Left and Right go target by target, skipping plain text, and Up and Down go to
-//! the line above or below. Enter activates, Escape leaves. Outside this mode the
-//! arrow keys do what they always did, so a row with several targets costs nothing
-//! until it is asked for. On a checkbox or a radio choice this mode is the only way to
-//! a link or a button, because Enter in General changes the row.
+//! Entered from General with Right on a row with several targets, on the first. A
+//! row with one target needs no mode: Enter uses it. Enter on a row with several
+//! still uses the first link or button. Left and Right go target by target,
+//! skipping plain text, and Up and Down go to the line above or below. Enter
+//! activates, Escape leaves. Right on the last target goes into the row's children,
+//! when it has any. On a checkbox or a radio choice Right goes in even for one
+//! target, because Enter in General changes the row.
 //!
 //! Enter and `d` on an image open the big view, also here, which is the dashboard
 //! showing that one image instead of asking the provider what to show.
@@ -56,9 +57,25 @@ fn focused_counts(r: &AppRenderer) -> TargetCounts {
         .unwrap_or_default()
 }
 
-/// `i` and `a` start in element mode on this row.
-pub(crate) fn can_enter(r: &AppRenderer) -> bool {
-    r.current_id.depth() > 1 && focused_counts(r).total() > 0
+/// Right starts element mode on this row: it has several targets, or it is a
+/// checkbox or a radio choice holding one, where Enter changes the row instead.
+pub(crate) fn wants_element_mode(r: &AppRenderer) -> bool {
+    if r.current_id.depth() <= 1 {
+        return false;
+    }
+    match focused_counts(r).total() {
+        0 => false,
+        1 => handlers::focused_is_toggle(r),
+        _ => true,
+    }
+}
+
+/// The focused row has children, so Right past its last target goes into them.
+fn focused_has_children(r: &AppRenderer) -> bool {
+    let index = r.current_id.last().unwrap_or(0);
+    get_ffon_at_id(&r.ffon, &r.current_id)
+        .and_then(|slice| slice.get(index))
+        .is_some_and(|e| matches!(e, FfonElement::Obj(o) if !o.children.is_empty()))
 }
 
 /// The row's one target is an image, so Enter and `d` can open it from General.
@@ -138,7 +155,8 @@ fn announce_target(r: &mut AppRenderer) {
     r.needs_redraw = true;
 }
 
-fn enter(r: &mut AppRenderer, last: bool) {
+/// Right in General: element mode on the row's first target.
+pub fn handle_enter_mode(r: &mut AppRenderer) {
     if !r.coordinate.is_general() {
         return;
     }
@@ -146,7 +164,7 @@ fn enter(r: &mut AppRenderer, last: bool) {
     if targets.is_empty() {
         return;
     }
-    r.nav_index = if last { targets.len() - 1 } else { 0 };
+    r.nav_index = 0;
     r.nav_targets = targets;
     r.nav_positions.clear();
     r.nav_return = r.coordinate;
@@ -154,16 +172,6 @@ fn enter(r: &mut AppRenderer, last: bool) {
     let phrase = target_phrase(&r.nav_targets, r.nav_index);
     r.speak_mode_change(Some(phrase));
     r.needs_redraw = true;
-}
-
-/// `i`: in element mode on the row's first target.
-pub fn handle_first(r: &mut AppRenderer) {
-    enter(r, false);
-}
-
-/// `a`: in element mode on the row's last target.
-pub fn handle_last(r: &mut AppRenderer) {
-    enter(r, true);
 }
 
 fn leave(r: &mut AppRenderer) {
@@ -186,8 +194,15 @@ fn move_to(r: &mut AppRenderer, index: usize) {
     announce_target(r);
 }
 
+/// Right: the next target. On the last one it goes into the row's children, as
+/// Right on any row does, and stays there when the row has none.
 pub fn handle_right(r: &mut AppRenderer) {
     let last = r.nav_targets.len().saturating_sub(1);
+    if r.nav_index >= last && focused_has_children(r) {
+        leave(r);
+        handlers::handle_right(r);
+        return;
+    }
     move_to(r, (r.nav_index + 1).min(last));
 }
 
@@ -524,6 +539,20 @@ mod tests {
         crate::shortcuts::dispatch_key(r, Some(key), Mod::NOMOD);
     }
 
+    /// Right: element mode on the row's first target.
+    fn enter_first(r: &mut AppRenderer) {
+        press(r, Keycode::Right);
+        assert_eq!(r.coordinate, Coordinate::InElement, "Right went in");
+    }
+
+    /// Right, then Right to the row's last target.
+    fn enter_last(r: &mut AppRenderer) {
+        enter_first(r);
+        for _ in 1..r.nav_targets.len() {
+            press(r, Keycode::Right);
+        }
+    }
+
     fn announced(r: &AppRenderer) -> String {
         r.pending_announcement
             .as_deref()
@@ -551,7 +580,7 @@ mod tests {
         );
 
         let mut r = renderer(&rows, 2);
-        press(&mut r, Keycode::A);
+        enter_last(&mut r);
         press(&mut r, Keycode::Return);
         assert!(
             announced(&r).starts_with("followed link, and About"),
@@ -569,7 +598,7 @@ mod tests {
         );
 
         let mut r = renderer(&[row], 0);
-        press(&mut r, Keycode::A);
+        enter_last(&mut r);
         press(&mut r, Keycode::Return);
         assert!(
             announced(&r).starts_with("pressed button, Second"),
@@ -578,7 +607,7 @@ mod tests {
         );
     }
 
-    /// `i` and `a` and the highlight have to read the row without its markup.
+    /// Right and the highlight have to read the row without its markup.
     #[test]
     fn targets_inside_markup_are_found_at_what_the_row_shows() {
         struct Markup;
@@ -598,7 +627,7 @@ mod tests {
         r.providers.push(Box::new(Markup));
         list::create_list_current_layer(&mut r);
         assert_eq!(r.total_list[0].label, "-l One u1 Two u2");
-        press(&mut r, Keycode::A);
+        enter_last(&mut r);
         assert_eq!(r.nav_targets.len(), 2);
         let label = r.total_list[0].label.clone();
         let chars: Vec<char> = label.chars().collect();
@@ -610,9 +639,9 @@ mod tests {
     }
 
     #[test]
-    fn i_starts_on_the_first_target_and_says_so() {
+    fn right_starts_on_the_first_target_and_says_so() {
         let mut r = renderer(&[THREE_LINKS], 0);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         assert_eq!(r.coordinate, Coordinate::InElement);
         assert_eq!(r.nav_index, 0);
         let said = announced(&r);
@@ -620,18 +649,83 @@ mod tests {
         assert!(said.contains("See One"), "{said}");
     }
 
+    /// Right is the way in now, and `i` and `a` do nothing on a row with no input.
     #[test]
-    fn a_starts_on_the_last_target() {
+    fn i_and_a_no_longer_start_it() {
+        for key in [Keycode::I, Keycode::A] {
+            let mut r = renderer(&[THREE_LINKS], 0);
+            press(&mut r, key);
+            assert_eq!(r.coordinate, Coordinate::General, "{key:?}");
+            assert!(r.nav_targets.is_empty(), "{key:?}");
+        }
+    }
+
+    /// One picture, one link or one button needs no mode: Right leaves the row alone,
+    /// and Enter uses it.
+    #[test]
+    fn one_target_is_used_with_enter_and_right_does_not_go_in() {
+        for row in [
+            "A cat <image>c.jpg</image>",
+            "Go <link>/no/such.json</link>",
+            "<button>go</button>Run",
+        ] {
+            let mut r = renderer(&[row], 0);
+            press(&mut r, Keycode::Right);
+            assert_eq!(r.coordinate, Coordinate::General, "{row}");
+            assert_eq!(r.current_id.depth(), 2, "{row}");
+        }
+        let mut r = renderer(&["A cat <image>c.jpg</image>"], 0);
+        press(&mut r, Keycode::Return);
+        assert!(in_image_view(&r));
+        let mut r = renderer(&["<button>go</button>Run"], 0);
+        press(&mut r, Keycode::Return);
+        assert!(announced(&r).starts_with("pressed button, Run"), "{}", announced(&r));
+    }
+
+    /// A row with several targets and a list under it: Right past the last target
+    /// goes into the list, and Left comes back to the row.
+    #[test]
+    fn right_on_the_last_target_goes_into_the_rows_children() {
+        let mut row = FfonElement::new_obj("<image>a.jpg</image><image>b.jpg</image>");
+        row.as_obj_mut().unwrap().push(FfonElement::new_str("inside"));
+        let mut root = FfonElement::new_obj("root");
+        root.as_obj_mut().unwrap().push(row);
+        let mut r = AppRenderer::new();
+        r.ffon = vec![root];
+        let mut id = IdArray::new();
+        id.push(0);
+        id.push(0);
+        r.current_id = id;
+        list::create_list_current_layer(&mut r);
+
+        press(&mut r, Keycode::Right);
+        assert_eq!(r.coordinate, Coordinate::InElement, "targets first");
+        press(&mut r, Keycode::Right);
+        assert_eq!(r.nav_index, 1);
+        assert_eq!(r.current_id.depth(), 2);
+        press(&mut r, Keycode::Right);
+        assert_eq!(r.coordinate, Coordinate::General);
+        assert_eq!(r.current_id.depth(), 3, "inside the row");
+        assert!(r.total_list[0].label.contains("inside"));
+        assert!(r.nav_targets.is_empty());
+        press(&mut r, Keycode::Left);
+        assert_eq!(r.current_id.depth(), 2);
+    }
+
+    #[test]
+    fn right_on_the_last_target_without_children_stays() {
         let mut r = renderer(&[THREE_LINKS], 0);
-        press(&mut r, Keycode::A);
+        enter_last(&mut r);
+        press(&mut r, Keycode::Right);
         assert_eq!(r.coordinate, Coordinate::InElement);
         assert_eq!(r.nav_index, 2);
+        assert_eq!(r.current_id.depth(), 2);
     }
 
     #[test]
     fn a_row_with_no_targets_does_not_start_it() {
         let mut r = renderer(&["plain text"], 0);
-        press(&mut r, Keycode::I);
+        press(&mut r, Keycode::Right);
         assert_eq!(r.coordinate, Coordinate::General);
     }
 
@@ -646,7 +740,7 @@ mod tests {
     #[test]
     fn right_and_left_move_by_target_and_stop_at_the_ends() {
         let mut r = renderer(&[THREE_LINKS], 0);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         press(&mut r, Keycode::Left);
         assert_eq!(r.nav_index, 0, "stops at the first");
         press(&mut r, Keycode::Right);
@@ -664,7 +758,7 @@ mod tests {
     #[test]
     fn an_edge_repeats_the_current_target() {
         let mut r = renderer(&[THREE_LINKS], 0);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         press(&mut r, Keycode::Left);
         let first = r.pending_announcement.clone();
         press(&mut r, Keycode::Left);
@@ -676,7 +770,7 @@ mod tests {
     fn up_and_down_go_by_line_using_where_the_targets_are() {
         use crate::layout::TargetPos;
         let mut r = renderer(&[THREE_LINKS], 0);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         r.nav_positions = vec![
             TargetPos { x: 0.0, y: 0.0 },
             TargetPos { x: 50.0, y: 0.0 },
@@ -694,7 +788,7 @@ mod tests {
     #[test]
     fn escape_goes_back_to_the_same_row() {
         let mut r = renderer(&["x", THREE_LINKS, "y"], 1);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         press(&mut r, Keycode::Right);
         press(&mut r, Keycode::Escape);
         assert_eq!(r.coordinate, Coordinate::General);
@@ -702,12 +796,14 @@ mod tests {
         assert!(r.nav_targets.is_empty());
     }
 
-    /// Outside the mode the arrows are what they always were.
+    /// Outside the mode the arrows are what they always were: Right on a row with
+    /// one link stays, and Down goes to the next row.
     #[test]
     fn outside_the_mode_down_moves_to_the_next_row() {
-        let mut r = renderer(&[THREE_LINKS, "y"], 0);
+        let mut r = renderer(&["See <link>u1</link>", "y"], 0);
         press(&mut r, Keycode::Right);
-        assert_eq!(r.current_id.depth(), 2, "Right on a Str stays");
+        assert_eq!(r.coordinate, Coordinate::General);
+        assert_eq!(r.current_id.depth(), 2, "Right on a link stays");
         press(&mut r, Keycode::Down);
         assert_eq!(r.current_id.last(), Some(1));
     }
@@ -715,7 +811,7 @@ mod tests {
     #[test]
     fn a_refresh_clamps_to_the_targets_that_are_left() {
         let mut r = renderer(&[THREE_LINKS], 0);
-        press(&mut r, Keycode::A);
+        enter_last(&mut r);
         assert_eq!(r.nav_index, 2);
         *r.ffon[0].as_obj_mut().unwrap().children.get_mut(0).unwrap() =
             FfonElement::new_str("Only <link>u</link>");
@@ -728,7 +824,7 @@ mod tests {
     #[test]
     fn a_refresh_that_takes_every_target_leaves_the_mode() {
         let mut r = renderer(&[THREE_LINKS], 0);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         *r.ffon[0].as_obj_mut().unwrap().children.get_mut(0).unwrap() =
             FfonElement::new_str("gone");
         list::create_list_current_layer(&mut r);
@@ -738,7 +834,7 @@ mod tests {
     #[test]
     fn the_highlight_is_the_selected_target_after_the_prefix() {
         let mut r = renderer(&["See <link>u1</link> or <link>u2</link>"], 0);
-        press(&mut r, Keycode::A);
+        enter_last(&mut r);
         // "- See u1 or u2": the second target is "or u2", after the prefix "- ".
         let label = r.total_list[0].label.clone();
         let chars: Vec<char> = label.chars().collect();
@@ -793,7 +889,7 @@ mod tests {
             two.display()
         );
         let mut r = renderer(&[row.as_str()], 0);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         press(&mut r, Keycode::Right);
         press(&mut r, Keycode::Return);
         assert_eq!(r.coordinate, Coordinate::General);
@@ -890,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_toggles_a_checkbox_holding_a_link_and_i_follows_it() {
+    fn enter_toggles_a_checkbox_holding_a_link_and_right_reaches_it() {
         let (dir, file) = page("checkbox-link");
         let row = format!("<checkbox>Accept <link>{}</link>", file.display());
         let shown = |prefix: &str| format!("{prefix} Accept {}", file.display());
@@ -902,25 +998,23 @@ mod tests {
         assert_eq!(r.total_list[0].label, shown("-ccl"));
         assert!(tags::has_link(&focused(&r)), "{}", focused(&r));
 
-        // Right does nothing on a link, on a checkbox too.
+        // Enter changes the row, so Right is the way to its one link.
         press(&mut r, Keycode::Right);
         assert_eq!(r.current_id.depth(), 2);
-
-        press(&mut r, Keycode::I);
         assert_eq!(r.coordinate, Coordinate::InElement);
         press(&mut r, Keycode::Return);
         assert_eq!(r.current_id.depth(), 3, "inside the page");
         assert!(r.total_list[0].label.contains("the page"));
 
         // Back on the row it is still ticked and still a dash, with the page under it.
-        // Enter still unticks it, Right still does nothing, and `i` Enter goes back in.
+        // Enter still unticks it, and Right Enter goes back in.
         press(&mut r, Keycode::Left);
         assert_eq!(r.total_list[0].label, shown("-ccl"));
         press(&mut r, Keycode::Return);
         assert_eq!(r.total_list[0].label, shown("-cl"));
         press(&mut r, Keycode::Right);
         assert_eq!(r.current_id.depth(), 2);
-        press(&mut r, Keycode::A);
+        assert_eq!(r.coordinate, Coordinate::InElement);
         press(&mut r, Keycode::Return);
         assert_eq!(r.current_id.depth(), 3, "inside the page again");
         std::fs::remove_dir_all(&dir).ok();
@@ -928,7 +1022,7 @@ mod tests {
 
     /// In a provider's markup, a real `<a href>` counts the same as the older tag.
     #[test]
-    fn a_checkbox_in_markup_holding_an_anchor_toggles_and_i_reaches_it() {
+    fn a_checkbox_in_markup_holding_an_anchor_toggles_and_right_reaches_it() {
         struct Markup;
         impl sicompass_sdk::provider::Provider for Markup {
             fn name(&self) -> &str {
@@ -960,7 +1054,7 @@ mod tests {
             r.total_list[0].label
         );
 
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         assert_eq!(r.coordinate, Coordinate::InElement);
         assert!(!announced(&r).contains("checkbox"), "{}", announced(&r));
         press(&mut r, Keycode::Return);
@@ -988,7 +1082,7 @@ mod tests {
         assert!(r.total_list[0].label.starts_with("-ccp "));
     }
 
-    /// The row's only button: `i` Enter presses it and leaves the box alone, and Enter
+    /// The row's only button: Right Enter presses it and leaves the box alone, and Enter
     /// ticks the box and leaves the button alone.
     #[test]
     fn a_checkbox_with_one_button_presses_in_element_mode_and_toggles_on_enter() {
@@ -998,7 +1092,7 @@ mod tests {
         r.providers.push(Box::new(provider.clone()));
         list::create_list_current_layer(&mut r);
 
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         press(&mut r, Keycode::Return);
         assert_eq!(provider.pressed(), ["go"]);
         assert!(provider.toggled().is_empty(), "{:?}", provider.toggled());
@@ -1022,7 +1116,7 @@ mod tests {
         list::create_list_current_layer(&mut r);
         assert_eq!(r.total_list[1].label, "-rb two now");
 
-        press(&mut r, Keycode::A);
+        enter_last(&mut r);
         press(&mut r, Keycode::Return);
         assert_eq!(provider.pressed(), ["go"]);
         assert!(provider.toggled().is_empty(), "{:?}", provider.toggled());
@@ -1040,7 +1134,7 @@ mod tests {
     /// Selecting used to strip the choice's tags, and a followed choice used to be an
     /// `Obj` nothing could select or show as selected.
     #[test]
-    fn enter_selects_a_radio_choice_holding_a_link_and_i_follows_it() {
+    fn enter_selects_a_radio_choice_holding_a_link_and_right_follows_it() {
         let (dir, file) = page("radio-link");
         let choice = format!("two <link>{}</link>", file.display());
         let mut r = radio_renderer(&["<checked>one", choice.as_str()], 1);
@@ -1053,7 +1147,7 @@ mod tests {
         assert_eq!(r.total_list[1].label, two("-rcl"));
         assert!(tags::has_link(&focused(&r)), "{}", focused(&r));
 
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         press(&mut r, Keycode::Return);
         assert_eq!(r.current_id.depth(), 4, "inside the page");
         press(&mut r, Keycode::Left);
@@ -1130,7 +1224,7 @@ mod tests {
     fn a_dead_link_stays_where_it_is() {
         let row = "Go <link>/no/such/file.json</link> or <link>/none.json</link>";
         let mut r = renderer(&[row], 0);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         press(&mut r, Keycode::Return);
         assert_eq!(r.coordinate, Coordinate::InElement);
         assert_eq!(r.current_id.depth(), 2);
@@ -1140,7 +1234,7 @@ mod tests {
     fn enter_and_d_open_the_selected_image_big() {
         for key in [Keycode::Return, Keycode::D] {
             let mut r = renderer(&["<image>a.jpg</image><image>b.jpg</image>"], 0);
-            press(&mut r, Keycode::A);
+            enter_last(&mut r);
             press(&mut r, key);
             assert_eq!(r.coordinate, Coordinate::Dashboard, "{key:?}");
             assert!(in_image_view(&r));
@@ -1164,7 +1258,11 @@ mod tests {
         let mut r = renderer(&[row], 0);
         r.providers.push(Box::new(Markup));
         list::create_list_current_layer(&mut r);
-        press(&mut r, if at_last { Keycode::A } else { Keycode::I });
+        // Straight in, also for a row's only video, which Right leaves alone.
+        handle_enter_mode(&mut r);
+        if at_last {
+            r.nav_index = r.nav_targets.len() - 1;
+        }
         open_image_view_with(&mut r, available);
         r
     }
@@ -1287,7 +1385,7 @@ mod tests {
     fn the_big_view_steps_through_images_only_and_returns_to_its_target() {
         let row = "<image>a.jpg</image> <link>u</link> <image>b.jpg</image>";
         let mut r = renderer(&[row], 0);
-        press(&mut r, Keycode::I);
+        enter_first(&mut r);
         press(&mut r, Keycode::Return);
         press(&mut r, Keycode::Right);
         assert_eq!(r.dashboard_image_path, "b.jpg", "skips the link");
