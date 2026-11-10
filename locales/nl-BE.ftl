@@ -112,7 +112,7 @@ mode-input-search = invoerzoekmodus
 mode-dashboard = dashboardmodus
 mode-meta = metamodus
 mode-timeline = tijdlijnmodus
-mode-manual = handleidingmodus
+mode-manual = beginnershandleidingmodus
 mode-tab-switcher = tabbladwisselaarmodus
 mode-confirm-close-tab = bevestigingsmodus tabblad sluiten
 
@@ -202,7 +202,7 @@ manual-18 = Commandomodus: druk op de dubbele punt voor de commando's van de reg
 manual-19 = Scrolmodus: druk op s om een lange lijst als een pagina te lezen. PgUp, PgDn, Home en End gaan erdoor, en Escape verlaat de modus.
 manual-20 = In-elementmodus: druk op i of a op een regel met meerdere links, knoppen, afbeeldingen of video's. Ze gaat binnen de regel tussen die elementen, zoals de vorige regels toonden.
 manual-21 = Metamodus: druk op m om elke toets te zien die werkt op de regel waar je op staat. Tijdlijnmodus: druk op z om te zien wat je deed. Ctrl+Z maakt ongedaan en Ctrl+Shift+Z herhaalt.
-manual-22 = De handleidingmodus is deze lijst. Escape brengt je altijd terug naar de algemene modus, en Tab opent de handleiding weer.
+manual-22 = De beginnershandleidingmodus is deze lijst. Escape brengt je altijd terug naar de algemene modus, en Tab opent de handleiding weer.
 manual-23 = De tabbladwisselaarmodus houdt meerdere plekken tegelijk open. Druk op t om de wisselaar te openen en kies er een met Enter, of druk op Ctrl+T om een nieuwe plek te openen.
 manual-24 = Ctrl+C kopieert de regel waar je op staat, Ctrl+Shift+C kopieert een link of een waarde, en Ctrl+V plakt. Ctrl+W zegt waar je bent.
 manual-25 = Een schermlezer leest elke regel waar je op terechtkomt. Ben je verdwaald, druk dan op Escape, of twee keer op Home om opnieuw bovenaan te beginnen.

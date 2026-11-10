@@ -407,7 +407,7 @@ impl Coordinate {
             Coordinate::Dashboard => "dashboard mode",
             Coordinate::Meta => "meta mode",
             Coordinate::TimelineView => "timeline mode",
-            Coordinate::Manual => "manual mode",
+            Coordinate::Manual => "beginner's manual mode",
             Coordinate::ConfirmCloseTab => "confirm close tab mode",
             Coordinate::TabSwitcher => "tab switcher mode",
             Coordinate::SessionCommand => "command mode",

@@ -115,7 +115,7 @@ mode-input-search = input search mode
 mode-dashboard = dashboard mode
 mode-meta = meta mode
 mode-timeline = timeline mode
-mode-manual = manual mode
+mode-manual = beginner's manual mode
 mode-tab-switcher = tab switcher mode
 mode-confirm-close-tab = confirm close tab mode
 
@@ -212,7 +212,7 @@ manual-18 = Command mode: press the colon key for the commands of the line you a
 manual-19 = Scroll mode: press s to read a long list as one page. PgUp, PgDn, Home and End move through it, and Escape leaves.
 manual-20 = Element mode: press i or a on a line with several links, buttons, pictures or videos. It moves between them inside the line, as the earlier lines showed.
 manual-21 = Meta mode: press m to see every key that works on the line you are on. Timeline mode: press z to see what you did. Ctrl+Z undoes and Ctrl+Shift+Z redoes.
-manual-22 = Manual mode is this list. Escape always takes you back to general mode, and Tab opens the manual again.
+manual-22 = Beginner's manual mode is this list. Escape always takes you back to general mode, and Tab opens the manual again.
 manual-23 = Tab switcher mode keeps several places open at once. Press t to open the switcher and pick one with Enter, or press Ctrl+T to open a new place.
 manual-24 = Ctrl+C copies the line you are on, Ctrl+Shift+C copies a link or a value, and Ctrl+V pastes. Ctrl+W tells you where you are.
 manual-25 = A screen reader reads every line you land on. If you are lost, press Escape, or press Home twice to start again from the top.

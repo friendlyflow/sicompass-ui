@@ -112,7 +112,7 @@ mode-input-search = mode recherche saisie
 mode-dashboard = mode tableau de bord
 mode-meta = mode méta
 mode-timeline = mode chronologie
-mode-manual = mode manuel
+mode-manual = mode manuel du débutant
 mode-tab-switcher = mode sélecteur d'onglets
 mode-confirm-close-tab = mode confirmation fermeture onglet
 
@@ -202,7 +202,7 @@ manual-18 = Mode commande : appuyez sur les deux-points pour les commandes de la
 manual-19 = Mode défilement : appuyez sur s pour lire une longue liste comme une seule page. Page précédente, Page suivante, Début et Fin la parcourent, et Échap quitte.
 manual-20 = Mode dans l'élément : appuyez sur i ou a sur une ligne avec plusieurs liens, boutons, images ou vidéos. Il se déplace entre eux dans la ligne, comme les lignes précédentes l'ont montré.
 manual-21 = Mode méta : appuyez sur m pour voir chaque touche qui marche sur la ligne où vous êtes. Mode chronologie : appuyez sur z pour voir ce que vous avez fait. Ctrl+Z annule et Ctrl+Shift+Z rétablit.
-manual-22 = Le mode manuel est cette liste. Échap vous ramène toujours au mode général, et Tab rouvre le manuel.
+manual-22 = Le mode manuel du débutant est cette liste. Échap vous ramène toujours au mode général, et Tab rouvre le manuel.
 manual-23 = Le mode sélecteur d'onglets garde plusieurs endroits ouverts à la fois. Appuyez sur t pour ouvrir le sélecteur et en choisir un avec Entrée, ou sur Ctrl+T pour ouvrir un nouvel endroit.
 manual-24 = Ctrl+C copie la ligne où vous êtes, Ctrl+Shift+C copie un lien ou une valeur, et Ctrl+V colle. Ctrl+W dit où vous êtes.
 manual-25 = Un lecteur d'écran lit chaque ligne où vous arrivez. Si vous êtes perdu, appuyez sur Échap, ou deux fois sur Début pour recommencer tout en haut.

@@ -112,7 +112,7 @@ mode-input-search = Eingabe-Suchmodus
 mode-dashboard = Dashboard-Modus
 mode-meta = Meta-Modus
 mode-timeline = Verlaufsmodus
-mode-manual = Handbuchmodus
+mode-manual = Anfängerhandbuchmodus
 mode-tab-switcher = Reiterwechsel-Modus
 mode-confirm-close-tab = Bestätigungsmodus Reiter schließen
 
@@ -202,7 +202,7 @@ manual-18 = Befehlsmodus: Drücke den Doppelpunkt für die Befehle der Zeile, au
 manual-19 = Scroll-Modus: Drücke s, um eine lange Liste als eine Seite zu lesen. Bild hoch, Bild runter, Pos1 und Ende gehen hindurch, und Escape verlässt ihn.
 manual-20 = Im-Element-Modus: Drücke i oder a auf einer Zeile mit mehreren Links, Schaltflächen, Bildern oder Videos. Er bewegt sich in der Zeile zwischen ihnen, wie die früheren Zeilen gezeigt haben.
 manual-21 = Meta-Modus: Drücke m, um jede Taste zu sehen, die auf der aktuellen Zeile funktioniert. Verlaufsmodus: Drücke z, um zu sehen, was du getan hast. Strg+Z macht rückgängig und Strg+Umschalt+Z stellt wieder her.
-manual-22 = Der Handbuchmodus ist diese Liste. Escape bringt dich immer zurück zum allgemeinen Modus, und Tab öffnet das Handbuch wieder.
+manual-22 = Der Anfängerhandbuchmodus ist diese Liste. Escape bringt dich immer zurück zum allgemeinen Modus, und Tab öffnet das Handbuch wieder.
 manual-23 = Der Reiterwechsel-Modus hält mehrere Orte gleichzeitig offen. Drücke t, um den Wechsler zu öffnen und mit Enter einen zu wählen, oder Strg+T, um einen neuen Ort zu öffnen.
 manual-24 = Strg+C kopiert die aktuelle Zeile, Strg+Umschalt+C kopiert einen Link oder einen Wert, und Strg+V fügt ein. Strg+W sagt dir, wo du bist.
 manual-25 = Ein Bildschirmleser liest jede Zeile, auf der du landest. Wenn du dich verirrt hast, drücke Escape oder zweimal Pos1, um oben neu zu beginnen.
