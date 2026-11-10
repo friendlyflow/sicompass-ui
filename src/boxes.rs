@@ -18,8 +18,8 @@
 
 use crate::layout::TextRun;
 use crate::style::{
-    Display, Justify, Length, LengthContext, ObjectFit, Sheets, Style, StyleEnv, StyleNode,
-    TextAlign,
+    Display, Justify, Length, LengthContext, ObjectFit, Outline, Sheets, Style, StyleEnv,
+    StyleNode, TextAlign,
 };
 use crate::text::FontRenderer;
 use sicompass_sdk::markup::{self, Element, Node};
@@ -54,6 +54,10 @@ pub(crate) struct BoxNode {
     pub children: Vec<BoxNode>,
     /// How many of the row's targets are in this box.
     pub targets: usize,
+    /// The mark the cursor puts round this box in element mode, from `img:focus` and
+    /// the like, for a box that holds targets. Its room is kept inside the box whether
+    /// or not the cursor is on it, so the row never moves when the cursor does.
+    pub outline: Option<Outline>,
 }
 
 const BLOCKS: &[&str] = &["div", "p", "h1", "h2", "h3", "header"];
@@ -106,6 +110,7 @@ impl Builder<'_> {
             content: Content::Container,
             children: out,
             targets: 0,
+            outline: None,
         }
     }
 
@@ -185,12 +190,19 @@ impl Builder<'_> {
             },
             children: Vec::new(),
             targets,
+            outline: None,
         });
     }
 
     fn media(&mut self, element: &Element) -> BoxNode {
         self.path.push(node_of(element));
         let style = self.style();
+        self.path.pop();
+        self.path.push(StyleNode {
+            focus: true,
+            ..node_of(element)
+        });
+        let outline = self.style().outline;
         self.path.pop();
         let found = markup::targets_of(std::slice::from_ref(&Node::Element(element.clone())));
         let (path, name) = found
@@ -208,7 +220,19 @@ impl Builder<'_> {
             },
             children: Vec::new(),
             targets: 1,
+            outline: Some(outline),
         }
+    }
+}
+
+/// Give every box that holds targets and has no outline of its own (text with links in
+/// it, a box a link wraps) the outline of a focused link in the row.
+fn outline_targets(node: &mut BoxNode, link: Outline) {
+    if node.targets > 0 && node.outline.is_none() {
+        node.outline = Some(link);
+    }
+    for child in &mut node.children {
+        outline_targets(child, link);
     }
 }
 
@@ -226,7 +250,16 @@ pub(crate) fn build(
         env,
         path: row_path,
     };
-    match markup::whole_row_element(&nodes) {
+    let link_path = {
+        let mut path = builder.path.clone();
+        path.push(StyleNode {
+            focus: true,
+            ..StyleNode::new("a")
+        });
+        path
+    };
+    let link = sheets.style_for(&link_path, env).outline;
+    let mut root = match markup::whole_row_element(&nodes) {
         Some(element) if !is_media(element) && BLOCKS.contains(&element.tag) => {
             builder.path.push(node_of(element));
             let style = builder.style();
@@ -236,6 +269,20 @@ pub(crate) fn build(
             let style = builder.style();
             builder.container(&nodes, style)
         }
+    };
+    outline_targets(&mut root, link);
+    root
+}
+
+/// The room a box's outline keeps inside it, and the outline's width, in pixels. Nothing
+/// for a box that holds no targets.
+fn outline_room(node: &BoxNode, env: &StyleEnv, column: f32) -> (f32, f32) {
+    match node.outline {
+        Some(outline) if node.targets > 0 => {
+            let (width, offset) = outline.px(&length_context(&node.style, env, column));
+            (width + offset, width)
+        }
+        _ => (0.0, 0.0),
     }
 }
 
@@ -288,6 +335,11 @@ pub(crate) struct TargetRect {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// The width of the frame drawn inside this rectangle when the cursor is on it. What
+    /// is in the box stays clear of it.
+    pub outline: f32,
+    /// The frame's colour, `None` for the palette's.
+    pub outline_color: Option<u32>,
 }
 
 /// A row of boxes, placed.
@@ -445,7 +497,21 @@ struct Planner<'a, 'c> {
 
 impl<'a, 'c> Planner<'a, 'c> {
     fn plan(&mut self, node: &'a BoxNode) -> Pending<'a> {
-        let style = taffy_style(&node.style, self.cx.env, self.column);
+        let mut style = taffy_style(&node.style, self.cx.env, self.column);
+        // A picture's box is laid out as the sheet says, the way an outline never moves
+        // anything in CSS: the picture is drawn smaller inside it instead. Text and boxes
+        // with children need the room in the layout, since it changes where they wrap.
+        let (room, _) = outline_room(node, self.cx.env, self.column);
+        if room > 0.0 && !matches!(node.content, Content::Media { .. }) {
+            let cx = length_context(&node.style, self.cx.env, self.column);
+            let side = |len: Length| length(len.px(&cx).unwrap_or(0.0) + room);
+            style.padding = Rect {
+                top: side(node.style.padding[0]),
+                right: side(node.style.padding[1]),
+                bottom: side(node.style.padding[2]),
+                left: side(node.style.padding[3]),
+            };
+        }
         let mut children = Vec::new();
         let id = match &node.content {
             Content::Container => {
@@ -481,6 +547,9 @@ impl<'a, 'c> Planner<'a, 'c> {
                     _ => (4.0 / 3.0, 12.0 * self.cx.env.base_ch),
                 };
                 let aspect = node.style.aspect_ratio.unwrap_or(aspect);
+                // Its shape is taffy's to keep too: a grid stretches a picture narrower
+                // than its cell to the cell's width, and the height has to follow.
+                style.aspect_ratio = Some(aspect);
                 self.leaves.push(Leaf::Media { aspect, natural_w });
                 self.tree
                     .new_leaf_with_context(style, self.leaves.len() - 1)
@@ -565,6 +634,8 @@ fn measure(
 
 struct Collector<'a, 'c> {
     cx: &'a LayoutCtx<'c>,
+    /// The row's width, which lengths in percent are of.
+    column: f32,
     tree: &'a TaffyTree<usize>,
     boxes: Vec<Placed>,
     targets: Vec<TargetRect>,
@@ -579,11 +650,13 @@ impl Collector<'_, '_> {
         let cx = length_context(&node.style, self.cx.env, w);
         let px = |len: Length| len.px(&cx).unwrap_or(0.0);
         let border = px(node.style.border_width);
+        // Measured against the column, the way the planner gave it its room.
+        let (room, outline) = outline_room(node, self.cx.env, self.column);
         let inset = [
-            border + px(node.style.padding[0]),
-            border + px(node.style.padding[1]),
-            border + px(node.style.padding[2]),
-            border + px(node.style.padding[3]),
+            border + px(node.style.padding[0]) + room,
+            border + px(node.style.padding[1]) + room,
+            border + px(node.style.padding[2]) + room,
+            border + px(node.style.padding[3]) + room,
         ];
         let content = match &node.content {
             Content::Container => PlacedContent::Container,
@@ -618,7 +691,14 @@ impl Collector<'_, '_> {
             },
         };
         let backdrop = node.style.background.or(behind);
-        let rect = TargetRect { x, y, w, h };
+        let rect = TargetRect {
+            x,
+            y,
+            w,
+            h,
+            outline,
+            outline_color: node.outline.and_then(|o| o.color),
+        };
         self.targets.extend(std::iter::repeat_n(rect, node.targets));
         self.boxes.push(Placed {
             x,
@@ -675,6 +755,7 @@ pub(crate) fn layout(
     );
     let mut collector = Collector {
         cx,
+        column: width,
         tree: &tree,
         boxes: Vec::new(),
         targets: Vec::new(),
@@ -883,6 +964,83 @@ mod tests {
             .iter()
             .filter(|b| matches!(b.content, PlacedContent::Media { .. }))
             .collect()
+    }
+
+    /// Element mode's frame goes inside its target, and what is in the target stays
+    /// clear of it, so pictures side by side with no gap never share a frame's pixels.
+    #[test]
+    fn a_targets_frame_stays_inside_it_and_clear_of_its_picture() {
+        let css = ".row { display: flex; gap: 0 } img { width: 100px }";
+        let row = r#"<div class="row"><img src="a.jpg"><video src="b.mp4"></video></div>"#;
+        let sizes = [("a.jpg", (100, 100)), ("b.mp4", (100, 100))];
+        let layout = laid(css, row, 300.0, &sizes);
+        let media = media_boxes(&layout);
+        assert_eq!(layout.targets.len(), 2);
+        for (target, placed) in layout.targets.iter().zip(&media) {
+            assert_eq!(target.outline, 3.0, "the default sheet's");
+            assert_eq!(
+                (target.x, target.y, target.w, target.h),
+                (placed.x, placed.y, placed.w, placed.h)
+            );
+            assert!(
+                placed.inset.iter().all(|&i| i >= target.outline),
+                "{placed:?}"
+            );
+        }
+        // Side by side with no gap: the two frames, each inside its own box, do not meet.
+        let (a, b) = (&layout.targets[0], &layout.targets[1]);
+        assert!(a.x + a.w <= b.x, "{a:?} {b:?}");
+        // The picture's box is what the sheet laid out: an outline moves nothing.
+        assert_eq!((media[0].w, media[0].h), (100.0, 100.0));
+    }
+
+    /// A picture narrower than its grid cell is stretched to the cell, and its height
+    /// follows: the tutorial's 320 px photos came out shorter than their square cells.
+    #[test]
+    fn a_small_picture_in_a_grid_keeps_its_shape_when_stretched() {
+        let css =
+            ".g { display: grid; grid-template-columns: repeat(3, 1fr) } img { aspect-ratio: 1 }";
+        let row = r#"<div class="g"><img src="a.jpg"><img src="b.jpg"><img src="c.jpg"></div>"#;
+        let sizes = [
+            ("a.jpg", (480, 320)),
+            ("b.jpg", (100, 150)),
+            ("c.jpg", (400, 400)),
+        ];
+        let layout = laid(css, row, 600.0, &sizes);
+        for media in media_boxes(&layout) {
+            assert_eq!((media.w, media.h), (200.0, 200.0), "{media:?}");
+        }
+    }
+
+    /// A sheet restyles the frame, and cannot make it vanish.
+    #[test]
+    fn a_sheet_restyles_the_targets_frame() {
+        let css = "img:focus { outline: 6px solid #e80; outline-offset: 2px }";
+        let row = r#"<img src="a.jpg"><img src="b.jpg">"#;
+        let layout = laid(css, row, 300.0, &[]);
+        assert_eq!(layout.targets[0].outline, 6.0);
+        assert_eq!(layout.targets[0].outline_color, Some(0xEE8800FF));
+        assert_eq!(media_boxes(&layout)[0].inset, [8.0; 4]);
+
+        let layout = laid("img:focus { outline: none }", row, 300.0, &[]);
+        assert_eq!(layout.targets[0].outline, crate::style::MIN_OUTLINE);
+    }
+
+    /// Text with a link in it keeps its frame's room in the layout, so the text wraps
+    /// inside it.
+    #[test]
+    fn a_link_in_a_row_of_boxes_has_room_for_its_frame() {
+        let row = r#"<img src="a.jpg"><p>See <a href="u">here</a></p>"#;
+        let layout = laid("", row, 300.0, &[]);
+        let text = layout
+            .boxes
+            .iter()
+            .find(|b| matches!(b.content, PlacedContent::Text { .. }))
+            .expect("a text box");
+        assert_eq!(layout.targets.len(), 2);
+        assert_eq!(layout.targets[1].outline, 3.0);
+        // The default sheet's 3 px, and 2 px of air before the letters.
+        assert_eq!(text.inset, [5.0; 4]);
     }
 
     /// The user's grid, in full.

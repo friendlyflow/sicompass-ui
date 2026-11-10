@@ -31,6 +31,8 @@ pub struct RowStyle {
     /// The row is a tree of boxes (a grid, several pictures, a video), laid out by
     /// `boxes`, not a run of text.
     pub boxed: bool,
+    /// `li:focus`'s outline, the mark round the cursor's row.
+    pub ring: crate::style::Outline,
 }
 
 /// A stretch of a row's text, by character, that looks different from the rest.
@@ -99,7 +101,16 @@ pub struct RowBoxStyle {
     pub margin: [f32; 4],
     pub border: f32,
     pub radius: f32,
+    /// The width of the ring round the cursor's row, drawn inside its edge.
+    pub ring: f32,
+    /// The room kept inside the row's edge, above, below and to the right, so what is in
+    /// the row stays clear of the ring.
+    pub room: f32,
 }
+
+/// The room a line of text already leaves round the default ring (3 px, and 3 px of air):
+/// a text row only grows for a ring that needs more.
+pub const TEXT_ROW_ROOM: f32 = 6.0;
 
 impl Default for RowBoxStyle {
     fn default() -> Self {
@@ -109,6 +120,8 @@ impl Default for RowBoxStyle {
             margin: [0.0; 4],
             border: 0.0,
             radius: 0.0,
+            ring: 0.0,
+            room: 0.0,
         }
     }
 }
@@ -133,12 +146,35 @@ impl RowBoxStyle {
             margin: sides(&style.margin),
             border: style.border_width.px(&cx).unwrap_or(0.0),
             radius: style.border_radius.px(&cx).unwrap_or(0.0),
+            ring: 0.0,
+            room: 0.0,
         }
+    }
+
+    /// [`RowBoxStyle::resolve`] for a row of the list, with the ring `li:focus` draws
+    /// round it and the room that keeps. A row of boxes keeps all of it, since a picture
+    /// fills its box to the edge. A row of text keeps what its line does not already.
+    pub fn for_row(row: &RowStyle, env: &crate::style::StyleEnv, column: f32) -> RowBoxStyle {
+        let mut out = RowBoxStyle::resolve(&row.li, env, column);
+        let cx = crate::style::LengthContext {
+            em: env.base_em,
+            ch: env.base_ch,
+            percent_of: column,
+            px_scale: env.px_scale,
+        };
+        let (width, offset) = row.ring.px(&cx);
+        out.ring = width;
+        out.room = if row.boxed {
+            width + offset
+        } else {
+            (width + offset - TEXT_ROW_ROOM).max(0.0)
+        };
+        out
     }
 
     /// From the row's outer edge to its text, going down.
     pub fn top(&self) -> f32 {
-        self.margin[0] + self.border + self.padding[0]
+        self.margin[0] + self.border + self.padding[0] + self.room
     }
 
     /// From the row's outer edge to its text, going right.
@@ -148,12 +184,22 @@ impl RowBoxStyle {
 
     /// What the style adds to a row's height, outside its text.
     pub fn extra_height(&self) -> f32 {
-        self.margin[0] + self.margin[2] + 2.0 * self.border + self.padding[0] + self.padding[2]
+        self.margin[0]
+            + self.margin[2]
+            + 2.0 * self.border
+            + self.padding[0]
+            + self.padding[2]
+            + 2.0 * self.room
     }
 
     /// What the style takes from a row's width, outside its text.
     pub fn extra_width(&self) -> f32 {
-        self.margin[1] + self.margin[3] + 2.0 * self.border + self.padding[1] + self.padding[3]
+        self.margin[1]
+            + self.margin[3]
+            + 2.0 * self.border
+            + self.padding[1]
+            + self.padding[3]
+            + self.room
     }
 }
 
@@ -638,6 +684,48 @@ mod tests {
         lines.iter().map(|l| *l as f32 * LH).collect()
     }
 
+    /// A row of boxes keeps the whole of its ring's room inside its edge, a row of text
+    /// only what its line does not already leave, and either keeps it with or without
+    /// the cursor on it.
+    #[test]
+    fn the_ring_keeps_its_room_inside_the_row() {
+        let env = crate::style::StyleEnv {
+            base_em: 10.0,
+            base_ch: 10.0,
+            px_scale: 1.0,
+            ..Default::default()
+        };
+        let row = |boxed: bool, css: &str| {
+            let mut sheets = crate::style::Sheets::default();
+            sheets.set_user(Some(css));
+            let mut style = (*sheets.row_style(None, false, &env)).clone();
+            style.boxed = boxed;
+            RowBoxStyle::for_row(&style, &env, 200.0)
+        };
+
+        let boxes = row(true, "");
+        assert_eq!((boxes.ring, boxes.room), (3.0, 6.0));
+        assert_eq!(boxes.top(), 6.0);
+        assert_eq!(boxes.extra_height(), 12.0);
+        assert_eq!(boxes.extra_width(), 6.0);
+        assert_eq!(
+            boxes.left(),
+            0.0,
+            "the list prefix is between the ring and the boxes"
+        );
+
+        let text = row(false, "");
+        assert_eq!(
+            (text.ring, text.room),
+            (3.0, 0.0),
+            "a text row looks as it did"
+        );
+
+        let wide = "li:focus { outline: 8px solid; outline-offset: 4px }";
+        assert_eq!(row(true, wide).room, 12.0);
+        assert_eq!(row(false, wide).room, 12.0 - TEXT_ROW_ROOM);
+    }
+
     fn pos(x: f32, y: f32) -> TargetPos {
         TargetPos { x, y }
     }
@@ -649,6 +737,7 @@ mod tests {
             margin: [10.0, 20.0, 30.0, 40.0],
             border: 5.0,
             radius: 0.0,
+            ..RowBoxStyle::default()
         }
     }
 

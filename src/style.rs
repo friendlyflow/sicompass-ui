@@ -53,6 +53,9 @@ pub const DEFAULT_CSS: &str = "ul { max-width: 120ch }
     header { font-weight: bold }
     b { font-weight: bold }
     a, button { font-weight: bold }
+    li:focus { outline: 3px solid; outline-offset: 3px }
+    img:focus, video:focus { outline: 3px solid }
+    a:focus, button:focus { outline: 3px solid; outline-offset: 2px }
     @media (prefers-color-scheme: dark) { a { color: #267AFF } button { color: #FFFFFF; background: #264F78 } }
     @media (prefers-color-scheme: light) { a { color: #001B6D } button { color: #000000; background: #A8C7FA } }";
 
@@ -171,6 +174,42 @@ pub struct Style {
     pub aspect_ratio: Option<f32>,
     pub flex_wrap: bool,
     pub justify: Justify,
+    /// The mark round the row or target the cursor is on, from `li:focus` or `img:focus`.
+    pub outline: Outline,
+}
+
+/// `outline`: how the cursor's row or target is marked. Unlike a browser's, it is drawn
+/// inside the edge of what it marks, and `offset` is the room between it and what is
+/// inside, so it never covers a neighbour or the row round it. A colour left `None` is
+/// the palette's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Outline {
+    pub width: Length,
+    pub offset: Length,
+    pub color: Option<u32>,
+}
+
+impl Default for Outline {
+    fn default() -> Self {
+        Outline {
+            width: Length::Px(0.0),
+            offset: Length::Px(0.0),
+            color: None,
+        }
+    }
+}
+
+/// The thinnest an outline is drawn, whatever a stylesheet says: the cursor must show.
+pub const MIN_OUTLINE: f32 = 2.0;
+
+impl Outline {
+    /// Its width and offset in pixels. The width is never below [`MIN_OUTLINE`], so
+    /// `outline: none` still marks the cursor, and the offset is never negative.
+    pub fn px(&self, cx: &LengthContext) -> (f32, f32) {
+        let width = self.width.px(cx).unwrap_or(0.0).max(MIN_OUTLINE);
+        let offset = self.offset.px(cx).unwrap_or(0.0).max(0.0);
+        (width, offset)
+    }
 }
 
 impl Default for Style {
@@ -198,6 +237,7 @@ impl Default for Style {
             aspect_ratio: None,
             flex_wrap: false,
             justify: Justify::Start,
+            outline: Outline::default(),
         }
     }
 }
@@ -496,6 +536,8 @@ enum Declaration {
     AspectRatio(f32),
     FlexWrap(bool),
     Justify(Justify),
+    Outline(Option<Length>, Option<u32>),
+    OutlineOffset(Length),
 }
 
 impl Declaration {
@@ -541,6 +583,15 @@ impl Declaration {
             Declaration::AspectRatio(r) => style.aspect_ratio = Some(*r),
             Declaration::FlexWrap(w) => style.flex_wrap = *w,
             Declaration::Justify(j) => style.justify = *j,
+            Declaration::Outline(width, color) => {
+                if let Some(width) = width {
+                    style.outline.width = *width;
+                }
+                if let Some(color) = color {
+                    style.outline.color = Some(*color);
+                }
+            }
+            Declaration::OutlineOffset(l) => style.outline.offset = *l,
         }
     }
 }
@@ -709,6 +760,25 @@ fn parse_border<'i>(input: &mut CssParser<'i, '_>) -> ValueResult<'i, Declaratio
     Ok(Declaration::Border(width, color))
 }
 
+/// `outline`: a width, a colour and a line style in any order. `none` is no width, which
+/// [`Outline::px`] raises to the least that shows.
+fn parse_outline<'i>(input: &mut CssParser<'i, '_>) -> ValueResult<'i, Declaration> {
+    let (mut width, mut color) = (None, None);
+    while !input.is_exhausted() {
+        if let Ok(l) = input.try_parse(parse_length) {
+            width = Some(l);
+        } else if let Ok(c) = input.try_parse(parse_color) {
+            color = Some(c);
+        } else if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+            width = Some(Length::Px(0.0));
+        } else {
+            // `solid` and the other line styles: an outline here is a solid one.
+            input.next()?;
+        }
+    }
+    Ok(Declaration::Outline(width, color))
+}
+
 fn parse_keyword<'i, T: Copy>(
     input: &mut CssParser<'i, '_>,
     table: &[(&str, T)],
@@ -747,6 +817,10 @@ fn parse_declaration<'i>(
         "border-width" => Declaration::Border(Some(parse_length(input)?), None),
         "border-color" => Declaration::Border(None, Some(parse_color(input)?)),
         "border-radius" => Declaration::BorderRadius(parse_length(input)?),
+        "outline" => parse_outline(input)?,
+        "outline-width" => Declaration::Outline(Some(parse_length(input)?), None),
+        "outline-color" => Declaration::Outline(None, Some(parse_color(input)?)),
+        "outline-offset" => Declaration::OutlineOffset(parse_length(input)?),
         "width" => Declaration::Width(parse_length(input)?),
         "height" => Declaration::Height(parse_length(input)?),
         "max-width" => {
@@ -1486,6 +1560,9 @@ impl Sheets {
             boxed,
             li: style,
             marker_color: compute(&sheets, &[ul.clone(), li(focus), marker], env).color,
+            // The focused row's, whether or not the cursor is on it: a row of boxes keeps
+            // the room it takes, so the row does not move when the cursor comes.
+            ring: compute(&sheets, &[ul.clone(), li(true)], env).outline,
             unfocused_background: focus
                 .then(|| compute(&sheets, &[ul, li(false)], env).background)
                 .flatten(),
@@ -1568,6 +1645,44 @@ mod tests {
 
     fn li(css: &str) -> Style {
         style(css, &[node("ul", &[]), node("li", &[])])
+    }
+
+    /// `outline` and its longhands, and the least it is ever drawn.
+    #[test]
+    fn outline_parses_and_never_vanishes() {
+        let cx = LengthContext {
+            em: 20.0,
+            ch: 10.0,
+            percent_of: 100.0,
+            px_scale: 1.0,
+        };
+        let on = |css: &str| style(css, &[node("ul", &[]), focused("li")]).outline;
+
+        let o = on("li:focus { outline: 5px solid #e80; outline-offset: 4px }");
+        assert_eq!((o.width, o.offset), (Length::Px(5.0), Length::Px(4.0)));
+        assert_eq!(o.color, Some(0xEE8800FF));
+        assert_eq!(o.px(&cx), (5.0, 4.0));
+
+        let o = on("li:focus { outline-width: 1em; outline-color: red }");
+        assert_eq!((o.px(&cx).0, o.color), (20.0, Some(0xFF0000FF)));
+
+        // A sheet cannot hide the cursor, nor pull the mark over what it surrounds.
+        assert_eq!(on("li:focus { outline: none }").px(&cx), (MIN_OUTLINE, 0.0));
+        assert_eq!(on("li:focus { outline: 0 }").px(&cx), (MIN_OUTLINE, 0.0));
+        assert_eq!(on("li:focus { outline-offset: -9px }").px(&cx).1, 0.0);
+
+        // Only the focused row has one, and the default sheet gives it the look it had.
+        assert_eq!(
+            li("li:focus { outline: 5px solid }").outline,
+            Outline::default()
+        );
+        let sheets = Sheets::default();
+        let env = StyleEnv::default();
+        let ring = sheets.row_style(None, false, &env).ring;
+        assert_eq!(
+            (ring.width, ring.offset, ring.color),
+            (Length::Px(3.0), Length::Px(3.0), None)
+        );
     }
 
     /// Links and buttons stand out before `i` or `a`, in a row of plain text and in one of

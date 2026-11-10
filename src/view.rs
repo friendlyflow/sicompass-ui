@@ -1641,7 +1641,7 @@ fn update_view(app: &mut AppState) {
             .enumerate()
             .map(|(i, item)| {
                 let row_box =
-                    crate::layout::RowBoxStyle::resolve(&item.style.li, &style_env, max_content_w);
+                    crate::layout::RowBoxStyle::for_row(&item.style, &style_env, max_content_w);
                 crate::layout::measure_row(fr, &metrics, i, item, &row_box, &mut image_size)
             })
             .collect()
@@ -1912,6 +1912,14 @@ fn update_view(app: &mut AppState) {
         let x = content_x + 4.0 * em_width + row.style.margin[3];
         let background = row_background(style, false, list_background, &p);
         let radius = row.style.radius;
+        let ring = Ring {
+            width: row.style.ring,
+            color: crate::style::visible_focus(
+                style.ring.color,
+                style.unfocused_background.unwrap_or(list_background),
+                p.selected,
+            ),
+        };
         // A picture's row fits round the picture and its text.
         if let (true, Some(layout)) = (*is_selected, &row.image) {
             let bg_top = row.y
@@ -1927,16 +1935,18 @@ fn update_view(app: &mut AppState) {
             } else {
                 row.y - ascender * scale - crate::text::TEXT_PADDING
             };
-            let bg_right = row.content_x + layout.img_w + crate::text::TEXT_PADDING;
+            let bg_top = bg_top - row.style.room;
+            let bg_right =
+                row.content_x + layout.img_w + crate::text::TEXT_PADDING + row.style.room;
             let img_display_h = layout.image_lines as f32 * line_height as f32;
             let bg_bottom = if layout.suffix_lines > 0 {
                 img_y + img_display_h + layout.suffix_lines as f32 * line_height as f32
             } else {
                 img_y + layout.img_h + crate::text::TEXT_PADDING
-            };
+            } + row.style.room;
             if let Some(rr) = app.rect_renderer.as_mut() {
                 let (w, h) = (bg_right - x, bg_bottom - bg_top);
-                focus_outline(rr, (x, bg_top, w, h), radius, p.selected, list_background);
+                focus_outline(rr, (x, bg_top, w, h), radius, ring, list_background);
                 // In element mode's selected image: its frame shows in the 2 px the
                 // image is inset by.
                 if selected_image_frame {
@@ -1960,7 +1970,7 @@ fn update_view(app: &mut AppState) {
                     rr,
                     (x, row.box_y, row.highlight_w, row.box_h),
                     radius,
-                    p.selected,
+                    ring,
                     inner,
                 );
             } else if border > 0.0 {
@@ -4037,24 +4047,25 @@ fn draw_box_row(
     if let (Some(index), Some(rr)) = (selected_target, rr)
         && let Some(target) = laid.targets.get(index)
     {
-        // The target in element mode is on, framed just outside it: pictures are drawn
-        // after rectangles, so a frame on its edge would be covered by the picture.
-        let t = 4.0;
-        let (x, y) = (origin.0 + target.x - t, origin.1 + target.y - t);
-        let (w, h) = (target.w + 2.0 * t, target.h + 2.0 * t);
+        // The target in element mode is on, framed inside its edge, in the room the
+        // layout keeps clear there: never over a picture, a neighbour or the row's ring.
+        let t = target.outline;
+        let color = crate::style::visible_focus(target.outline_color, row_background, p.text);
+        let (x, y) = (origin.0 + target.x, origin.1 + target.y);
+        let (w, h) = (target.w, target.h);
         for (fx, fy, fw, fh) in [
             (x, y, w, t),
             (x, y + h - t, w, t),
             (x, y, t, h),
             (x + w - t, y, t, h),
         ] {
-            rr.prepare_rectangle(fx, fy, fw, fh, p.text, 0.0);
+            rr.prepare_rectangle(fx, fy, fw, fh, color, 0.0);
         }
     }
 }
 
 /// How far a button's pill or a lit target stays from the top and bottom of its line, so
-/// the cursor row's border (3 px, see [`focus_outline`]) is never covered by it.
+/// the cursor row's ring (3 px by default, see [`focus_outline`]) is never covered by it.
 const INSIDE_THE_FOCUS_BORDER: f32 = 4.0;
 
 /// `chars` cut so the link at `span` is on the line: the front is cut when what comes before
@@ -4121,17 +4132,22 @@ fn followed_link_span(r: &AppRenderer) -> Option<std::ops::Range<usize>> {
         .map(|t| t.display_span.clone())
 }
 
-/// The cursor's row: a border of `edge` in `color` round a plain `inside`, with the
+/// `li:focus`'s outline, resolved: how wide and in what colour.
+#[derive(Clone, Copy)]
+struct Ring {
+    width: f32,
+    color: u32,
+}
+
+/// The cursor's row: its ring inside the row's edge, round a plain `inside`, with the
 /// corners rounded the way every background is.
 fn focus_outline(
     rr: &mut crate::rectangle::RectangleRenderer,
     (x, y, w, h): (f32, f32, f32, f32),
     radius: f32,
-    color: u32,
+    Ring { width: edge, color }: Ring,
     inside: u32,
 ) {
-    // Thick enough to come before the target's blue highlight inside it.
-    let edge = 3.0;
     rr.prepare_rectangle(x, y, w, h, color, radius);
     rr.prepare_rectangle(
         x + edge,
