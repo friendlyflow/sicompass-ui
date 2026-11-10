@@ -1,12 +1,14 @@
 //! In element mode: moving between the images, links and buttons in one row.
 //!
-//! Entered from General with Right on a row with several targets, on the first. A
-//! row with one target needs no mode: Enter uses it. Enter on a row with several
-//! still uses the first link or button. Left and Right go target by target,
-//! skipping plain text, and Up and Down go to the line above or below. Enter
-//! activates, Escape leaves. Right on the last target goes into the row's children,
-//! when it has any. On a checkbox or a radio choice Right goes in even for one
-//! target, because Enter in General changes the row.
+//! Entered from General with Right on a row with several targets, on the first, and
+//! such a row's prefix is an arrow right for it. A row with one target needs no
+//! mode: Enter uses it. Enter in General on a row with several does what Enter here
+//! does on the first. Left and Right go target by target, skipping plain text, and
+//! Up and Down go to the line above or below. Enter activates, Escape leaves. Right
+//! on the last target goes into the row's children, when it has any.
+//!
+//! A checkbox or a radio choice is unchanged by all this: Enter changes it and it keeps
+//! its dash. Right goes in on one holding any target, even one, because Enter cannot.
 //!
 //! Enter and `d` on an image open the big view, also here, which is the dashboard
 //! showing that one image instead of asking the provider what to show.
@@ -67,6 +69,37 @@ pub(crate) fn wants_element_mode(r: &AppRenderer) -> bool {
         0 => false,
         1 => handlers::focused_is_toggle(r),
         _ => true,
+    }
+}
+
+/// Enter in General uses the first target: a row with several, which is not a
+/// checkbox or a radio choice (Enter changes those).
+pub(crate) fn enter_uses_first_target(r: &AppRenderer) -> bool {
+    r.current_id.depth() > 1 && focused_counts(r).total() >= 2 && !handlers::focused_is_toggle(r)
+}
+
+/// Enter in General on a row with several targets: what Enter in element mode does
+/// on the first, without staying in the mode.
+pub fn handle_enter_first(r: &mut AppRenderer) {
+    let targets = focused_targets(r);
+    if targets.is_empty() {
+        return;
+    }
+    let rest = r.coordinate;
+    r.nav_targets = targets;
+    r.nav_index = 0;
+    r.nav_positions.clear();
+    r.nav_return = rest;
+    r.coordinate = Coordinate::InElement;
+    handle_enter(r);
+    match r.coordinate {
+        // A dead link or a pressed button: back where Enter was pressed.
+        Coordinate::InElement => leave(r),
+        // The big view of a picture or a video: Escape comes back there too.
+        Coordinate::Dashboard if r.previous_coordinate == Coordinate::InElement => {
+            r.previous_coordinate = rest;
+        }
+        _ => {}
     }
 }
 
@@ -626,7 +659,7 @@ mod tests {
         let mut r = renderer(&[row], 0);
         r.providers.push(Box::new(Markup));
         list::create_list_current_layer(&mut r);
-        assert_eq!(r.total_list[0].label, "-l One u1 Two u2");
+        assert_eq!(r.total_list[0].label, "+l One u1 Two u2");
         enter_last(&mut r);
         assert_eq!(r.nav_targets.len(), 2);
         let label = r.total_list[0].label.clone();
@@ -1174,6 +1207,61 @@ mod tests {
             format!("+R Pick [two {}]", file.display())
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A checkbox holding pictures: Enter ticks it, and Right goes to the pictures.
+    #[test]
+    fn right_reaches_the_pictures_in_a_checkbox() {
+        let mut r = renderer(&["<checkbox>Look <image>a.jpg</image><image>b.jpg</image>"], 0);
+        assert!(r.total_list[0].label.starts_with("-c"), "{:?}", r.total_list[0].label);
+        press(&mut r, Keycode::Right);
+        assert_eq!(r.coordinate, Coordinate::InElement);
+        assert_eq!(r.nav_targets.len(), 2);
+        press(&mut r, Keycode::Escape);
+        press(&mut r, Keycode::Return);
+        assert!(tags::has_checkbox_checked(&focused(&r)), "Enter ticks it");
+    }
+
+    /// Enter in General on a row with several targets is Enter in element mode on the
+    /// first, and the mode is left behind.
+    #[test]
+    fn enter_on_several_targets_uses_the_first_like_element_mode() {
+        let mut r = renderer(&["<image>a.jpg</image> <link>u</link> <image>b.jpg</image>"], 0);
+        press(&mut r, Keycode::Return);
+        assert!(in_image_view(&r));
+        assert_eq!(r.dashboard_image_path, "a.jpg");
+        press(&mut r, Keycode::Right);
+        assert_eq!(r.dashboard_image_path, "b.jpg", "the big view steps on");
+        press(&mut r, Keycode::Escape);
+        assert_eq!(r.coordinate, Coordinate::General, "back where Enter was pressed");
+
+        let row = "<button>one</button>First <button>two</button>Second";
+        let mut r = renderer(&[row], 0);
+        let provider = Recording::new(&[row]);
+        r.providers.push(Box::new(provider.clone()));
+        list::create_list_current_layer(&mut r);
+        press(&mut r, Keycode::Return);
+        assert_eq!(provider.pressed(), ["one"]);
+        assert_eq!(r.coordinate, Coordinate::General);
+
+        let mut r = renderer(&["Go <link>/no/such.json</link> or <link>/none.json</link>"], 0);
+        press(&mut r, Keycode::Return);
+        assert_eq!(r.coordinate, Coordinate::General, "a dead link stays put");
+        assert!(r.nav_targets.is_empty());
+    }
+
+    /// A row with several targets is entered with Right, so its mark is an arrow right.
+    #[test]
+    fn a_row_with_several_targets_has_an_arrow_right() {
+        let mark = |row: &str| {
+            let r = renderer(&[row], 0);
+            r.total_list[0].label.split(' ').next().unwrap().to_owned()
+        };
+        assert_eq!(mark("A <link>u</link> B <link>v</link>"), "+l");
+        assert_eq!(mark("<image>a.jpg</image><image>b.jpg</image>"), "+p");
+        assert_eq!(mark("<button>a</button>A <button>b</button>B"), "+b");
+        assert_eq!(mark("A <link>u</link>"), "-l");
+        assert_eq!(mark("<image>a.jpg</image>"), "-p");
     }
 
     /// The hint said so all along and nothing happened.

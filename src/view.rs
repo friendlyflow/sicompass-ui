@@ -4691,7 +4691,7 @@ fn render_checkbox_indicator(
 /// is its own text.
 const LIST_PREFIXES: &[&str] = &[
     "-", "-p", "-v", "-pv", "-l", "-lv", "+v", "+lv", "-cc", "-c", "-rc", "-r", "-b", "-i", "-ci",
-    "+", "+cc", "+c", "+l", "+R", "+i", "+ci", "+di", "+fi",
+    "+", "+cc", "+c", "+l", "+R", "+i", "+ci", "+di", "+fi", "+p", "+pv", "+b",
 ];
 
 /// A list prefix as it is drawn: the `+` or `-` becomes its Bootstrap icon, and

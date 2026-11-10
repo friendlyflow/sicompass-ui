@@ -270,6 +270,19 @@ impl MarkupScope {
     }
 
     fn label(&self, id: &IdArray, elem: &FfonElement, parent_has_radio: bool) -> String {
+        let raw = element_text(elem);
+        let targets = if self.covers(id) {
+            sicompass_sdk::markup::target_counts(raw)
+        } else {
+            tags::target_counts(raw)
+        };
+        with_several_targets_arrow(
+            self.label_by_kind(id, elem, parent_has_radio),
+            targets.total(),
+        )
+    }
+
+    fn label_by_kind(&self, id: &IdArray, elem: &FfonElement, parent_has_radio: bool) -> String {
         match elem {
             FfonElement::Str(s) => {
                 let label = build_str_label(&self.text(id, s), parent_has_radio);
@@ -904,6 +917,20 @@ fn with_video_letter(label: String, row: &str) -> String {
         None if label == "-l" => "-lv".to_owned(),
         _ => label,
     }
+}
+
+/// A row with several targets is entered with Right, into element mode, so its
+/// prefix is an arrow right: `+l`, `+pv`, `+b`. A checkbox or a radio choice keeps
+/// its dash, because it is never entered.
+fn with_several_targets_arrow(label: String, targets: usize) -> String {
+    if targets < 2 {
+        return label;
+    }
+    let prefix = label.split(' ').next().unwrap_or_default();
+    if !prefix.starts_with('-') || is_toggle_prefix(prefix) || prefix == "-ci" {
+        return label;
+    }
+    format!("+{}", &label[1..])
 }
 
 fn build_str_label(s: &str, parent_has_radio: bool) -> String {
@@ -2946,15 +2973,16 @@ mod markup_scope_tests {
                 .unwrap_or_default()
                 .to_owned()
         };
+        // Several targets are entered with Right, so the mark is an arrow right.
         let two = "First <link>a.ffon</link> second <link>b.ffon</link>";
-        assert_eq!(prefix(two, false), "-l");
-        assert_eq!(prefix(two, true), "-l");
+        assert_eq!(prefix(two, false), "+l");
+        assert_eq!(prefix(two, true), "+l");
         assert_eq!(prefix(r#"<a href="u">Go</a>"#, true), "-l");
         assert_eq!(
             prefix(&format!("{two}<video src=\"v.mp4\">V</video>"), true),
-            "-lv"
+            "+lv"
         );
-        assert_eq!(prefix("<button>f</button>Go <link>u</link>", false), "-b");
+        assert_eq!(prefix("<button>f</button>Go <link>u</link>", false), "+b");
         assert_eq!(prefix("plain", false), "-");
     }
 
@@ -2977,12 +3005,12 @@ mod markup_scope_tests {
                 r#"<div><img src="a.jpg" alt="A"><video src="b.mp4">B</video></div>"#,
                 true
             ),
-            "-pv"
+            "+pv"
         );
         assert_eq!(prefix(r#"<img src="a.jpg" alt="A">"#, true), "-p");
         assert_eq!(
             prefix(r#"<button>go</button><video src="b.mp4">B</video>"#, true),
-            "-b"
+            "+b"
         );
         // Not markup, and an escaped one is only text.
         assert_eq!(prefix(r#"<video src="a.mp4">Trip</video>"#, false), "-");
@@ -3005,7 +3033,8 @@ mod markup_scope_tests {
         assert_eq!(obj_prefix(r#"<video src="a.mp4">Trip</video>"#), "+v");
         assert_eq!(
             obj_prefix(r#"<video src="a.mp4">T</video> <link>u</link>"#),
-            "-lv"
+            "+lv",
+            "two targets: Right goes in"
         );
         assert_eq!(obj_prefix("<link>u</link>"), "-l");
     }

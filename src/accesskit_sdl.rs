@@ -432,6 +432,9 @@ fn fixed_prefix_word(prefix: &str) -> Option<&'static str> {
         "-i" => Some("dash i"),
         "+" => Some("arrow right"),
         "+l" => Some("arrow right l"),
+        "+p" => Some("arrow right p"),
+        "+pv" => Some("arrow right pv"),
+        "+b" => Some("arrow right b"),
         "+R" => Some("arrow right R"),
         "+i" => Some("arrow right i"),
         // Timeline-view positioners, which follow the `-` list prefix

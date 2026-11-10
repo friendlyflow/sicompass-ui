@@ -909,9 +909,10 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_shift_down_insert,
     },
     // ---- Right / L -------------------------------------------------------
-    // A row with several targets, or a checkbox or a radio choice holding one: Right
-    // goes into element mode. First, so it wins over the rows below. Right on the
-    // last target there goes into the row's children, if it has any.
+    // A row with several targets: Right goes into element mode. First, so it wins over
+    // the rows below. Right on the last target there goes into the row's children,
+    // if it has any. A checkbox or a radio choice holding even one target goes in too,
+    // because Enter changes it.
     Shortcut {
         key: Keycode::Right,
         key2: Some(Keycode::L),
@@ -1387,7 +1388,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
         handle: handlers::handle_append,
     },
     // General: Enter → change a checkbox or a radio choice, whatever it holds. Before
-    // the rows below: a link or a button in it is reached with Right.
+    // the rows below: a link, button, picture or video in it is reached with Right.
     Shortcut {
         key: Keycode::Return,
         key2: Some(Keycode::KpEnter),
@@ -1397,6 +1398,18 @@ pub static SHORTCUTS: &[Shortcut] = &[
         label: "Enter  Toggle",
         is_available: avail_enter_toggle,
         handle: handlers::handle_enter_general,
+    },
+    // General: Enter on a row with several targets → what Enter in element mode does
+    // on the first. After the toggle row: a checkbox or a radio choice is changed.
+    Shortcut {
+        key: Keycode::Return,
+        key2: Some(Keycode::KpEnter),
+        ctrl: false,
+        shift: false,
+        modes: &[Coordinate::General],
+        label: "Enter  Use first",
+        is_available: crate::in_element::enter_uses_first_target,
+        handle: crate::in_element::handle_enter_first,
     },
     // General: Enter → activate element
     Shortcut {
