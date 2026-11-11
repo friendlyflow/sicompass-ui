@@ -18,7 +18,19 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 // FONT_ATLAS_SIZE is no longer a fixed constant — it scales with effective DPI in FontRenderer::new.
-pub const MAX_TEXT_VERTICES: usize = 1_048_576;
+/// The most text vertices one frame draws, six per glyph: about 349,000 glyphs.
+/// Glyphs past it are dropped. An 8K screen (7680×4320) filled with unscaled
+/// 8×16 px glyphs holds 259,200, so this covers it. The buffers only reach this
+/// size on a frame that needs it.
+pub const MAX_TEXT_VERTICES: usize = 2_097_152;
+/// What each text vertex buffer starts at, 2 MiB: about 10,900 glyphs, more than
+/// a full 1080p screen of list text. A frame that needs more grows the buffer
+/// ([`grown_vertex_capacity`]). Allocating the maximum up front cost 32 MiB of
+/// host-visible memory per buffer when it was 1,048,576, and there are two
+/// (plain and colour glyphs), almost all of it never written.
+const INITIAL_TEXT_VERTICES: usize = 65_536;
+/// Blank texels between neighbouring glyphs in an atlas, across and down.
+const ATLAS_GLYPH_GAP: i32 = 1;
 pub const FONT_SIZE_PT: f32 = 12.0;
 pub const TEXT_PADDING: f32 = 4.0;
 /// How many space widths a tab advances. A fixed width, not tab stops: a tab
@@ -128,6 +140,109 @@ pub struct TextVertex {
     pub color: [f32; 3],
 }
 
+/// The capacity a text vertex buffer of `current` vertices grows to so that a
+/// frame of `needed` fits: the next power of two, at most [`MAX_TEXT_VERTICES`].
+/// `None` when it fits already, or is as big as it gets.
+fn grown_vertex_capacity(current: usize, needed: usize) -> Option<usize> {
+    if needed <= current {
+        return None;
+    }
+    let grown = needed.next_power_of_two().min(MAX_TEXT_VERTICES);
+    (grown > current).then_some(grown)
+}
+
+/// A host-visible vertex buffer for text, sized for the text drawn so far: it
+/// starts at [`INITIAL_TEXT_VERTICES`] and doubles when a frame needs more
+/// ([`FontRenderer::reserve_vertex_buffers`]).
+struct TextVertexBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    /// In vertices.
+    capacity: usize,
+}
+
+impl TextVertexBuffer {
+    unsafe fn new(
+        device: &ash::Device,
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+        capacity: usize,
+    ) -> Result<Self, SiError> {
+        let size = (std::mem::size_of::<TextVertex>() * capacity) as vk::DeviceSize;
+        let (buffer, memory) = unsafe {
+            render::create_buffer(
+                device,
+                instance,
+                physical_device,
+                size,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?
+        };
+        Ok(Self {
+            buffer,
+            memory,
+            capacity,
+        })
+    }
+
+    #[cfg(test)]
+    fn null() -> Self {
+        Self {
+            buffer: vk::Buffer::null(),
+            memory: vk::DeviceMemory::null(),
+            capacity: 0,
+        }
+    }
+
+    /// Replace this buffer with one of `capacity` vertices. On failure the old
+    /// one stays, and [`Self::upload`] draws what fits in it.
+    ///
+    /// # Safety
+    ///
+    /// The GPU must be finished with this buffer (wait for the device to go idle).
+    unsafe fn grow(
+        &mut self,
+        device: &ash::Device,
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+        capacity: usize,
+    ) -> Result<(), SiError> {
+        unsafe {
+            let grown = Self::new(device, instance, physical_device, capacity)?;
+            self.destroy(device);
+            *self = grown;
+        }
+        Ok(())
+    }
+
+    /// Copy as many whole glyphs of `vertices` as fit, and return how many
+    /// vertices that was.
+    unsafe fn upload(&self, device: &ash::Device, vertices: &[TextVertex]) -> u32 {
+        let fits = vertices.len().min(self.capacity);
+        let count = fits - fits % 6;
+        if count == 0 {
+            return 0;
+        }
+        unsafe {
+            let size = (std::mem::size_of::<TextVertex>() * count) as vk::DeviceSize;
+            let ptr = device
+                .map_memory(self.memory, 0, size, vk::MemoryMapFlags::empty())
+                .unwrap() as *mut TextVertex;
+            std::ptr::copy_nonoverlapping(vertices.as_ptr(), ptr, count);
+            device.unmap_memory(self.memory);
+        }
+        count as u32
+    }
+
+    unsafe fn destroy(&self, device: &ash::Device) {
+        unsafe {
+            device.destroy_buffer(self.buffer, None);
+            device.free_memory(self.memory, None);
+        }
+    }
+}
+
 /// RGBA color-glyph (emoji) atlas + its dedicated pipeline. Present only when a
 /// color font loaded successfully; absent in tests and on fonts without one.
 /// Mirrors the monochrome atlas but stores premultiplied RGBA bitmaps and draws
@@ -154,8 +269,7 @@ struct ColorAtlas {
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
     pipeline: vk::Pipeline,
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
+    vertex_buffer: TextVertexBuffer,
 }
 
 /// What a single-line input field actually shows, from
@@ -220,9 +334,8 @@ pub struct FontRenderer {
     atlas_staging_buffer: vk::Buffer,
     atlas_staging_memory: vk::DeviceMemory,
 
-    // ---- Vertex buffer (host-visible, host-coherent) -----------------------
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
+    // ---- Vertex buffer (host-visible, host-coherent, grown on demand) ------
+    vertex_buffer: TextVertexBuffer,
 
     // ---- Descriptors -------------------------------------------------------
     descriptor_set_layout: vk::DescriptorSetLayout,
@@ -294,9 +407,14 @@ unsafe fn rasterize_glyph(
         let asz = atlas_size as i32;
 
         // Advance to a new shelf row when the glyph would overrun the right edge.
+        // A blank texel row and column separate glyphs, since linear filtering
+        // reads half a texel past a glyph's edge whenever it is drawn at a
+        // fractional scale or offset (font scale 1.25, the icon face's drop). With
+        // no gap below a shelf, a glyph in the next one showed the bottom row of
+        // the glyph above it as a dash along its top.
         if *pen_x + bw >= asz {
             *pen_x = 0;
-            *pen_y += *row_height;
+            *pen_y += *row_height + ATLAS_GLYPH_GAP;
             *row_height = 0;
         }
         if *pen_y + bh > asz {
@@ -339,7 +457,7 @@ unsafe fn rasterize_glyph(
             is_color: false,
         };
 
-        *pen_x += bw + 1;
+        *pen_x += bw + ATLAS_GLYPH_GAP;
         if bh > *row_height {
             *row_height = bh;
         }
@@ -403,9 +521,10 @@ unsafe fn rasterize_color_glyph(
             return None;
         }
 
+        // Gaps as in the monochrome atlas, for the same reason.
         if *pen_x + bw >= asz {
             *pen_x = 0;
-            *pen_y += *row_height;
+            *pen_y += *row_height + ATLAS_GLYPH_GAP;
             *row_height = 0;
         }
         if *pen_y + bh > asz {
@@ -451,7 +570,7 @@ unsafe fn rasterize_color_glyph(
             is_color: true,
         };
 
-        *pen_x += bw + 1;
+        *pen_x += bw + ATLAS_GLYPH_GAP;
         if bh > *row_height {
             *row_height = bh;
         }
@@ -613,17 +732,10 @@ impl ColorAtlas {
             // Color pipeline: same vertex format as text, premultiplied-alpha blend.
             let pipeline = build_color_pipeline(device, render_pass, pipeline_layout).ok()?;
 
-            // Per-frame color vertex buffer (same capacity as the text buffer).
-            let vb_size = (std::mem::size_of::<TextVertex>() * MAX_TEXT_VERTICES) as vk::DeviceSize;
-            let (vertex_buffer, vertex_buffer_memory) = render::create_buffer(
-                device,
-                instance,
-                physical_device,
-                vb_size,
-                vk::BufferUsageFlags::VERTEX_BUFFER,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )
-            .ok()?;
+            // Color vertex buffer, grown like the text buffer.
+            let vertex_buffer =
+                TextVertexBuffer::new(device, instance, physical_device, INITIAL_TEXT_VERTICES)
+                    .ok()?;
 
             Some(ColorAtlas {
                 face,
@@ -645,7 +757,6 @@ impl ColorAtlas {
                 descriptor_sets,
                 pipeline,
                 vertex_buffer,
-                vertex_buffer_memory,
             })
         }
     }
@@ -739,8 +850,7 @@ impl ColorAtlas {
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
-            device.destroy_buffer(self.vertex_buffer, None);
-            device.free_memory(self.vertex_buffer_memory, None);
+            self.vertex_buffer.destroy(device);
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
@@ -1065,15 +1175,8 @@ impl FontRenderer {
             // ----------------------------------------------------------------
             // 5. Vertex buffer (host-visible, host-coherent)
             // ----------------------------------------------------------------
-            let vb_size = (std::mem::size_of::<TextVertex>() * MAX_TEXT_VERTICES) as vk::DeviceSize;
-            let (vertex_buffer, vertex_buffer_memory) = render::create_buffer(
-                device,
-                instance,
-                physical_device,
-                vb_size,
-                vk::BufferUsageFlags::VERTEX_BUFFER,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )?;
+            let vertex_buffer =
+                TextVertexBuffer::new(device, instance, physical_device, INITIAL_TEXT_VERTICES)?;
 
             // ----------------------------------------------------------------
             // 6. Descriptor set layout + pool + sets
@@ -1276,7 +1379,6 @@ impl FontRenderer {
                 atlas_staging_buffer,
                 atlas_staging_memory,
                 vertex_buffer,
-                vertex_buffer_memory,
                 descriptor_set_layout,
                 descriptor_pool,
                 descriptor_sets,
@@ -1302,8 +1404,7 @@ impl FontRenderer {
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            device.destroy_buffer(self.vertex_buffer, None);
-            device.free_memory(self.vertex_buffer_memory, None);
+            self.vertex_buffer.destroy(device);
             device.destroy_sampler(self.font_atlas_sampler, None);
             device.destroy_image_view(self.font_atlas_view, None);
             device.destroy_image(self.font_atlas_image, None);
@@ -1615,6 +1716,51 @@ impl FontRenderer {
         }
     }
 
+    /// Grow the vertex buffers so this frame's text fits, before the frame's
+    /// command buffer is recorded. When one has to grow this waits for the
+    /// device to go idle first, since the other frame in flight may still be
+    /// drawing from it. Each growth doubles a buffer, so that happens a handful
+    /// of times at most. A buffer that fails to grow keeps drawing what fits.
+    ///
+    /// # Safety
+    ///
+    /// No command buffer that uses these buffers may be recording.
+    pub unsafe fn reserve_vertex_buffers(
+        &mut self,
+        device: &ash::Device,
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+    ) {
+        let plain = grown_vertex_capacity(self.vertex_buffer.capacity, self.vertices.len());
+        let color = self.color.as_ref().and_then(|ca| {
+            grown_vertex_capacity(ca.vertex_buffer.capacity, self.color_vertices.len())
+        });
+        if plain.is_none() && color.is_none() {
+            return;
+        }
+        unsafe {
+            if let Err(e) = device.device_wait_idle() {
+                tracing::warn!("text vertex buffer not grown, device_wait_idle failed: {e}");
+                return;
+            }
+            if let Some(capacity) = plain
+                && let Err(e) =
+                    self.vertex_buffer
+                        .grow(device, instance, physical_device, capacity)
+            {
+                tracing::warn!("text vertex buffer not grown to {capacity} vertices: {e}");
+            }
+            if let Some(capacity) = color
+                && let Some(ca) = self.color.as_mut()
+                && let Err(e) = ca
+                    .vertex_buffer
+                    .grow(device, instance, physical_device, capacity)
+            {
+                tracing::warn!("colour glyph vertex buffer not grown to {capacity} vertices: {e}");
+            }
+        }
+    }
+
     /// Upload vertex data and issue draw command.
     ///
     /// # Safety
@@ -1631,20 +1777,8 @@ impl FontRenderer {
             let screen = [extent.width as f32, extent.height as f32];
 
             // Monochrome text pass.
-            if !self.vertices.is_empty() {
-                let upload_size =
-                    (std::mem::size_of::<TextVertex>() * self.vertices.len()) as vk::DeviceSize;
-                let ptr = device
-                    .map_memory(
-                        self.vertex_buffer_memory,
-                        0,
-                        upload_size,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .unwrap() as *mut TextVertex;
-                std::ptr::copy_nonoverlapping(self.vertices.as_ptr(), ptr, self.vertices.len());
-                device.unmap_memory(self.vertex_buffer_memory);
-
+            let count = self.vertex_buffer.upload(device, &self.vertices);
+            if count > 0 {
                 device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
                 device.cmd_push_constants(
                     cb,
@@ -1661,32 +1795,17 @@ impl FontRenderer {
                     &[self.descriptor_sets[frame % self.descriptor_sets.len()]],
                     &[],
                 );
-                device.cmd_bind_vertex_buffers(cb, 0, &[self.vertex_buffer], &[0]);
-                device.cmd_draw(cb, self.vertices.len() as u32, 1, 0, 0);
+                device.cmd_bind_vertex_buffers(cb, 0, &[self.vertex_buffer.buffer], &[0]);
+                device.cmd_draw(cb, count, 1, 0, 0);
             }
 
             // Color-glyph (emoji) pass — shares the pipeline layout, uses the RGBA
             // pipeline + descriptor set bound to the color atlas.
-            if let Some(ca) = &self.color
-                && !self.color_vertices.is_empty()
-            {
-                let upload_size = (std::mem::size_of::<TextVertex>() * self.color_vertices.len())
-                    as vk::DeviceSize;
-                let ptr = device
-                    .map_memory(
-                        ca.vertex_buffer_memory,
-                        0,
-                        upload_size,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .unwrap() as *mut TextVertex;
-                std::ptr::copy_nonoverlapping(
-                    self.color_vertices.as_ptr(),
-                    ptr,
-                    self.color_vertices.len(),
-                );
-                device.unmap_memory(ca.vertex_buffer_memory);
-
+            if let Some(ca) = &self.color {
+                let count = ca.vertex_buffer.upload(device, &self.color_vertices);
+                if count == 0 {
+                    return;
+                }
                 device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, ca.pipeline);
                 device.cmd_push_constants(
                     cb,
@@ -1703,8 +1822,8 @@ impl FontRenderer {
                     &[ca.descriptor_sets[frame % ca.descriptor_sets.len()]],
                     &[],
                 );
-                device.cmd_bind_vertex_buffers(cb, 0, &[ca.vertex_buffer], &[0]);
-                device.cmd_draw(cb, self.color_vertices.len() as u32, 1, 0, 0);
+                device.cmd_bind_vertex_buffers(cb, 0, &[ca.vertex_buffer.buffer], &[0]);
+                device.cmd_draw(cb, count, 1, 0, 0);
             }
         }
     }
@@ -2045,8 +2164,7 @@ impl FontRenderer {
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            device.destroy_buffer(self.vertex_buffer, None);
-            device.free_memory(self.vertex_buffer_memory, None);
+            self.vertex_buffer.destroy(device);
             device.destroy_sampler(self.font_atlas_sampler, None);
             device.destroy_image_view(self.font_atlas_view, None);
             device.destroy_image(self.font_atlas_image, None);
@@ -2096,8 +2214,7 @@ pub(crate) fn fr_from_glyphs(
         font_atlas_sampler: vk::Sampler::null(),
         atlas_staging_buffer: vk::Buffer::null(),
         atlas_staging_memory: vk::DeviceMemory::null(),
-        vertex_buffer: vk::Buffer::null(),
-        vertex_buffer_memory: vk::DeviceMemory::null(),
+        vertex_buffer: TextVertexBuffer::null(),
         descriptor_set_layout: vk::DescriptorSetLayout::null(),
         descriptor_pool: vk::DescriptorPool::null(),
         descriptor_sets: Vec::new(),
@@ -2129,6 +2246,39 @@ pub(crate) fn make_fr_uniform(advance: f32) -> FontRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_vertex_buffer_grows_by_doubling_up_to_the_cap() {
+        // A frame that fits never reallocates.
+        assert_eq!(grown_vertex_capacity(INITIAL_TEXT_VERTICES, 0), None);
+        assert_eq!(
+            grown_vertex_capacity(INITIAL_TEXT_VERTICES, INITIAL_TEXT_VERTICES),
+            None
+        );
+        // One vertex too many doubles it.
+        assert_eq!(
+            grown_vertex_capacity(INITIAL_TEXT_VERTICES, INITIAL_TEXT_VERTICES + 1),
+            Some(INITIAL_TEXT_VERTICES * 2)
+        );
+        // A big jump goes straight to the power of two that holds it.
+        assert_eq!(
+            grown_vertex_capacity(INITIAL_TEXT_VERTICES, 300_000),
+            Some(524_288)
+        );
+        // An 8K screen of unscaled 8×16 px glyphs fits under the cap.
+        let full_8k = (7680 / 8) * (4320 / 16) * 6;
+        let grown = grown_vertex_capacity(INITIAL_TEXT_VERTICES, full_8k).unwrap();
+        assert!(grown >= full_8k && grown <= MAX_TEXT_VERTICES);
+        // Never past the cap, and nothing to do once there.
+        assert_eq!(
+            grown_vertex_capacity(INITIAL_TEXT_VERTICES, MAX_TEXT_VERTICES + 6),
+            Some(MAX_TEXT_VERTICES)
+        );
+        assert_eq!(
+            grown_vertex_capacity(MAX_TEXT_VERTICES, MAX_TEXT_VERTICES + 6),
+            None
+        );
+    }
 
     fn make_fr(dpi: f32, line_height: f32, m_advance: f32) -> FontRenderer {
         let mut glyphs = HashMap::new();
@@ -2664,6 +2814,55 @@ mod tests {
                 assert_eq!(advance(bold, c), advance(faces[0], c), "{c}");
             }
             ft::FT_Done_Face(bold);
+            for face in faces {
+                ft::FT_Done_Face(face);
+            }
+            ft::FT_Done_FreeType(lib);
+        }
+    }
+
+    /// Linear filtering reads half a texel past a glyph drawn at a fractional
+    /// scale, so no glyph may touch another in the atlas, across or down. One
+    /// glyph right under another drew the upper one's bottom row as a dash on
+    /// top of the lower one (the list prefix's arrow at font scale 1.25).
+    #[test]
+    fn atlas_glyphs_never_touch_across_or_down() {
+        unsafe {
+            let (lib, faces) = load_test_faces();
+            let atlas_size = 512u32;
+            let mut atlas = vec![0u8; (atlas_size * atlas_size) as usize];
+            let (mut px, mut py, mut rh) = (0i32, 0i32, 0i32);
+            let texels = |uv: [f32; 2]| {
+                (
+                    (uv[0] * atlas_size as f32).round() as i32,
+                    (uv[1] * atlas_size as f32).round() as i32,
+                )
+            };
+            // Glyphs with ink on their bottom and top rows, enough for several shelves.
+            let mut rects = Vec::new();
+            for cp in "_MW█HE_MW█HE_MW█HE_MW█HE".chars().map(|c| c as u32).chain([
+                fonts::ICON_ARROW_RIGHT as u32,
+                fonts::ICON_ARROW_LEFT as u32,
+            ]) {
+                let g = rasterize_glyph(
+                    &faces, &mut atlas, atlas_size, &mut px, &mut py, &mut rh, cp,
+                )
+                .expect("glyph");
+                let (x0, y0) = texels(g.uv_min);
+                let (x1, y1) = texels(g.uv_max);
+                rects.push((cp, x0, y0, x1, y1));
+            }
+            assert!(py > 0, "the glyphs fit on one shelf, so nothing was tested");
+            for (i, &(a, ax0, ay0, ax1, ay1)) in rects.iter().enumerate() {
+                for &(b, bx0, by0, bx1, by1) in &rects[i + 1..] {
+                    // Grown by the gap, two rects must still not overlap.
+                    let apart = ax1 + ATLAS_GLYPH_GAP <= bx0
+                        || bx1 + ATLAS_GLYPH_GAP <= ax0
+                        || ay1 + ATLAS_GLYPH_GAP <= by0
+                        || by1 + ATLAS_GLYPH_GAP <= ay0;
+                    assert!(apart, "{a:X} and {b:X} touch in the atlas");
+                }
+            }
             for face in faces {
                 ft::FT_Done_Face(face);
             }

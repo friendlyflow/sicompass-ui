@@ -1588,6 +1588,11 @@ pub fn draw_frame(app: &mut AppState) {
         if let Some(fr) = &app.font_renderer {
             fr.flush_atlas(&app.device, app.command_pool, app.graphics_queue);
         }
+        // Grow the text vertex buffers if this frame's text does not fit. Like
+        // the atlas, before recording: it may wait for the device to go idle.
+        if let Some(fr) = &mut app.font_renderer {
+            fr.reserve_vertex_buffers(&app.device, &app.instance, app.physical_device);
+        }
 
         // Record command buffer
         let cb = app.command_buffers[frame];
