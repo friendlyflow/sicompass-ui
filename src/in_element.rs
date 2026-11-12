@@ -280,6 +280,57 @@ pub fn handle_page_up(r: &mut AppRenderer) {
     page(r, false);
 }
 
+/// Home and End: the first or last target on the line the selected one is drawn
+/// on, the start or end of the row in any grid. Before a frame has placed the
+/// targets, the first or last target. It always speaks, like every move here.
+pub(crate) fn go_to_line_end(r: &mut AppRenderer, last: bool) {
+    let next = if r.nav_positions.len() == r.nav_targets.len() {
+        crate::layout::line_end_target(&r.nav_positions, r.nav_index, last)
+    } else {
+        None
+    };
+    match next {
+        Some(i) => move_to(r, i),
+        None => go_to_end(r, last),
+    }
+}
+
+/// Ctrl+Home and Ctrl+End: the first or last target of the row.
+pub(crate) fn go_to_end(r: &mut AppRenderer, last: bool) {
+    let i = if last {
+        r.nav_targets.len().saturating_sub(1)
+    } else {
+        0
+    };
+    move_to(r, i);
+}
+
+/// Home, End, Ctrl+Home and Ctrl+End in the big view: the first or last picture
+/// or video of the row, skipping its other targets.
+pub fn handle_image_first(r: &mut AppRenderer) {
+    image_end(r, false);
+}
+
+pub fn handle_image_last(r: &mut AppRenderer) {
+    image_end(r, true);
+}
+
+fn image_end(r: &mut AppRenderer, last: bool) {
+    let is_image = |t: &Target| matches!(t.kind, TargetKind::Image | TargetKind::Video);
+    let found = if last {
+        r.nav_targets.iter().rposition(is_image)
+    } else {
+        r.nav_targets.iter().position(is_image)
+    };
+    if let Some(i) = found
+        && i != r.nav_index
+    {
+        r.nav_index = i;
+        show_image(r);
+    }
+    announce_target(r);
+}
+
 pub fn handle_page_down(r: &mut AppRenderer) {
     page(r, true);
 }
@@ -845,6 +896,89 @@ mod tests {
         press(&mut r, Keycode::Left);
         assert!(announced(&r).contains("See One"));
         assert_ne!(r.pending_announcement, first);
+    }
+
+    const SIX_LINKS: &str = "<link>u1</link> <link>u2</link> <link>u3</link> \
+         <link>u4</link> <link>u5</link> <link>u6</link>";
+
+    /// Six targets laid out as a grid of three columns, the photo album's shape.
+    fn grid_of_six() -> AppRenderer {
+        let mut r = renderer(&[SIX_LINKS], 0);
+        enter_first(&mut r);
+        r.nav_positions = (0..6)
+            .map(|i| crate::layout::TargetPos {
+                x: (i % 3) as f32 * 100.0,
+                y: (i / 3) as f32 * 80.0,
+            })
+            .collect();
+        r
+    }
+
+    fn press_ctrl(r: &mut AppRenderer, key: Keycode) {
+        crate::shortcuts::dispatch_key(r, Some(key), Mod::LCTRLMOD);
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_ends_of_the_grid_row_and_speak() {
+        let mut r = grid_of_six();
+        r.nav_index = 4;
+        r.pending_announcement = None;
+        press(&mut r, Keycode::End);
+        assert_eq!(r.nav_index, 5, "the end of the second row");
+        assert!(!announced(&r).is_empty());
+        press(&mut r, Keycode::Home);
+        assert_eq!(r.nav_index, 3, "the start of the second row");
+        r.pending_announcement = None;
+        press(&mut r, Keycode::Home);
+        assert_eq!(r.nav_index, 3, "already there");
+        assert!(!announced(&r).is_empty(), "an edge still speaks");
+        r.nav_index = 1;
+        press(&mut r, Keycode::End);
+        assert_eq!(r.nav_index, 2, "the end of the first row");
+        assert_eq!(r.coordinate, Coordinate::InElement);
+    }
+
+    #[test]
+    fn ctrl_home_and_ctrl_end_go_to_the_first_and_last_target() {
+        let mut r = grid_of_six();
+        r.nav_index = 1;
+        press_ctrl(&mut r, Keycode::End);
+        assert_eq!(r.nav_index, 5);
+        press_ctrl(&mut r, Keycode::Home);
+        assert_eq!(r.nav_index, 0);
+        assert_eq!(r.coordinate, Coordinate::InElement);
+    }
+
+    #[test]
+    fn home_and_end_before_a_frame_placed_the_targets_take_the_whole_row() {
+        let mut r = renderer(&[SIX_LINKS], 0);
+        enter_first(&mut r);
+        r.nav_positions.clear();
+        r.nav_index = 2;
+        press(&mut r, Keycode::End);
+        assert_eq!(r.nav_index, 5);
+        press(&mut r, Keycode::Home);
+        assert_eq!(r.nav_index, 0);
+    }
+
+    #[test]
+    fn home_and_end_in_the_big_view_go_to_the_first_and_last_picture() {
+        let mut r = renderer(
+            &["<image>a.jpg</image> <link>u</link> <image>b.jpg</image> <image>c.jpg</image>"],
+            0,
+        );
+        enter_first(&mut r);
+        press(&mut r, Keycode::Return);
+        assert!(in_image_view(&r));
+        press(&mut r, Keycode::End);
+        assert_eq!(r.dashboard_image_path, "c.jpg");
+        press(&mut r, Keycode::Home);
+        assert_eq!(r.dashboard_image_path, "a.jpg");
+        press_ctrl(&mut r, Keycode::End);
+        assert_eq!(r.dashboard_image_path, "c.jpg");
+        press_ctrl(&mut r, Keycode::Home);
+        assert_eq!(r.dashboard_image_path, "a.jpg");
+        assert!(in_image_view(&r));
     }
 
     #[test]

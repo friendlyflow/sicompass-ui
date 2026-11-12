@@ -617,6 +617,24 @@ pub(crate) fn target_on_next_line(
     best.map(|(i, _)| i)
 }
 
+/// The first (leftmost) or `last` (rightmost) target on the line `from` is drawn
+/// on: Home and End in element mode. A line is the targets sharing a `y`, as for
+/// [`target_on_next_line`], so this is the start or end of a grid's row in any
+/// grid, and of a wrapped line of links. `None` when `from` has no position.
+pub(crate) fn line_end_target(positions: &[TargetPos], from: usize, last: bool) -> Option<usize> {
+    let here = positions.get(from)?;
+    let on_line = positions
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.y == here.y);
+    if last {
+        on_line.max_by(|(i, a), (j, b)| a.x.total_cmp(&b.x).then(i.cmp(j)))
+    } else {
+        on_line.min_by(|(i, a), (j, b)| a.x.total_cmp(&b.x).then(i.cmp(j)))
+    }
+    .map(|(i, _)| i)
+}
+
 /// The target a screen above or below `from`: on the line nearest `page_h` away,
 /// then the one nearest across. With no line beyond `from`, the first target
 /// (paging up) or the last (paging down), so a page key at an edge still lands
@@ -983,6 +1001,22 @@ mod tests {
     }
 
     /// A grid of three by two: the arrows move by picture row, in the same column.
+    #[test]
+    fn line_ends_are_the_first_and_last_target_drawn_on_the_same_line() {
+        // A grid of three columns whose last row has two: 0 1 2 / 3 4.
+        let p: Vec<TargetPos> = (0..5)
+            .map(|i| TargetPos {
+                x: (i % 3) as f32 * 10.0,
+                y: (i / 3) as f32 * 20.0,
+            })
+            .collect();
+        assert_eq!(line_end_target(&p, 1, false), Some(0));
+        assert_eq!(line_end_target(&p, 1, true), Some(2));
+        assert_eq!(line_end_target(&p, 3, true), Some(4));
+        assert_eq!(line_end_target(&p, 4, false), Some(3));
+        assert_eq!(line_end_target(&p, 9, false), None);
+    }
+
     #[test]
     fn up_and_down_keep_the_column_in_a_grid() {
         let grid = [

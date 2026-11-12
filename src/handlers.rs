@@ -1316,25 +1316,71 @@ fn announce_caret_line(r: &mut AppRenderer) {
     announce_text(r, &text);
 }
 
-/// Jump to first item (Ctrl+Home in SimpleSearch/Command/ExtendedSearch).
+/// Ctrl+Home: the start of the whole thing, where Home is the start of a line.
+/// The first row of a list (where every row is its own line, so Home does the
+/// same), the first target of a grid or any row of targets, the first picture in
+/// the big view, the start of a text field's whole text, the top in scroll mode.
+/// In a search or a colon prompt the query is one line Home already covers, so it
+/// is the first row of the list under it.
 pub fn handle_ctrl_home(r: &mut AppRenderer) {
-    let len = r.active_list_len();
-    if len > 0 {
-        r.list_index = 0;
-        r.scroll_offset = 0;
-        r.sync_current_id_from_list();
-        r.speak_current_element();
-    }
-    r.needs_redraw = true;
+    whole_end(r, false);
 }
 
-/// Jump to last item (Ctrl+End in SimpleSearch/Command/ExtendedSearch).
+/// Ctrl+End: the end of the whole thing. See [`handle_ctrl_home`].
 pub fn handle_ctrl_end(r: &mut AppRenderer) {
+    whole_end(r, true);
+}
+
+fn whole_end(r: &mut AppRenderer, last: bool) {
+    match r.coordinate.base() {
+        Coordinate::InElement => crate::in_element::go_to_end(r, last),
+        Coordinate::Insert | Coordinate::Normal | Coordinate::Visual | Coordinate::InputSearch => {
+            whole_text_end(r, last, false)
+        }
+        Coordinate::Scroll => {
+            if last {
+                handle_end(r);
+            } else {
+                handle_home(r);
+            }
+        }
+        Coordinate::General
+        | Coordinate::SimpleSearch
+        | Coordinate::ExtendedSearch
+        | Coordinate::Command
+        | Coordinate::Manual
+        | Coordinate::Meta
+        | Coordinate::TimelineView
+        | Coordinate::TabSwitcher
+        | Coordinate::ConfirmCloseTab => list_end(r, last),
+        _ => {}
+    }
+}
+
+/// The first or last row of the list on screen, by position, so a filtered list
+/// and the open dialog's visible entries count rather than the whole level: in
+/// General (where every row is its own line, so the same row as Home and End,
+/// without the double Home that climbs to the top), the searches, the colon
+/// palettes and the app's own lists (the manual, meta, the timeline, the tab
+/// overlays).
+fn list_end(r: &mut AppRenderer, last: bool) {
     let len = r.active_list_len();
     if len > 0 {
-        r.list_index = len - 1;
-        r.scroll_offset = -1;
-        r.sync_current_id_from_list();
+        r.error_message.clear();
+        r.list_index = if last { len - 1 } else { 0 };
+        r.scroll_offset = if last { -1 } else { 0 };
+        // The searches and the colon palettes have always moved `current_id`
+        // with their cursor here, the app's own lists never do.
+        if !matches!(
+            r.coordinate,
+            Coordinate::Meta
+                | Coordinate::TimelineView
+                | Coordinate::Manual
+                | Coordinate::ConfirmCloseTab
+                | Coordinate::TabSwitcher
+        ) {
+            r.sync_current_id_from_list();
+        }
         r.speak_current_element();
     }
     r.needs_redraw = true;
@@ -4803,7 +4849,15 @@ pub fn handle_input(r: &mut AppRenderer, text: &str) {
 pub fn handle_backspace(r: &mut AppRenderer) {
     match r.coordinate.base() {
         Coordinate::SimpleSearch => {
-            if r.cursor_position > 0 {
+            if has_selection(r) {
+                delete_selection(r);
+                r.caret.reset(sdl_ticks());
+                maybe_update_search(r);
+                r.list_index = 0;
+                r.sync_current_id_from_list();
+                r.speak_current_element();
+                r.needs_redraw = true;
+            } else if r.cursor_position > 0 {
                 // Remove char before cursor_position (UTF-8 aware)
                 let pos = r.cursor_position.min(r.search_string.len());
                 let before = &r.search_string[..pos];
@@ -6158,15 +6212,18 @@ pub fn handle_shift_right(r: &mut AppRenderer) {
     r.needs_redraw = true;
 }
 
-/// Home — go to first list item (General/General) or line start (insert/search).
+/// Home: the start of the current line. The first row of a list (every row is
+/// its own line), the first target on a grid's row, a text field's line start.
 pub fn handle_home(r: &mut AppRenderer) {
     match r.coordinate.base() {
-        Coordinate::Manual => {
-            r.list_index = 0;
-            r.scroll_offset = 0;
-            r.speak_current_element();
-            r.needs_redraw = true;
-        }
+        Coordinate::Manual
+        | Coordinate::Meta
+        | Coordinate::TimelineView
+        | Coordinate::TabSwitcher
+        | Coordinate::ConfirmCloseTab => list_end(r, false),
+        // The first target on the line the selected one is drawn on: the start
+        // of a grid's row, whatever grid or row of targets it is.
+        Coordinate::InElement => crate::in_element::go_to_line_end(r, false),
         Coordinate::Scroll => {
             r.text_scroll_offset = 0;
             r.needs_redraw = true;
@@ -6222,15 +6279,15 @@ pub fn handle_home(r: &mut AppRenderer) {
     }
 }
 
-/// End — go to last list item (General/General) or line end (insert/search).
+/// End: the end of the current line. See [`handle_home`].
 pub fn handle_end(r: &mut AppRenderer) {
     match r.coordinate.base() {
-        Coordinate::Manual => {
-            r.list_index = r.active_list_len().saturating_sub(1);
-            r.scroll_offset = -1;
-            r.speak_current_element();
-            r.needs_redraw = true;
-        }
+        Coordinate::Manual
+        | Coordinate::Meta
+        | Coordinate::TimelineView
+        | Coordinate::TabSwitcher
+        | Coordinate::ConfirmCloseTab => list_end(r, true),
+        Coordinate::InElement => crate::in_element::go_to_line_end(r, true),
         Coordinate::Scroll => {
             let max_offset = (r.text_scroll_total_height - r.text_scroll_viewport_h).max(0);
             r.text_scroll_offset = max_offset;
@@ -6286,6 +6343,152 @@ pub fn handle_shift_end(r: &mut AppRenderer) {
     r.cursor_position = find_line_end(&buf, pos).min(buf_len);
     r.caret.reset(sdl_ticks());
     r.needs_redraw = true;
+}
+
+// ---------------------------------------------------------------------------
+// Word and whole-text keys (Ctrl+Left/Right, Ctrl+Backspace/Delete, Ctrl+Home/End)
+// ---------------------------------------------------------------------------
+
+/// Where a word key lands from the caret: the start of the word before it or
+/// the end of the word after it (`sicompass_sdk::input::word_left/right`). In a
+/// password field there are no words to give away, so it is the start or the
+/// end of the whole field, as browsers do.
+fn word_target(r: &AppRenderer, forward: bool) -> usize {
+    let buf = active_text_buf(r);
+    let pos = r.cursor_position.min(buf.len());
+    match (r.masks_input(), forward) {
+        (true, false) => 0,
+        (true, true) => buf.len(),
+        (false, false) => sicompass_sdk::input::word_left(buf, pos),
+        (false, true) => sicompass_sdk::input::word_right(buf, pos),
+    }
+}
+
+/// Move the caret to `to`, growing the selection when `extend` (and always in
+/// visual mode, where the caret is one end of it), else dropping it. Says what
+/// was moved over, as one run (masked in a password field).
+fn move_caret_over(r: &mut AppRenderer, to: usize, extend: bool) {
+    let from = r.cursor_position.min(active_text_buf(r).len());
+    if extend || r.coordinate == Coordinate::Visual {
+        r.selection_anchor.get_or_insert(from);
+    } else {
+        clear_selection(r);
+    }
+    r.cursor_position = to;
+    let (a, b) = (from.min(to), from.max(to));
+    let passed = active_text_buf(r)[a..b].trim().to_owned();
+    announce_run(r, &passed);
+    r.caret.reset(sdl_ticks());
+    r.needs_redraw = true;
+}
+
+/// Ctrl+Left: to the start of the word before the caret.
+pub fn handle_word_left(r: &mut AppRenderer) {
+    let to = word_target(r, false);
+    move_caret_over(r, to, false);
+}
+
+/// Ctrl+Right: to the end of the word after the caret.
+pub fn handle_word_right(r: &mut AppRenderer) {
+    let to = word_target(r, true);
+    move_caret_over(r, to, false);
+}
+
+/// Ctrl+Shift+Left: grow the selection to the start of the word before.
+pub fn handle_shift_word_left(r: &mut AppRenderer) {
+    let to = word_target(r, false);
+    move_caret_over(r, to, true);
+}
+
+/// Ctrl+Shift+Right: grow the selection to the end of the word after.
+pub fn handle_shift_word_right(r: &mut AppRenderer) {
+    let to = word_target(r, true);
+    move_caret_over(r, to, true);
+}
+
+/// Ctrl+Home in a text field: the start of the whole text, saying its first line.
+pub fn handle_text_start(r: &mut AppRenderer) {
+    whole_text_end(r, false, false);
+}
+
+/// Ctrl+End in a text field: the end of the whole text, saying its last line.
+pub fn handle_text_end(r: &mut AppRenderer) {
+    whole_text_end(r, true, false);
+}
+
+/// Ctrl+Shift+Home: grow the selection to the start of the whole text.
+pub fn handle_shift_text_start(r: &mut AppRenderer) {
+    whole_text_end(r, false, true);
+}
+
+/// Ctrl+Shift+End: grow the selection to the end of the whole text.
+pub fn handle_shift_text_end(r: &mut AppRenderer) {
+    whole_text_end(r, true, true);
+}
+
+fn whole_text_end(r: &mut AppRenderer, end: bool, extend: bool) {
+    let len = active_text_buf(r).len();
+    let from = r.cursor_position.min(len);
+    if extend || r.coordinate == Coordinate::Visual {
+        r.selection_anchor.get_or_insert(from);
+    } else {
+        clear_selection(r);
+    }
+    r.cursor_position = if end { len } else { 0 };
+    r.caret.reset(sdl_ticks());
+    if r.coordinate.base() != Coordinate::ScrollSearch {
+        announce_caret_line(r);
+    }
+    r.needs_redraw = true;
+}
+
+/// Ctrl+Backspace: delete the selection, or back to the start of the word.
+///
+/// The word is selected and handed to Backspace, so each mode keeps what its
+/// Backspace does after an edit (refilter the list, record the insert session,
+/// recount the matches) and the word goes as one step.
+pub fn handle_delete_word_back(r: &mut AppRenderer) {
+    if !has_selection(r) {
+        let pos = r.cursor_position.min(active_text_buf(r).len());
+        let from = word_target(r, false);
+        if from == pos {
+            return;
+        }
+        r.cursor_position = pos;
+        r.selection_anchor = Some(from);
+    }
+    delete_selected_and_say(r, handle_backspace);
+}
+
+/// Ctrl+Delete: delete the selection, or on to the end of the word.
+pub fn handle_delete_word_forward(r: &mut AppRenderer) {
+    if !has_selection(r) {
+        let pos = r.cursor_position.min(active_text_buf(r).len());
+        let to = word_target(r, true);
+        if to == pos {
+            return;
+        }
+        r.cursor_position = pos;
+        r.selection_anchor = Some(to);
+    }
+    delete_selected_and_say(r, handle_delete_forward);
+}
+
+/// Delete the selection through `delete`, then say what went where the field
+/// has no list row to speak instead (insert, scroll search, the search in an
+/// element), the way Backspace says the character it deleted.
+fn delete_selected_and_say(r: &mut AppRenderer, delete: fn(&mut AppRenderer)) {
+    let deleted = selection_range(r)
+        .and_then(|(a, b)| active_text_buf(r).get(a..b))
+        .map(str::to_owned)
+        .unwrap_or_default();
+    delete(r);
+    if matches!(
+        r.coordinate.base(),
+        Coordinate::Insert | Coordinate::ScrollSearch | Coordinate::InputSearch
+    ) {
+        announce_run(r, deleted.trim());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7828,7 +8031,8 @@ pub fn handle_text_cursor_left(r: &mut AppRenderer) {
         r.caret.reset(sdl_ticks());
         r.needs_redraw = true;
     } else if r.cursor_position > 0 {
-        let before = &r.input_buffer[..r.cursor_position];
+        let buf = active_text_buf(r);
+        let before = &buf[..r.cursor_position.min(buf.len())];
         if let Some((i, ch)) = before.char_indices().next_back() {
             r.cursor_position = i;
             announce_char(r, ch);
@@ -7851,8 +8055,9 @@ pub fn handle_text_cursor_right(r: &mut AppRenderer) {
         r.needs_redraw = true;
     } else {
         let pos = r.cursor_position;
-        if pos < r.input_buffer.len() {
-            let ch = r.input_buffer[pos..].chars().next().unwrap();
+        let buf = active_text_buf(r);
+        if pos < buf.len() {
+            let ch = buf[pos..].chars().next().unwrap();
             r.cursor_position = pos + ch.len_utf8();
             announce_char(r, ch);
             r.caret.reset(sdl_ticks());
@@ -13964,6 +14169,158 @@ mod tests {
         r.pending_announcement = None;
         handle_end(&mut r);
         assert_eq!(said(&r).as_deref(), Some("l12"));
+    }
+
+    #[test]
+    fn ctrl_left_and_right_move_by_word_and_say_it() {
+        let mut r = make_input_renderer("hello brave  world");
+        r.cursor_position = r.input_buffer.len();
+        handle_word_left(&mut r);
+        assert_eq!(r.cursor_position, 13);
+        assert_eq!(said(&r).as_deref(), Some("world"));
+        handle_word_left(&mut r);
+        assert_eq!(r.cursor_position, 6);
+        assert_eq!(said(&r).as_deref(), Some("brave"));
+        handle_word_right(&mut r);
+        assert_eq!(r.cursor_position, 11);
+        assert_eq!(said(&r).as_deref(), Some("brave"));
+        assert_eq!(r.selection_anchor, None);
+    }
+
+    #[test]
+    fn ctrl_shift_left_and_right_grow_the_selection_by_words() {
+        let mut r = make_input_renderer("one two three");
+        r.cursor_position = r.input_buffer.len();
+        handle_shift_word_left(&mut r);
+        handle_shift_word_left(&mut r);
+        assert_eq!(selection_range(&r), Some((4, 13)));
+        handle_shift_word_right(&mut r);
+        assert_eq!(selection_range(&r), Some((7, 13)));
+        handle_word_left(&mut r);
+        assert_eq!(r.selection_anchor, None, "a plain word move drops it");
+    }
+
+    #[test]
+    fn a_password_field_has_no_words_to_give_away() {
+        let mut r = make_input_renderer("abc def");
+        r.input_is_password = true;
+        r.cursor_position = 5;
+        handle_word_left(&mut r);
+        assert_eq!(r.cursor_position, 0);
+        assert_eq!(said(&r).as_deref(), Some("*****"));
+        handle_word_right(&mut r);
+        assert_eq!(r.cursor_position, 7);
+        r.cursor_position = 5;
+        handle_delete_word_back(&mut r);
+        assert_eq!(r.input_buffer, "ef");
+        assert_eq!(said(&r).as_deref(), Some("*****"));
+    }
+
+    #[test]
+    fn ctrl_backspace_deletes_the_word_before_and_says_it() {
+        let mut r = make_input_renderer("hello brave world");
+        r.cursor_position = 11;
+        handle_delete_word_back(&mut r);
+        assert_eq!(r.input_buffer, "hello  world");
+        assert_eq!(r.cursor_position, 6);
+        assert_eq!(said(&r).as_deref(), Some("brave"));
+        assert_eq!(r.selection_anchor, None);
+        r.cursor_position = 0;
+        r.pending_announcement = None;
+        handle_delete_word_back(&mut r);
+        assert_eq!(r.input_buffer, "hello  world", "nothing before the caret");
+        assert_eq!(said(&r), None);
+    }
+
+    #[test]
+    fn ctrl_delete_deletes_the_word_after_and_says_it() {
+        let mut r = make_input_renderer("hello brave world");
+        r.cursor_position = 5;
+        handle_delete_word_forward(&mut r);
+        assert_eq!(r.input_buffer, "hello world");
+        assert_eq!(r.cursor_position, 5);
+        assert_eq!(said(&r).as_deref(), Some("brave"));
+    }
+
+    #[test]
+    fn a_word_delete_takes_the_selection_when_there_is_one() {
+        let mut r = make_input_renderer("hello brave world");
+        r.selection_anchor = Some(2);
+        r.cursor_position = 8;
+        handle_delete_word_back(&mut r);
+        assert_eq!(r.input_buffer, "heave world");
+        assert_eq!(r.cursor_position, 2);
+    }
+
+    #[test]
+    fn ctrl_backspace_in_a_search_deletes_a_word_of_the_query_and_refilters() {
+        let mut r = make_renderer();
+        r.coordinate = Coordinate::SimpleSearch;
+        r.search_string = "item 1".to_owned();
+        r.cursor_position = r.search_string.len();
+        list::populate_list_current_layer(&mut r, "item 1");
+        handle_delete_word_back(&mut r);
+        assert_eq!(r.search_string, "item ");
+        assert_eq!(r.cursor_position, 5);
+        assert!(r.active_list_len() > 1, "the list widened again");
+    }
+
+    #[test]
+    fn backspace_in_a_search_deletes_the_selected_part_of_the_query() {
+        let mut r = make_renderer();
+        r.coordinate = Coordinate::SimpleSearch;
+        r.search_string = "item 1".to_owned();
+        r.selection_anchor = Some(2);
+        r.cursor_position = 6;
+        handle_backspace(&mut r);
+        assert_eq!(r.search_string, "it");
+        assert_eq!(r.cursor_position, 2);
+    }
+
+    #[test]
+    fn left_and_right_in_the_search_inside_a_field_move_in_the_query() {
+        let mut r = make_input_renderer("element text");
+        r.coordinate = Coordinate::InputSearch;
+        r.search_string = "ab".to_owned();
+        r.cursor_position = 2;
+        handle_text_cursor_left(&mut r);
+        assert_eq!(r.cursor_position, 1);
+        assert_eq!(said(&r).as_deref(), Some("b"));
+        handle_text_cursor_right(&mut r);
+        assert_eq!(r.cursor_position, 2);
+        assert_eq!(said(&r).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn ctrl_home_and_ctrl_end_in_a_text_field_go_to_the_whole_text() {
+        let mut r = editing_lines(Coordinate::Insert);
+        r.cursor_position = r.input_buffer.find("l12").unwrap() + 2;
+        handle_ctrl_end(&mut r);
+        assert_eq!(r.cursor_position, r.input_buffer.len());
+        assert_eq!(said(&r).as_deref(), Some("l29"));
+        handle_ctrl_home(&mut r);
+        assert_eq!(r.cursor_position, 0);
+        assert_eq!(said(&r).as_deref(), Some("l0"));
+        handle_shift_text_end(&mut r);
+        assert_eq!(selection_range(&r), Some((0, r.input_buffer.len())));
+    }
+
+    #[test]
+    fn home_and_end_in_the_apps_own_lists_go_to_the_first_and_last_row() {
+        for mode in [Coordinate::Meta, Coordinate::TimelineView, Coordinate::TabSwitcher] {
+            let mut r = make_renderer();
+            r.coordinate = mode;
+            let len = r.active_list_len();
+            assert!(len > 1, "{mode:?}");
+            let id = r.current_id.clone();
+            handle_end(&mut r);
+            assert_eq!(r.list_index, len - 1, "{mode:?}");
+            handle_home(&mut r);
+            assert_eq!(r.list_index, 0, "{mode:?}");
+            handle_ctrl_end(&mut r);
+            assert_eq!(r.list_index, len - 1, "{mode:?}");
+            assert_eq!(r.current_id, id, "{mode:?} does not move the tree cursor");
+        }
     }
 
     #[test]

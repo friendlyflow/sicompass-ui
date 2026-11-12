@@ -431,6 +431,54 @@ mod tests {
         assert_eq!(r.cursor_position, 5);
     }
 
+    // --- Word keys and Ctrl+Home/End reach every text through the table ---
+
+    #[test]
+    fn ctrl_word_keys_in_insert() {
+        let mut r = AppRenderer::new();
+        r.coordinate = Coordinate::Insert;
+        r.input_buffer = "one two three".to_string();
+        r.cursor_position = r.input_buffer.len();
+        dispatch_key(&mut r, Some(Keycode::Left), ctrl());
+        assert_eq!(r.cursor_position, 8);
+        dispatch_key(&mut r, Some(Keycode::Left), ctrl_shift());
+        assert_eq!((r.selection_anchor, r.cursor_position), (Some(8), 4));
+        dispatch_key(&mut r, Some(Keycode::Right), ctrl());
+        assert_eq!((r.selection_anchor, r.cursor_position), (None, 7));
+        dispatch_key(&mut r, Some(Keycode::Backspace), ctrl());
+        assert_eq!(r.input_buffer, "one  three");
+        dispatch_key(&mut r, Some(Keycode::Delete), ctrl());
+        assert_eq!(r.input_buffer, "one ");
+        dispatch_key(&mut r, Some(Keycode::Home), ctrl());
+        assert_eq!(r.cursor_position, 0);
+        dispatch_key(&mut r, Some(Keycode::End), ctrl_shift());
+        assert_eq!((r.selection_anchor, r.cursor_position), (Some(0), 4));
+    }
+
+    #[test]
+    fn ctrl_word_keys_in_the_search_inside_a_field_edit_the_query() {
+        let mut r = AppRenderer::new();
+        r.coordinate = Coordinate::InputSearch;
+        r.input_buffer = "the element".to_string();
+        r.search_string = "foo bar".to_string();
+        r.cursor_position = 7;
+        dispatch_key(&mut r, Some(Keycode::Left), ctrl());
+        assert_eq!(r.cursor_position, 4);
+        dispatch_key(&mut r, Some(Keycode::Backspace), ctrl());
+        assert_eq!(r.search_string, "bar");
+        assert_eq!(r.input_buffer, "the element", "the element is untouched");
+    }
+
+    #[test]
+    fn ctrl_backspace_in_the_command_line_deletes_a_word() {
+        let mut r = AppRenderer::new();
+        r.coordinate = Coordinate::Command;
+        r.input_buffer = "open some".to_string();
+        r.cursor_position = r.input_buffer.len();
+        dispatch_key(&mut r, Some(Keycode::Backspace), ctrl());
+        assert_eq!(r.input_buffer, "open ");
+    }
+
     // --- Shift+Left in Insert ---
 
     #[test]
