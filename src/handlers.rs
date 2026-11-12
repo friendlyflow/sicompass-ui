@@ -1593,7 +1593,8 @@ pub fn handle_enter_scroll(r: &mut AppRenderer) {
     r.needs_redraw = true;
 }
 
-/// Navigate into the meta hint screen. M is only bound in General mode.
+/// Navigate into the meta hint screen. M is only bound in General mode. Typing there
+/// filters the hints, the way it filters the tab switcher's tabs.
 pub fn handle_meta(r: &mut AppRenderer) {
     if !r.coordinate.is_general()
         && r.coordinate != Coordinate::InElement
@@ -1606,6 +1607,10 @@ pub fn handle_meta(r: &mut AppRenderer) {
     }
     r.previous_coordinate = r.coordinate;
     r.coordinate = Coordinate::Meta;
+    // Typing filters the hints, like the tab switcher: fresh each time it opens.
+    r.input_buffer.clear();
+    r.cursor_position = 0;
+    r.fuzzy_match_positions.clear();
     r.speak_mode_change(None);
     r.list_index = 0;
     list::create_list_current_layer(r);
@@ -4526,6 +4531,9 @@ pub fn handle_escape(r: &mut AppRenderer) {
             } else {
                 r.previous_coordinate
             };
+            // Meta's filter query.
+            r.input_buffer.clear();
+            r.cursor_position = 0;
             r.speak_mode_change(None);
             list::create_list_current_layer(r);
             r.list_index = if r.coordinate == Coordinate::Manual {
@@ -4680,6 +4688,10 @@ pub fn handle_input(r: &mut AppRenderer, text: &str) {
     if r.coordinate == Coordinate::TabSwitcher && r.input_buffer.is_empty() && text == "t" {
         return;
     }
+    // And for meta mode, opened with `m`.
+    if r.coordinate == Coordinate::Meta && r.input_buffer.is_empty() && text == "m" {
+        return;
+    }
 
     match r.coordinate.base() {
         Coordinate::SimpleSearch => {
@@ -4713,8 +4725,8 @@ pub fn handle_input(r: &mut AppRenderer, text: &str) {
             }
             r.needs_redraw = true;
         }
-        Coordinate::TabSwitcher => {
-            // Type-to-filter the MRU tab list by name. `create_list_current_layer`
+        Coordinate::TabSwitcher | Coordinate::Meta => {
+            // Type-to-filter the MRU tab list by name, or meta mode's hints. `create_list_current_layer`
             // rebuilds the tab buttons; `populate_list_current_layer` fuzzy-filters
             // them into `filtered_list_indices`.
             let pos = r.cursor_position.min(r.input_buffer.len());
@@ -4844,14 +4856,18 @@ pub fn handle_backspace(r: &mut AppRenderer) {
         | Coordinate::Insert
         | Coordinate::ScrollSearch
         | Coordinate::ExtendedSearch
-        | Coordinate::TabSwitcher => {
+        | Coordinate::TabSwitcher
+        | Coordinate::Meta => {
             let buffer_changed = if has_selection(r) {
                 delete_selection(r);
                 r.caret.reset(sdl_ticks());
                 maybe_update_search(r);
                 if matches!(
                     r.coordinate,
-                    Coordinate::Command | Coordinate::ExtendedSearch | Coordinate::TabSwitcher
+                    Coordinate::Command
+                        | Coordinate::ExtendedSearch
+                        | Coordinate::TabSwitcher
+                        | Coordinate::Meta
                 ) {
                     r.speak_current_element();
                 }
@@ -4872,7 +4888,10 @@ pub fn handle_backspace(r: &mut AppRenderer) {
                 maybe_update_search(r);
                 if matches!(
                     r.coordinate,
-                    Coordinate::Command | Coordinate::ExtendedSearch | Coordinate::TabSwitcher
+                    Coordinate::Command
+                        | Coordinate::ExtendedSearch
+                        | Coordinate::TabSwitcher
+                        | Coordinate::Meta
                 ) {
                     r.speak_current_element();
                 } else if let Some(ch) = deleted {
@@ -6361,14 +6380,14 @@ fn maybe_update_search(r: &mut AppRenderer) {
             list::create_list_current_layer(r);
             list::refilter_command(r);
         }
-        Coordinate::SimpleSearch | Coordinate::TabSwitcher => {
+        Coordinate::SimpleSearch | Coordinate::TabSwitcher | Coordinate::Meta => {
             let s = match r.coordinate.base() {
                 Coordinate::SimpleSearch => r.search_string.clone(),
                 _ => r.input_buffer.clone(),
             };
             list::create_list_current_layer(r);
             list::populate_list_current_layer(r, &s);
-            if r.coordinate == Coordinate::TabSwitcher {
+            if matches!(r.coordinate, Coordinate::TabSwitcher | Coordinate::Meta) {
                 r.list_index = 0;
             }
         }

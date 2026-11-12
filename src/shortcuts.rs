@@ -1340,6 +1340,7 @@ pub static SHORTCUTS: &[Shortcut] = &[
             Coordinate::ScrollSearch,
             Coordinate::InputSearch,
             Coordinate::TabSwitcher,
+            Coordinate::Meta,
         ],
         label: "Bspc   Backspace",
         is_available: always,
@@ -3285,6 +3286,55 @@ mod tests {
         dispatch_key(&mut r, Some(Keycode::Escape), no_mod());
         assert_eq!(r.coordinate, Coordinate::General);
         assert_ne!(r.total_list.len(), crate::list::MANUAL_LINES);
+    }
+
+    /// Typing in meta mode filters the hints, like the tab switcher: no f or Ctrl+F
+    /// first, the `m` that opened it is not typed, Backspace widens the filter again,
+    /// a word no hint holds shows nothing, and Escape leaves with the filter gone.
+    #[test]
+    fn typing_in_meta_filters_the_hints() {
+        let mut r = AppRenderer::new();
+        dispatch_key(&mut r, Some(Keycode::M), no_mod());
+        assert_eq!(r.coordinate, Coordinate::Meta);
+        let all = r.active_list_len();
+        assert!(all > 1, "meta lists the keys: {all}");
+
+        crate::handlers::handle_input(&mut r, "m");
+        assert!(r.input_buffer.is_empty(), "the m that opened meta is not typed");
+
+        dispatch_key(&mut r, Some(Keycode::F), ctrl());
+        assert_eq!(r.coordinate, Coordinate::Meta, "no Ctrl+F in meta");
+
+        crate::handlers::handle_input(&mut r, "f");
+        assert_eq!(r.coordinate, Coordinate::Meta, "f is typed, it opens no search");
+        assert_eq!(r.input_buffer, "f");
+        crate::handlers::handle_input(&mut r, "s");
+        crate::handlers::handle_input(&mut r, "e");
+        crate::handlers::handle_input(&mut r, "a");
+        let shown = r.active_list_len();
+        assert!((1..all).contains(&shown), "filtered: {shown} of {all}");
+        assert!(
+            r.current_list_item().unwrap().label.to_lowercase().contains("sea"),
+            "the best match is first: {}",
+            r.current_list_item().unwrap().label
+        );
+
+        for _ in 0..3 {
+            dispatch_key(&mut r, Some(Keycode::Backspace), no_mod());
+        }
+        assert_eq!(r.input_buffer, "f");
+        assert!(r.active_list_len() > shown, "Backspace widens the filter");
+
+        crate::handlers::handle_input(&mut r, "zqxzqx");
+        assert_eq!(r.active_list_len(), 0, "nothing matches");
+        assert!(r.current_list_item().is_none());
+
+        dispatch_key(&mut r, Some(Keycode::Escape), no_mod());
+        assert_eq!(r.coordinate, Coordinate::General);
+        assert!(r.input_buffer.is_empty(), "the filter is gone");
+
+        dispatch_key(&mut r, Some(Keycode::M), no_mod());
+        assert_eq!(r.active_list_len(), all, "meta opens unfiltered");
     }
 
     /// The list keys work in the manual, and the tab keys do not.

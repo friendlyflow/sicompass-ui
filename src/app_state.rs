@@ -2240,6 +2240,8 @@ impl AppRenderer {
         match self.coordinate.base() {
             Coordinate::SimpleSearch => !self.search_string.is_empty(),
             Coordinate::ExtendedSearch => !self.input_buffer.is_empty(),
+            // Meta mode's typed filter over its hints.
+            Coordinate::Meta => !self.input_buffer.is_empty(),
             // A line being written filters like a search (`list::filter_compose`).
             Coordinate::Command if self.current_command == CommandPhase::Compose => {
                 !self.input_buffer.is_empty()

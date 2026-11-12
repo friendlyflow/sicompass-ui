@@ -24,6 +24,9 @@ pub(crate) fn manual_on_screen(r: &AppRenderer) -> bool {
     // set when scroll mode starts and never cleared.
     match r.coordinate.base() {
         Coordinate::Manual => true,
+        // Meta mode's hints are not the provider's rows either, and a rebuild would
+        // drop the typed filter.
+        Coordinate::Meta => true,
         Coordinate::SimpleSearch | Coordinate::ExtendedSearch => r.search_in_manual,
         Coordinate::Scroll | Coordinate::ScrollSearch => r.manual_scroll,
         _ => false,
@@ -104,6 +107,8 @@ pub(crate) fn is_insert_mode(c: Coordinate) -> bool {
             // enables text events — the overlay still renders as a list, not
             // element-editing (see the separate render-local `in_insert_mode`).
             | Coordinate::TabSwitcher
+            // Meta mode filters its hints the same way.
+            | Coordinate::Meta
     )
 }
 
@@ -1464,6 +1469,7 @@ fn update_view(app: &mut AppState) {
             | Coordinate::Command
             | Coordinate::SecondCommand
             | Coordinate::TabSwitcher
+            | Coordinate::Meta
             | Coordinate::InputSearch
     ) {
         let (prefix, text) = match app.renderer.coordinate {
@@ -1483,6 +1489,7 @@ fn update_view(app: &mut AppState) {
             Coordinate::Command => ("search: ", app.renderer.input_buffer.as_str()),
             Coordinate::ExtendedSearch => ("ext search: ", app.renderer.input_buffer.as_str()),
             Coordinate::TabSwitcher => ("switch tab: ", app.renderer.input_buffer.as_str()),
+            Coordinate::Meta => ("search: ", app.renderer.input_buffer.as_str()),
             // SimpleSearch and InputSearch both type into `search_string`.
             _ => ("search: ", app.renderer.search_string.as_str()),
         };
@@ -1497,7 +1504,9 @@ fn update_view(app: &mut AppState) {
             Coordinate::SecondCommand if handlers::in_compose(&app.renderer) => {
                 format!(" [{} items]", list_items.len())
             }
-            Coordinate::SimpleSearch => format!(" [{} items]", list_items.len()),
+            Coordinate::SimpleSearch | Coordinate::Meta => {
+                format!(" [{} items]", list_items.len())
+            }
             // A provider's walk may still be adding rows (`live_search`).
             Coordinate::ExtendedSearch => format!(
                 " [{} items{}]",
@@ -1522,6 +1531,7 @@ fn update_view(app: &mut AppState) {
         Coordinate::Command
         | Coordinate::SecondCommand
         | Coordinate::SimpleSearch
+        | Coordinate::Meta
         | Coordinate::InputSearch => "search: ".len(),
         Coordinate::ExtendedSearch => "ext search: ".len(),
         Coordinate::TabSwitcher => "switch tab: ".len(),
@@ -2965,6 +2975,7 @@ fn update_view(app: &mut AppState) {
                 | Coordinate::ScrollSearch
                 | Coordinate::InputSearch
                 | Coordinate::TabSwitcher
+                | Coordinate::Meta
         ) {
             // search_y is the baseline — shift to cell top + padding
             let search_y =
