@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.4
+
+Needs sicompass-sdk 0.9.16.
+
+- Ctrl+Left and Ctrl+Right move by word in every text: fields, searches, the colon
+  prompts. Ctrl+Backspace and Ctrl+Delete delete a word, Ctrl+Shift+Left and
+  Ctrl+Shift+Right select by word, and each says the word. A password field jumps to
+  its ends, so no word is given away.
+- Ctrl+Home and Ctrl+End are the start and end of the whole text in a field, with
+  Shift to select. In a search or a colon prompt they take the list's first and last
+  item, as before.
+- Home and End in element mode go to the start and end of the line the selected
+  target is on, in any grid, and Ctrl+Home and Ctrl+End to the first and last
+  target. In the big picture view they go to the first and last picture.
+- Meta, the timeline and the tab switcher have Home and End, and general mode has
+  Ctrl+Home and Ctrl+End.
+- Typing in meta mode filters its hints, like the tab switcher's tabs.
+- The text vertex buffers start at 2 MiB and grow when a frame needs more, so host
+  memory mapped for the GPU drops from 87 MB to 27 MB at 1080p. A blank texel row
+  under each glyph removes the dash that was drawn on the list prefix's right arrow
+  at font scale 1.25.
+- The search inside a field moved the cursor through the element's text instead of
+  the query with Left and Right, and Backspace in simple search deleted one character
+  of a selection. Both are fixed.
+
 ## 0.2.3
 
 Needs sicompass-sdk 0.9.15.
