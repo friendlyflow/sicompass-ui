@@ -453,8 +453,8 @@ pub fn check_runtime_files(program: &str, version: &str) -> i32 {
     // came back. `register_all()` in `main` runs before this, which is what makes
     // the list non-empty.
     //
-    // WASM plugins serve their assets through a resolver closure, which cannot be
-    // enumerated, so they do not appear here.
+    // Plugins serve their assets on request, which cannot be enumerated, so they
+    // do not appear here.
     let uris = sicompass_sdk::assets::registered_uris();
     report.push_str(&format!("\nProvider assets: {}\n", uris.len()));
     if uris.is_empty() {

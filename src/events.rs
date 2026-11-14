@@ -132,7 +132,7 @@ pub fn drain_provider_errors(r: &mut AppRenderer) {
 /// Speak whatever the **active** provider asked to have announced.
 ///
 /// The same active-provider-only rule `drain_provider_errors` follows, for the
-/// same reason: a background provider — a sandboxed WASM plugin included — must
+/// same reason: a background provider — a plugin included — must
 /// never be able to talk over the view the user is reading. Background providers
 /// are still drained, so a line queued while a tab was in the background does not
 /// surface frames later when the user finally navigates there.
@@ -183,7 +183,7 @@ pub fn drain_dashboard_timeline_entries(r: &mut AppRenderer) {
 /// Apply the dashboard requests collected by [`run_provider_ticks`], honouring
 /// only the **active** provider's.
 ///
-/// A background provider — including a sandboxed WASM plugin the user is not
+/// A background provider — including a plugin the user is not
 /// looking at — must never be able to pull the screen into its own fullscreen
 /// view. The index carried alongside each request is the host's, assigned in
 /// `run_provider_ticks`; a provider cannot name a different one.

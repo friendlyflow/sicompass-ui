@@ -76,7 +76,7 @@ application, the `loginsicompass` greetd greeter, and desicompass's
 `launcher_window`). It holds the SDL3 window, the Vulkan
 device, font rasterisation, the list layout, the key handlers, the insert-mode
 text field and the AccessKit bridge. What only an *application* has (the
-provider catalogue, `settings.json`, the WASM plugin host, the self-updater,
+provider catalogue, `settings.json`, the plugin host, the self-updater,
 the Windows Start Menu entry) stays in sicompass.
 
 **This crate must not depend on `sicompass-builtins`, `sicompass-updater`,

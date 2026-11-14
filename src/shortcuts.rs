@@ -350,7 +350,7 @@ fn is_editor(r: &AppRenderer) -> bool {
 /// True when the active provider declared `supports_structural_edit()`.
 ///
 /// The published way to ask for the generic editing keymap. Providers used to
-/// be recognised here by name; this is what replaced that, so a WASM plugin can
+/// be recognised here by name; this is what replaced that, so a plugin can
 /// opt in the same way a built-in does.
 fn provider_supports_structural_edit(r: &AppRenderer) -> bool {
     r.current_id
