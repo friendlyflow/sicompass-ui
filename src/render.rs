@@ -1013,10 +1013,14 @@ pub fn build_app_with(cfg: &crate::app_state::AppConfig) -> Result<AppState, SiE
         std::sync::atomic::AtomicI32::new(init_w as i32),
         std::sync::atomic::AtomicI32::new(init_h as i32),
     ));
+    let hit_test_drag_h_pt = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(
+        crate::app_state::WINDOW_BUTTON_H as i32,
+    ));
     {
         use sdl3::video::HitTestResult;
         use std::sync::atomic::Ordering;
         let size = hit_test_win_pt.clone();
+        let drag_h = hit_test_drag_h_pt.clone();
         let on_left = crate::app_state::controls_on_left();
         // Resize-border thickness in logical points.
         const BORDER: f32 = 6.0;
@@ -1041,13 +1045,11 @@ pub fn build_app_with(cfg: &crate::app_state::AppConfig) -> Result<AppState, SiE
                 _ => {
                     // Top strip is draggable, except over the control buttons
                     // (let those receive the click as a normal hit).
-                    if y < crate::app_state::WINDOW_BUTTON_H {
-                        let rects = crate::app_state::window_button_rects(w, on_left);
-                        if crate::app_state::window_button_at(&rects, x, y).is_some() {
-                            HitTestResult::Normal
-                        } else {
-                            HitTestResult::Draggable
-                        }
+                    let rects = crate::app_state::window_button_rects(w, on_left);
+                    if crate::app_state::window_button_at(&rects, x, y).is_some() {
+                        HitTestResult::Normal
+                    } else if y < drag_h.load(Ordering::Relaxed) as f32 {
+                        HitTestResult::Draggable
                     } else {
                         HitTestResult::Normal
                     }
@@ -1366,6 +1368,7 @@ pub fn build_app_with(cfg: &crate::app_state::AppConfig) -> Result<AppState, SiE
         accesskit_adapter: None,
         maximized_ready: false,
         hit_test_win_pt,
+        hit_test_drag_h_pt,
     })
 }
 

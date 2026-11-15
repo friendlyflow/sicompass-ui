@@ -199,7 +199,7 @@ impl AccessKitAdapter {
                     initial_tree: Some(initial_tree),
                     registered: std::sync::Arc::clone(&registered),
                 },
-                NoopActionHandler,
+                ActivateHandler,
                 NoopDeactivationHandler,
             );
             return Some(AccessKitAdapter {
@@ -234,7 +234,7 @@ impl AccessKitAdapter {
                 ActivationHandlerImpl {
                     initial_tree: Some(initial_tree),
                 },
-                NoopActionHandler,
+                ActivateHandler,
             );
             return Some(AccessKitAdapter { adapter });
         }
@@ -271,7 +271,7 @@ impl AccessKitAdapter {
                     ActivationHandlerImpl {
                         initial_tree: Some(initial_tree),
                     },
-                    NoopActionHandler,
+                    ActivateHandler,
                 )
             };
             if a11y_debug() {
@@ -339,6 +339,24 @@ impl AccessKitAdapter {
                     );
                 }
             }
+        }
+    }
+
+    /// Where the window's drawing area is on the screen, in pixels, so AT-SPI can
+    /// turn the focused node's bounds into screen coordinates for a magnifier.
+    /// Only X11 can say: a Wayland client never learns where its window is.
+    /// Windows and macOS find the window themselves.
+    #[allow(unused_variables)]
+    pub fn set_window_bounds(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        #[cfg(target_os = "linux")]
+        {
+            let rect = accesskit::Rect {
+                x0: x,
+                y0: y,
+                x1: x + w,
+                y1: y + h,
+            };
+            self.adapter.set_root_window_bounds(rect, rect);
         }
     }
 
@@ -747,6 +765,12 @@ fn build_tree_with_element(renderer: &AppRenderer, element_id: NodeId) -> TreeUp
     };
     let mut elem = Node::new(role);
     elem.set_label(Box::<str>::from(element_label.as_str()));
+    // A screen reader's or voice control's "activate": what a click on the row does.
+    elem.add_action(accesskit::Action::Click);
+    // Where it is drawn, so a screen magnifier follows the selection and the caret.
+    if let Some(rect) = focus_bounds(renderer) {
+        elem.set_bounds(rect);
+    }
     // Speak each item in its own language: auto-detect from the content, fall
     // back to the UI locale when detection isn't reliable. The screen reader
     // only honours this when its automatic language switching is enabled and a
@@ -834,6 +858,10 @@ fn build_tree_macos(renderer: &AppRenderer, spoken: &str, spoken_lang: &str) -> 
     // the current item. Speech itself comes from the live region below.
     let (element_label, element_content) = current_element(renderer);
     let mut elem = Node::new(Role::ListItem);
+    elem.add_action(accesskit::Action::Click);
+    if let Some(rect) = focus_bounds(renderer) {
+        elem.set_bounds(rect);
+    }
     elem.set_label(Box::<str>::from(element_label.as_str()));
     elem.set_language(detect_language(&element_content).unwrap_or_else(|| ui_locale.clone()));
     nodes.push((ELEMENT_ID, elem));
@@ -885,12 +913,41 @@ impl accesskit::ActivationHandler for ActivationHandlerImpl {
     }
 }
 
-/// No-op action handler: sicompass keyboard navigation is modal, so AT
-/// "activate" actions are not needed.
-struct NoopActionHandler;
+/// The focused node's bounds: where the selection or the caret is drawn
+/// ([`crate::pointer::focus_rect`]), in the window's physical pixels.
+fn focus_bounds(renderer: &AppRenderer) -> Option<accesskit::Rect> {
+    crate::pointer::focus_rect(renderer).map(|r| accesskit::Rect {
+        x0: f64::from(r.x),
+        y0: f64::from(r.y),
+        x1: f64::from(r.x + r.w),
+        y1: f64::from(r.y + r.h),
+    })
+}
 
-impl accesskit::ActionHandler for NoopActionHandler {
-    fn do_action(&mut self, _request: accesskit::ActionRequest) {}
+/// How many "activate" requests a screen reader or voice control sent for the
+/// focused row since the main loop last took them. AccessKit calls the handler
+/// on a thread of its own, so the loop drains this between frames
+/// ([`take_activations`]) and runs each as a click on the selected row.
+static ACTIVATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The activations asked for since the last call, now cleared.
+pub fn take_activations() -> usize {
+    ACTIVATIONS.swap(0, std::sync::atomic::Ordering::AcqRel)
+}
+
+/// Counts a Click (the default action) on the focused row. Anything else, and a
+/// Click on the window or the announcement node, is ignored: focus is the app's.
+struct ActivateHandler;
+
+impl accesskit::ActionHandler for ActivateHandler {
+    fn do_action(&mut self, request: accesskit::ActionRequest) {
+        if request.action == accesskit::Action::Click
+            && request.target_node != ROOT_ID
+            && request.target_node != ANNOUNCEMENT_ID
+        {
+            ACTIVATIONS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
 }
 
 /// No-op deactivation handler (AT-SPI2 / Unix only).

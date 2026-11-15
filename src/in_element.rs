@@ -23,10 +23,15 @@ fn focused_targets(r: &AppRenderer) -> Vec<Target> {
     let Some(raw) = handlers::focused_element_raw(r) else {
         return Vec::new();
     };
+    targets_of(r, &raw)
+}
+
+/// The targets of a row's raw text, in the order element mode goes through them.
+pub(crate) fn targets_of(r: &AppRenderer, raw: &str) -> Vec<Target> {
     if r.sheets.markup_here() {
-        sicompass_sdk::markup::targets(&list::without_toggle_tags(&raw))
+        sicompass_sdk::markup::targets(&list::without_toggle_tags(raw))
     } else {
-        tags::targets(&raw)
+        tags::targets(raw)
     }
 }
 
@@ -96,6 +101,37 @@ pub fn handle_enter_first(r: &mut AppRenderer) {
         // A dead link or a pressed button: back where Enter was pressed.
         Coordinate::InElement => leave(r),
         // The big view of a picture or a video: Escape comes back there too.
+        Coordinate::Dashboard if r.previous_coordinate == Coordinate::InElement => {
+            r.previous_coordinate = rest;
+        }
+        _ => {}
+    }
+}
+
+/// A click on the selected row's target `index`: what Enter in element mode does
+/// on it, without staying in the mode (as [`handle_enter_first`] does on the
+/// first). Already in element mode, it stays there, on the clicked target.
+pub(crate) fn click_target(r: &mut AppRenderer, index: usize) {
+    if r.coordinate == Coordinate::InElement {
+        if index < r.nav_targets.len() {
+            r.nav_index = index;
+            handle_enter(r);
+        }
+        return;
+    }
+    let targets = focused_targets(r);
+    if index >= targets.len() {
+        return;
+    }
+    let rest = r.coordinate;
+    r.nav_targets = targets;
+    r.nav_index = index;
+    r.nav_positions.clear();
+    r.nav_return = rest;
+    r.coordinate = Coordinate::InElement;
+    handle_enter(r);
+    match r.coordinate {
+        Coordinate::InElement => leave(r),
         Coordinate::Dashboard if r.previous_coordinate == Coordinate::InElement => {
             r.previous_coordinate = rest;
         }

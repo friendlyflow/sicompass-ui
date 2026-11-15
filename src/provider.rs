@@ -1695,6 +1695,50 @@ pub(crate) fn get_ffon_at_id_mut<'a>(
     Some(current)
 }
 
+/// Hand the active provider's interactive dashboard the mouse events the pointer
+/// gathered (`crate::pointer`), in order. Dropped outside the dashboard.
+pub fn forward_dashboard_mouse(r: &mut AppRenderer) {
+    if r.pointer.dashboard.is_empty() {
+        return;
+    }
+    let events = std::mem::take(&mut r.pointer.dashboard);
+    if !crate::pointer::dashboard_takes_mouse(r) {
+        return;
+    }
+    let (ctrl, shift, alt) = crate::pointer::modifiers_held();
+    let Some(p) = get_active_provider(r) else {
+        return;
+    };
+    let mut used = false;
+    for (kind, button, col, row) in events {
+        use crate::pointer::{Button, DashboardMouseKind as K};
+        use sicompass_sdk::{DashboardMouseButton as B, DashboardMouseKind as SK};
+        let event = sicompass_sdk::DashboardMouse {
+            kind: match kind {
+                K::Press => SK::Press,
+                K::Release => SK::Release,
+                K::Motion => SK::Motion,
+                K::WheelUp => SK::WheelUp,
+                K::WheelDown => SK::WheelDown,
+            },
+            button: match button {
+                Some(Button::Left) => Some(B::Left),
+                Some(Button::Middle) => Some(B::Middle),
+                _ => None,
+            },
+            col,
+            row,
+            ctrl,
+            shift,
+            alt,
+        };
+        used |= p.dashboard_mouse(event);
+    }
+    if used {
+        r.needs_redraw = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2294,3 +2338,4 @@ mod tests {
         assert_eq!(*last_cmd.lock().unwrap(), None);
     }
 }
+

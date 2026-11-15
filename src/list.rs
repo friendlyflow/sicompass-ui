@@ -1809,7 +1809,7 @@ fn build_meta_list(renderer: &mut AppRenderer) {
 
 /// How many lines the beginner's manual has: `manual-01` to `manual-NN` in the locale
 /// files, in the order they are read.
-pub const MANUAL_LINES: usize = 26;
+pub const MANUAL_LINES: usize = 27;
 
 /// The Fluent key prefix of the application's beginner's manual: `manual-01` and on.
 pub const MANUAL_PREFIX: &str = "manual";

@@ -602,6 +602,75 @@ fn avail_editor_edit(r: &AppRenderer) -> bool {
     not_at_root(r) && is_editor(r)
 }
 
+/// What a left click on the selected row in General does, in keys. A click acts
+/// at once: it is whichever key a user would press to use that row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Click {
+    /// Press this key, through the table like any key.
+    Press(Keycode),
+    /// Go into the row's children. Right would start element mode on a row of
+    /// several targets, and the click was beside them, not on one.
+    Open,
+    /// Selecting the row was all there was to do.
+    Nothing,
+}
+
+/// The [`Click`] for the selected row in General. Built from the table's own
+/// predicates, so it follows what Enter and Right do here.
+///
+/// - The provider list: Right, into the provider.
+/// - An editor's line: `i`, to edit it (Enter there appends a line). One with
+///   children opens.
+/// - Beside the targets of a row of several: its children, or nothing.
+/// - A checkbox, a radio choice, a link, a button, a lone image: Enter.
+/// - An `<input>` field: `i`, to edit it. Not where the provider owns its rows'
+///   editing (the file browser's names): there Enter opens the row.
+/// - A row with children: Right.
+/// - Anything else: Enter, which is what using a row is.
+pub(crate) fn general_click(r: &AppRenderer) -> Click {
+    if !not_at_root(r) {
+        return Click::Press(Keycode::Right);
+    }
+    let multi_target = crate::in_element::wants_element_mode(r);
+    let open = || {
+        if multi_target {
+            Click::Open
+        } else {
+            Click::Press(Keycode::Right)
+        }
+    };
+    if is_editor(r) {
+        return if focused_has_children(r) {
+            open()
+        } else {
+            Click::Press(Keycode::I)
+        };
+    }
+    // Beside the targets of a row of several: Enter would use the first one, and
+    // the click was on none of them. Its children, if it has any, are what is left.
+    if crate::in_element::enter_uses_first_target(r) {
+        return if focused_has_children(r) {
+            Click::Open
+        } else {
+            Click::Nothing
+        };
+    }
+    if avail_enter_toggle(r)
+        || avail_enter_follow_link(r)
+        || avail_enter_activate(r)
+        || crate::in_element::focused_is_only_an_image(r)
+    {
+        return Click::Press(Keycode::Return);
+    }
+    if focused_is_input(r) && !handlers::provider_declared_structural_edit(r) {
+        return Click::Press(Keycode::I);
+    }
+    if focused_has_children(r) {
+        return open();
+    }
+    Click::Press(Keycode::Return)
+}
+
 // ---------------------------------------------------------------------------
 // Handler wrappers (for History param or mode-specific disambiguation)
 // ---------------------------------------------------------------------------

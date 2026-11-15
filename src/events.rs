@@ -33,22 +33,32 @@ pub fn dispatch_key(r: &mut AppRenderer, keycode: Option<Keycode>, keymod: Mod) 
         "dispatch_key"
     );
 
+    with_tab_sync(r, |r| {
+        // A line being written filters its words on the word at the caret, so a
+        // key that only moves the caret (Left, Home, a word jump) changes the rows
+        // too. Typing and Backspace refilter where they edit.
+        let compose_before = (r.input_buffer.clone(), r.cursor_position);
+
+        let result = crate::shortcuts::dispatch_key(r, keycode, keymod);
+
+        if crate::handlers::in_compose(r)
+            && compose_before != (r.input_buffer.clone(), r.cursor_position)
+        {
+            crate::list::create_list_current_layer(r);
+            crate::list::filter_compose(r);
+        }
+        result
+    })
+}
+
+/// Run `f`, then mirror where it left the cursor into the active tab's slot and
+/// persist the tabs when that changed. Every key goes through it, and so does a
+/// mouse action that is not a key (a click that only selects a row).
+pub(crate) fn with_tab_sync<T>(r: &mut AppRenderer, f: impl FnOnce(&mut AppRenderer) -> T) -> T {
     let prior_active = r.active_tab;
     let prior_len = r.tabs.len();
 
-    // A line being written filters its words on the word at the caret, so a
-    // key that only moves the caret (Left, Home, a word jump) changes the rows
-    // too. Typing and Backspace refilter where they edit.
-    let compose_before = (r.input_buffer.clone(), r.cursor_position);
-
-    let result = crate::shortcuts::dispatch_key(r, keycode, keymod);
-
-    if crate::handlers::in_compose(r)
-        && compose_before != (r.input_buffer.clone(), r.cursor_position)
-    {
-        crate::list::create_list_current_layer(r);
-        crate::list::filter_compose(r);
-    }
+    let result = f(r);
 
     // Mirror the live navigation back into the active tab slot. Compare only
     // the persisted nav fields — the slot's parked provider vectors are empty

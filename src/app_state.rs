@@ -964,6 +964,11 @@ pub struct AppRenderer {
     /// Index (0..3) of the titlebar button under the mouse cursor, for hover
     /// highlight. `None` when the cursor is over none of them.
     pub window_button_hover: Option<usize>,
+    /// Where the rows, targets, parent line and text field were on the last
+    /// frame, filled by the view every frame, for the mouse and touch.
+    pub hit_map: crate::pointer::HitMap,
+    /// The mouse's and touch's state between events. See [`crate::pointer`].
+    pub pointer: crate::pointer::PointerState,
     /// Tracks whether the window is currently maximized, updated from SDL
     /// Maximized/Restored events. Drives the `c` palette's maximize/restore
     /// label (the action toggle itself queries SDL directly in the main loop).
@@ -1344,6 +1349,8 @@ impl AppRenderer {
             pending_window_action: None,
             window_button_rects: [(0.0, 0.0, 0.0, 0.0); 3],
             window_button_hover: None,
+            hit_map: crate::pointer::HitMap::default(),
+            pointer: crate::pointer::PointerState::default(),
             window_is_maximized: false,
             current_save_path: String::new(),
             placeholder_cancel: None,
@@ -2416,6 +2423,11 @@ pub struct AppState {
     /// and resize borders track the window.
     pub hit_test_win_pt:
         std::sync::Arc<(std::sync::atomic::AtomicI32, std::sync::atomic::AtomicI32)>,
+    /// The draggable strip's height in logical points, which the view keeps at
+    /// the header line's (and never above [`WINDOW_BUTTON_H`]), so the strip never
+    /// covers the parent line, which the mouse clicks. Zero while the header is
+    /// itself a click (a full-screen view's, which leaves it).
+    pub hit_test_drag_h_pt: std::sync::Arc<std::sync::atomic::AtomicI32>,
 }
 
 impl AppState {

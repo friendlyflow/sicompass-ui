@@ -43,6 +43,7 @@ pub mod in_element;
 pub mod layout;
 pub mod list;
 pub mod live_search;
+pub mod pointer;
 pub mod provider;
 pub mod rectangle;
 pub mod registry;
@@ -57,6 +58,8 @@ pub mod video;
 
 #[cfg(test)]
 mod launcher_mode_tests;
+#[cfg(test)]
+mod pointer_tests;
 #[cfg(test)]
 mod single_page_tests;
 

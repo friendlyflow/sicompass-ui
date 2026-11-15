@@ -250,6 +250,7 @@ pub fn main_loop(app: &mut AppState) {
                         | WindowEvent::PixelSizeChanged(..)
                         | WindowEvent::Exposed => {
                             app.framebuffer_resized = true;
+                            report_window_bounds(app);
                             // Keep the borderless hit-test region (draggable
                             // strip + resize borders) in sync with the new size.
                             let (wp, hp) = app.window.size();
@@ -257,6 +258,7 @@ pub fn main_loop(app: &mut AppState) {
                             app.hit_test_win_pt.0.store(wp as i32, Ordering::Relaxed);
                             app.hit_test_win_pt.1.store(hp as i32, Ordering::Relaxed);
                         }
+                        WindowEvent::Moved(..) => report_window_bounds(app),
                         WindowEvent::Maximized | WindowEvent::Restored => {
                             app.framebuffer_resized = true;
                             let is_maximized = matches!(win_event, WindowEvent::Maximized);
@@ -305,11 +307,18 @@ pub fn main_loop(app: &mut AppState) {
                     handlers::handle_input(&mut app.renderer, &text);
                 }
 
-                // ---- Custom titlebar buttons (mouse) ------------------------
-                // Button rects are filled by the renderer each frame in logical
-                // point space — the same space SDL reports mouse coords in.
+                // ---- The mouse -----------------------------------------------
+                // The titlebar's button rects are filled by the renderer each
+                // frame in logical point space, the same space SDL reports mouse
+                // coords in. Everything else goes to `pointer`, in pixels. Mouse
+                // events SDL makes up from a touch are dropped: the touch itself
+                // comes as finger events below.
                 Event::MouseMotion {
-                    x, y, window_id, ..
+                    x,
+                    y,
+                    window_id,
+                    which,
+                    ..
                 } => {
                     if window_id != app.window.id() {
                         continue;
@@ -320,13 +329,23 @@ pub fn main_loop(app: &mut AppState) {
                         app.renderer.window_button_hover = hover;
                         app.renderer.needs_redraw = true;
                     }
+                    if which == TOUCH_MOUSE_ID {
+                        continue;
+                    }
+                    let k = app.renderer.hit_map.px_per_pt;
+                    if crate::pointer::motion(&mut app.renderer, x * k, y * k) {
+                        app.running = false;
+                    }
+                    pointer_after_event(app);
                 }
 
                 Event::MouseButtonDown {
                     x,
                     y,
                     mouse_btn,
+                    clicks,
                     window_id,
+                    which,
                     ..
                 } => {
                     if window_id != app.window.id() {
@@ -344,7 +363,108 @@ pub fn main_loop(app: &mut AppState) {
                             1 => WindowAction::MaximizeToggle,
                             _ => WindowAction::Close,
                         });
+                        continue;
                     }
+                    if which == TOUCH_MOUSE_ID {
+                        continue;
+                    }
+                    let Some(button) = crate::pointer::Button::from_sdl(mouse_btn) else {
+                        continue;
+                    };
+                    let k = app.renderer.hit_map.px_per_pt;
+                    if crate::pointer::button_down(
+                        &mut app.renderer,
+                        button,
+                        x * k,
+                        y * k,
+                        clicks,
+                        shift_held(),
+                    ) {
+                        app.running = false;
+                    }
+                    pointer_after_event(app);
+                }
+
+                Event::MouseButtonUp {
+                    x,
+                    y,
+                    mouse_btn,
+                    window_id,
+                    which,
+                    ..
+                } => {
+                    if window_id != app.window.id() || which == TOUCH_MOUSE_ID {
+                        continue;
+                    }
+                    let Some(button) = crate::pointer::Button::from_sdl(mouse_btn) else {
+                        continue;
+                    };
+                    let k = app.renderer.hit_map.px_per_pt;
+                    if crate::pointer::button_up(&mut app.renderer, button, x * k, y * k) {
+                        app.running = false;
+                    }
+                    pointer_after_event(app);
+                }
+
+                Event::MouseWheel {
+                    x,
+                    y,
+                    window_id,
+                    which,
+                    ..
+                } => {
+                    if window_id != app.window.id() || which == TOUCH_MOUSE_ID {
+                        continue;
+                    }
+                    let now = handlers::sdl_ticks();
+                    if crate::pointer::wheel(&mut app.renderer, x, y, now) {
+                        app.running = false;
+                    }
+                    pointer_after_event(app);
+                }
+
+                // ---- A touch screen ---------------------------------------
+                // Finger positions are 0..1 across the window.
+                Event::FingerDown {
+                    finger_id,
+                    x,
+                    y,
+                    window_id,
+                    ..
+                }
+                | Event::FingerMotion {
+                    finger_id,
+                    x,
+                    y,
+                    window_id,
+                    ..
+                }
+                | Event::FingerUp {
+                    finger_id,
+                    x,
+                    y,
+                    window_id,
+                    ..
+                } if window_id == app.window.id() => {
+                    let (px, py) = (
+                        x * app.swapchain_extent.width as f32,
+                        y * app.swapchain_extent.height as f32,
+                    );
+                    let now = handlers::sdl_ticks();
+                    let r = &mut app.renderer;
+                    let quit = match event {
+                        Event::FingerDown { .. } => {
+                            crate::pointer::finger_down(r, finger_id, px, py, now)
+                        }
+                        Event::FingerMotion { .. } => {
+                            crate::pointer::finger_motion(r, finger_id, px, py)
+                        }
+                        _ => crate::pointer::finger_up(r, finger_id, px, py, now),
+                    };
+                    if quit {
+                        app.running = false;
+                    }
+                    pointer_after_event(app);
                 }
 
                 _ => {}
@@ -559,16 +679,42 @@ pub fn main_loop(app: &mut AppState) {
             app.renderer.needs_redraw = false;
         }
 
+        // ---- A screen reader's or voice control's "activate" ---------------
+        for _ in 0..crate::accesskit_sdl::take_activations() {
+            if crate::pointer::activate(&mut app.renderer) {
+                app.running = false;
+            }
+            pointer_after_event(app);
+        }
+
         // ---- Fill vertex buffers for this frame ----------------------------
         update_view(app);
+        crate::pointer::after_frame(&mut app.renderer);
+        pointer_after_event(app);
+        // The draggable strip ends where the header line does, and stands aside
+        // where the header is a click.
+        {
+            let map = &app.renderer.hit_map;
+            let header_is_click = map
+                .regions
+                .iter()
+                .any(|(_, hit)| *hit == crate::pointer::Hit::Header);
+            let drag_h = if header_is_click {
+                0
+            } else {
+                (map.line_height / map.px_per_pt.max(0.01))
+                    .min(crate::app_state::WINDOW_BUTTON_H) as i32
+            };
+            app.hit_test_drag_h_pt
+                .store(drag_h, std::sync::atomic::Ordering::Relaxed);
+        }
         // Overlay the custom titlebar controls on top of whatever update_view
         // rendered (every render path has already begun the passes; the submit
         // happens below in draw_frame).
         //
-        // Skipped when sicompass *is* the session: desicompass is cursorless,
-        // so there is no pointer to click these with, and a tiling compositor
-        // has nothing to minimise to and no other window to restore from. The
-        // row would be unreachable decoration costing vertical space that
+        // Skipped when sicompass *is* the session: desicompass tiles, so it has
+        // nothing to minimise to, no other window to restore from and no window
+        // to move. The buttons would be decoration costing vertical space that
         // matters at tile sizes. Off by default; see `session_mode`.
         if !crate::session_mode::is_session_mode() {
             draw_window_controls(app);
@@ -814,6 +960,15 @@ fn update_view(app: &mut AppState) {
     let header = build_header_text(&app.renderer, line_height);
     let win_w = app.swapchain_extent.width as f32;
     let win_h = app.swapchain_extent.height as f32;
+
+    // ---- Where things are drawn, for the mouse (`crate::pointer`) -----------
+    // Refilled below as each part of the frame is laid out.
+    app.renderer.hit_map.clear();
+    app.renderer.hit_map.px_per_pt = match app.window.size() {
+        (w_pt, _) if w_pt > 0 => win_w / w_pt as f32,
+        _ => 1.0,
+    };
+    app.renderer.hit_map.line_height = line_height as f32;
     // What a length in a stylesheet means on this frame.
     let style_env = crate::style::StyleEnv {
         base_em: app
@@ -953,6 +1108,10 @@ fn update_view(app: &mut AppState) {
             line_height as f32 + top_offset
         };
         app.renderer.text_scroll_viewport_h = (win_h - scroll_clip_y).max(0.0) as i32;
+        app.renderer.hit_map.push(
+            crate::pointer::Rect::new(0.0, scroll_clip_y, win_w, (win_h - scroll_clip_y).max(0.0)),
+            crate::pointer::Hit::Page,
+        );
         let error_msg = app.renderer.error_message.clone();
 
         // Begin render passes
@@ -1166,6 +1325,17 @@ fn update_view(app: &mut AppState) {
             };
             app.renderer.dashboard_cell_size = (cols, rows);
             app.renderer.dashboard_has_caret = frame.cursor.is_some();
+            app.renderer.hit_map.grid = Some(crate::pointer::CellGrid {
+                top: grid_top,
+                cell_w,
+                cell_h,
+                cols,
+                rows,
+            });
+            app.renderer.hit_map.push(
+                crate::pointer::Rect::new(0.0, 0.0, win_w, header_h),
+                crate::pointer::Hit::Header,
+            );
 
             // Begin render passes
             let fr = match app.font_renderer.as_mut() {
@@ -1327,6 +1497,15 @@ fn update_view(app: &mut AppState) {
         } else {
             // Image (or legacy `None` + dashboard_image_path) flavor.
             let dashboard_path = app.renderer.dashboard_image_path.clone();
+            let header_h = line_height as f32 + top_offset;
+            app.renderer.hit_map.push(
+                crate::pointer::Rect::new(0.0, 0.0, win_w, header_h),
+                crate::pointer::Hit::Header,
+            );
+            app.renderer.hit_map.push(
+                crate::pointer::Rect::new(0.0, header_h, win_w, (win_h - header_h).max(0.0)),
+                crate::pointer::Hit::Dashboard,
+            );
 
             // Begin render passes
             let fr = match app.font_renderer.as_mut() {
@@ -1901,6 +2080,34 @@ fn update_view(app: &mut AppState) {
         let window = fr.caret_window(&s[pin_len..], insert_cursor, scale, field_w);
         fr.prepare_text_for_rendering(&window.text, field_x, search_y, scale, p.text);
         search_caret_x = Some(field_x + window.caret_dx);
+        // Where a click puts the caret: the query only, not the count after it.
+        if search_pin_len > 0 {
+            let query_len = match app.renderer.coordinate {
+                Coordinate::SimpleSearch | Coordinate::InputSearch => {
+                    app.renderer.search_string.len()
+                }
+                _ => app.renderer.input_buffer.len(),
+            };
+            let src = &s[pin_len..];
+            let query = &src[..query_len.min(src.len())];
+            let mut x = field_x + window.text_dx;
+            let mut stops = vec![(window.start, x)];
+            if let Some(shown) = query.get(window.start..) {
+                for (i, ch) in shown.char_indices() {
+                    x += fr.measure_text_width(ch.encode_utf8(&mut [0; 4]), scale);
+                    if x > field_x + field_w + 1.0 {
+                        break;
+                    }
+                    stops.push((window.start + i + ch.len_utf8(), x));
+                }
+            }
+            let top = line_height as f32 + top_offset;
+            app.renderer.hit_map.field = vec![crate::pointer::CaretLine {
+                top,
+                bottom: top + line_height as f32,
+                stops,
+            }];
+        }
     }
 
     // ---- List items — selection highlight rectangles ----------------------
@@ -2797,6 +3004,131 @@ fn update_view(app: &mut AppState) {
                 }
                 fr.set_bold(false);
             }
+        }
+    }
+
+    // ---- The rows, their targets, the parent line and the edited field -----
+    {
+        use crate::pointer::{CaretLine, Hit, Rect};
+        let ascent = ascender * scale + crate::text::TEXT_PADDING;
+        let lh = line_height as f32;
+        let col_w = (content_w + left_inset).min(win_w - content_x).max(1.0);
+        let coord = app.renderer.coordinate;
+        let chrome_bottom = first_item_y - ascent;
+        if !parent_info.display_text.is_empty()
+            && search_str.is_none()
+            && matches!(
+                coord.base(),
+                Coordinate::General | Coordinate::InElement | Coordinate::Insert
+            )
+        {
+            let lines = if parent_info.radio_summary.is_some() { 2.0 } else { 1.0 };
+            app.renderer
+                .hit_map
+                .push(Rect::new(content_x, lh + top_offset, col_w, lh * lines), Hit::Parent);
+        }
+        let tree_rows = matches!(coord.base(), Coordinate::General | Coordinate::InElement);
+        for (i, row) in rows.iter().enumerate() {
+            let n = start_index + i;
+            let row_top = row.y - ascent;
+            let height = shapes.get(n).map_or(lh, |s| s.height);
+            // A row taller than the window passes behind the chrome above it.
+            let top = row_top.max(chrome_bottom);
+            let bottom = (row_top + height).min(win_h);
+            app.renderer
+                .hit_map
+                .push(Rect::new(content_x, top, col_w, bottom - top), Hit::Row(n));
+            if !tree_rows {
+                continue;
+            }
+            if let Some(laid) = row.boxes.as_ref() {
+                let scroll = if coord == Coordinate::InElement && n == list_index {
+                    app.renderer.row_scroll
+                } else {
+                    0.0
+                };
+                for (t, tr) in laid.targets.iter().enumerate() {
+                    let rect = Rect::new(row.content_x + tr.x, row_top - scroll + tr.y, tr.w, tr.h);
+                    if rect.y + rect.h > chrome_bottom && rect.y < win_h {
+                        app.renderer
+                            .hit_map
+                            .push(rect, Hit::Target { row: n, target: t });
+                    }
+                }
+            } else if let (Some(fr), Some(item)) =
+                (app.font_renderer.as_ref(), list_items.get(n))
+            {
+                // A row of one target is used by a click on the row. A checkbox's
+                // or a radio choice's is not (the click changes the row), and
+                // neither is any of several.
+                let targets = row_targets(&app.renderer, n);
+                let toggle = get_checkbox_type(&item.label) != CheckboxType::None
+                    || get_radio_type(&item.label) != RadioType::None;
+                if targets.len() >= 2 || (targets.len() == 1 && toggle) {
+                    let (_, content) = split_label(&item.label);
+                    let at = |pick: fn(&sicompass_sdk::tags::Target) -> usize| {
+                        crate::layout::target_positions(
+                            fr,
+                            targets.iter().map(pick),
+                            content,
+                            scale,
+                            item_max_w,
+                            lh,
+                        )
+                    };
+                    let starts = at(|t| t.display_span.start);
+                    let ends = at(|t| t.display_span.end);
+                    for (t, (s, e)) in starts.iter().zip(&ends).enumerate() {
+                        // One that wraps is clickable to the end of its first line.
+                        let w = if e.y == s.y { e.x - s.x } else { item_max_w - s.x };
+                        app.renderer.hit_map.push(
+                            Rect::new(row.content_x + s.x, row_top + s.y, w.max(em_width), lh),
+                            Hit::Target { row: n, target: t },
+                        );
+                    }
+                }
+            }
+        }
+        // The field being edited: where a click puts the caret, line by line.
+        if in_insert_mode
+            && captured_elem_y > 0.0
+            && let Some(fr) = app.font_renderer.as_ref()
+        {
+            let buf = insert_buf.as_str();
+            let raw = &app.renderer.input_buffer;
+            // A masked password draws one byte per character of the real value.
+            let to_raw = |b: usize| {
+                if mask_password {
+                    raw.char_indices().nth(b).map_or(raw.len(), |(i, _)| i)
+                } else {
+                    b
+                }
+            };
+            let pfx_w = captured_elem_x - captured_elem_base_x;
+            let segs = insert_buf_segments(fr, buf, scale, pfx_w, item_max_w);
+            let first_top = captured_elem_y - ascender * scale - crate::text::TEXT_PADDING;
+            app.renderer.hit_map.field = segs
+                .iter()
+                .enumerate()
+                .map(|(n, &(start, end, _))| {
+                    let mut x = if n == 0 {
+                        captured_elem_x
+                    } else {
+                        captured_elem_base_x
+                    };
+                    let mut stops = vec![(to_raw(start), x)];
+                    for (i, ch) in buf[start..end].char_indices() {
+                        x += fr.measure_text_width(ch.encode_utf8(&mut [0; 4]), scale);
+                        stops.push((to_raw(start + i + ch.len_utf8()), x));
+                    }
+                    let top = first_top + n as f32 * lh;
+                    CaretLine {
+                        top,
+                        bottom: top + lh,
+                        stops,
+                    }
+                })
+                .collect();
         }
     }
 
@@ -3851,6 +4183,28 @@ fn build_header_text(r: &AppRenderer, line_height: i32) -> String {
 
 /// Snapshot the active list for rendering (avoids mixed borrows later).
 /// Returns `(label, item_data, is_selected, fuzzy_match_positions, ext_prefix)`.
+/// The targets of row `n` of the active list, for the mouse.
+fn row_targets(r: &AppRenderer, n: usize) -> Vec<sicompass_sdk::tags::Target> {
+    let item = if r.filtered_list_indices.is_empty() {
+        r.total_list.get(n)
+    } else {
+        r.filtered_list_indices
+            .get(n)
+            .and_then(|&i| r.total_list.get(i))
+    };
+    let Some(item) = item else {
+        return Vec::new();
+    };
+    let raw = sicompass_sdk::ffon::get_ffon_at_id(&r.ffon, &item.id)
+        .and_then(|slice| slice.get(item.id.last().unwrap_or(0)))
+        .map(|e| match e {
+            sicompass_sdk::ffon::FfonElement::Str(s) => s.clone(),
+            sicompass_sdk::ffon::FfonElement::Obj(o) => o.key.clone(),
+        });
+    raw.map(|raw| crate::in_element::targets_of(r, &raw))
+        .unwrap_or_default()
+}
+
 fn collect_list_items(r: &AppRenderer, env: &crate::style::StyleEnv) -> Vec<ListItem> {
     let len = r.active_list_len();
     // Only the tree's own lists hold rows that can be markup: a row of the meta list or
@@ -4560,6 +4914,62 @@ fn render_with_highlights(
 // ---------------------------------------------------------------------------
 // Key dispatch
 // ---------------------------------------------------------------------------
+
+/// Tell the accessibility adapter where the window is on the screen, for a
+/// magnifier following the focus. Only X11 knows (see
+/// `AccessKitAdapter::set_window_bounds`).
+fn report_window_bounds(app: &mut AppState) {
+    if app._video.current_video_driver() != "x11" {
+        return;
+    }
+    let (x, y) = app.window.position();
+    let (w, h) = app.window.size_in_pixels();
+    if let Some(adapter) = app.accesskit_adapter.as_mut() {
+        adapter.set_window_bounds(f64::from(x), f64::from(y), f64::from(w), f64::from(h));
+    }
+}
+
+/// The id SDL gives the mouse events it makes up from a touch.
+const TOUCH_MOUSE_ID: u32 = u32::MAX;
+
+fn shift_held() -> bool {
+    crate::pointer::modifiers_held().1
+}
+
+thread_local! {
+    /// The cursor now shown, kept alive while SDL shows it.
+    static CURSOR: std::cell::RefCell<Option<(crate::pointer::CursorShape, sdl3::mouse::Cursor)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What a pointer event leaves to the window: text input on or off for the mode it
+/// ended in, the dashboard's mouse events, and the cursor's shape.
+fn pointer_after_event(app: &mut AppState) {
+    if is_insert_mode(app.renderer.coordinate) {
+        app._video.text_input().start(&app.window);
+    } else {
+        app._video.text_input().stop(&app.window);
+    }
+    crate::provider::forward_dashboard_mouse(&mut app.renderer);
+    let want = app.renderer.pointer.cursor;
+    CURSOR.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.as_ref().map(|(shape, _)| *shape) == Some(want) {
+            return;
+        }
+        use crate::pointer::CursorShape;
+        use sdl3::mouse::SystemCursor;
+        let system = match want {
+            CursorShape::Arrow => SystemCursor::Arrow,
+            CursorShape::Hand => SystemCursor::Hand,
+            CursorShape::Text => SystemCursor::IBeam,
+        };
+        if let Ok(cursor) = sdl3::mouse::Cursor::from_system(system) {
+            cursor.set();
+            *c = Some((want, cursor));
+        }
+    });
+}
 
 fn handle_keydown(app: &mut AppState, keycode: Option<Keycode>, keymod: Mod) {
     if crate::events::dispatch_key(&mut app.renderer, keycode, keymod) {

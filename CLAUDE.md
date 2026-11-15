@@ -128,6 +128,21 @@ An embedder that shows one provider's page and nothing above it sets
 Home, a double Ctrl+F) climbs to the provider list. `AppRenderer::top_depth()` is the
 shallowest depth a list can be at.
 
+## Architecture: the mouse and touch
+
+`pointer.rs` drives the whole app with a mouse, a touchpad, a touch screen, and a
+screen reader's or voice control's "activate". **The pointer chooses a row and
+then presses a key**: every action goes through `events::dispatch_key`, so the
+shortcut table stays the one place behaviour lives. A click's action comes from
+`shortcuts::general_click`, built from the table's own predicates. Keep it in
+step when Enter or Right on a row changes.
+
+What is under the pointer comes from `AppRenderer::hit_map`, which `update_view`
+refills every frame in physical pixels (rows, targets, the parent line, the text
+field's caret stops, the dashboard's cells). A new thing drawn that a click
+should reach needs a region there. Tests fill the map by hand
+(`pointer_tests.rs`).
+
 ## Code Style
 
 Follow standard Rust idioms. Use `#[allow(...)]` sparingly and only when

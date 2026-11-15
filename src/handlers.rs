@@ -29,7 +29,7 @@ fn open_flow_list_nav(r: &AppRenderer) -> bool {
 /// lists the app builds itself rather than reads off the FFON level: the colon
 /// palettes (by `base()`, so the second colon layer too), meta, the timeline,
 /// the manual and the tab overlays.
-fn list_row_is_cursor_id(r: &AppRenderer) -> bool {
+pub(crate) fn list_row_is_cursor_id(r: &AppRenderer) -> bool {
     r.coordinate.base() != Coordinate::Command
         && !matches!(
             r.coordinate,
@@ -6380,6 +6380,50 @@ fn move_caret_over(r: &mut AppRenderer, to: usize, extend: bool) {
     announce_run(r, &passed);
     r.caret.reset(sdl_ticks());
     r.needs_redraw = true;
+}
+
+/// The mouse: put the caret at byte `to` of the field being edited, with the
+/// selection from `anchor` to it (`None` drops the selection). Quiet, since a drag
+/// calls it at every motion: [`announce_pointer_selection`] speaks once it ends.
+pub(crate) fn place_caret(r: &mut AppRenderer, to: usize, anchor: Option<usize>) {
+    let len = active_text_buf(r).len();
+    let floor = |b: usize| {
+        let buf = active_text_buf(r);
+        (0..=b.min(len))
+            .rev()
+            .find(|&i| buf.is_char_boundary(i))
+            .unwrap_or(0)
+    };
+    let to = floor(to);
+    let anchor = anchor.map(floor).filter(|&a| a != to);
+    r.selection_anchor = anchor;
+    r.cursor_position = to;
+    r.caret.reset(sdl_ticks());
+    r.needs_redraw = true;
+}
+
+/// The mouse let go of a selection: say what it holds (masked in a password).
+pub(crate) fn announce_pointer_selection(r: &mut AppRenderer) {
+    let Some((a, b)) = selection_range(r) else {
+        return;
+    };
+    let buf = active_text_buf(r);
+    let (a, b) = (a.min(buf.len()), b.min(buf.len()));
+    let text = buf.get(a..b).unwrap_or("").trim().to_owned();
+    announce_run(r, &text);
+}
+
+/// The word round byte `at` of the field being edited, for a double click. A
+/// password field has no words to give away, so it is the whole field.
+pub(crate) fn word_around(r: &AppRenderer, at: usize) -> (usize, usize) {
+    let buf = active_text_buf(r);
+    if r.masks_input() {
+        return (0, buf.len());
+    }
+    let at = at.min(buf.len());
+    let end = sicompass_sdk::input::word_right(buf, at);
+    let start = sicompass_sdk::input::word_left(buf, end);
+    (start.min(at), end)
 }
 
 /// Ctrl+Left: to the start of the word before the caret.
