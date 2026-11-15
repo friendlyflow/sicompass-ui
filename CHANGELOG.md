@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.5
+
+Needs sicompass-sdk 0.9.17.
+
+- The mouse, a touchpad and a touch screen work everywhere. A click uses a line at
+  once, as Enter or Right would: it ticks a checkbox, presses a button, follows a
+  link, opens a folder, or starts editing a field with the caret where you clicked.
+  A click on one of several links or buttons on a line uses that one.
+- A click on the line above the list goes back. A right click, or a click beside
+  the list, is Escape.
+- A swipe with the right mouse button held goes back (left) or inside (right). So do
+  the mouse's side buttons, two fingers sideways on a touchpad (once a swipe), and a
+  finger on a touch screen.
+- The wheel moves the selection a line a notch. In scroll mode it scrolls the page.
+- In a text field a drag selects, Shift and a click grows the selection, and a
+  double click keeps what you typed. A click on another line keeps it and goes on
+  from there, and a click beside the list throws it away.
+- On a touch screen a tap is a click, a finger dragged up or down moves through the
+  list, and in a field a long press selects a word and a double tap keeps the text.
+- A program in the interactive dashboard, such as the terminal, gets the left
+  button, the middle one and the wheel. A click on the line at the top leaves it.
+- The cursor is a hand over what a click uses and a text beam over a field.
+- A screen reader's or voice control's activate does what a click does, and the
+  selected line reports where it is drawn, so a screen magnifier follows the
+  selection and the caret.
+- The window's drag strip ends at the header line, so it never takes a click meant
+  for the line below it.
+- The beginner's manual has a line about the mouse, in all four languages.
+
 ## 0.2.4
 
 Needs sicompass-sdk 0.9.16.
