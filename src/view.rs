@@ -702,8 +702,7 @@ pub fn main_loop(app: &mut AppState) {
             let drag_h = if header_is_click {
                 0
             } else {
-                (map.line_height / map.px_per_pt.max(0.01))
-                    .min(crate::app_state::WINDOW_BUTTON_H) as i32
+                (map.line_height / map.px_per_pt.max(0.01)) as i32
             };
             app.hit_test_drag_h_pt
                 .store(drag_h, std::sync::atomic::Ordering::Relaxed);
@@ -825,7 +824,19 @@ fn draw_window_controls(app: &mut AppState) {
     };
     let on_left = crate::app_state::controls_on_left();
 
-    let rects = crate::app_state::window_button_rects(win_w_pt, on_left);
+    // The buttons are exactly as tall as the header line, which follows the
+    // font scale, so they never hang below the header separator. Both values
+    // were set by `update_view` earlier in this frame.
+    let map = &app.renderer.hit_map;
+    let button_h_pt = if map.line_height > 0.0 && map.px_per_pt > 0.0 {
+        map.line_height / map.px_per_pt
+    } else {
+        crate::app_state::WINDOW_BUTTON_H
+    };
+    app.hit_test_button_h_pt
+        .store(button_h_pt.to_bits(), std::sync::atomic::Ordering::Relaxed);
+
+    let rects = crate::app_state::window_button_rects(win_w_pt, on_left, button_h_pt);
     app.renderer.window_button_rects = rects;
     let hover = app.renderer.window_button_hover;
 
@@ -850,9 +861,10 @@ fn draw_window_controls(app: &mut AppState) {
 
         let cx = px + pw / 2.0;
         let cy = py + ph / 2.0;
-        // Icon half-extent and stroke thickness, scaled with DPI.
+        // Icon half-extent and stroke thickness, scaled with the button (so
+        // with DPI and the font scale alike).
         let h = (ph * 0.17).round().max(3.0);
-        let t = (1.5 * device_scale).round().max(1.0);
+        let t = (ph * 0.05).round().max(1.0);
 
         match i {
             0 => {

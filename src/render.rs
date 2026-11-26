@@ -1016,11 +1016,15 @@ pub fn build_app_with(cfg: &crate::app_state::AppConfig) -> Result<AppState, SiE
     let hit_test_drag_h_pt = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(
         crate::app_state::WINDOW_BUTTON_H as i32,
     ));
+    let hit_test_button_h_pt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+        crate::app_state::WINDOW_BUTTON_H.to_bits(),
+    ));
     {
         use sdl3::video::HitTestResult;
         use std::sync::atomic::Ordering;
         let size = hit_test_win_pt.clone();
         let drag_h = hit_test_drag_h_pt.clone();
+        let button_h = hit_test_button_h_pt.clone();
         let on_left = crate::app_state::controls_on_left();
         // Resize-border thickness in logical points.
         const BORDER: f32 = 6.0;
@@ -1045,7 +1049,11 @@ pub fn build_app_with(cfg: &crate::app_state::AppConfig) -> Result<AppState, SiE
                 _ => {
                     // Top strip is draggable, except over the control buttons
                     // (let those receive the click as a normal hit).
-                    let rects = crate::app_state::window_button_rects(w, on_left);
+                    let rects = crate::app_state::window_button_rects(
+                        w,
+                        on_left,
+                        f32::from_bits(button_h.load(Ordering::Relaxed)),
+                    );
                     if crate::app_state::window_button_at(&rects, x, y).is_some() {
                         HitTestResult::Normal
                     } else if y < drag_h.load(Ordering::Relaxed) as f32 {
@@ -1369,6 +1377,7 @@ pub fn build_app_with(cfg: &crate::app_state::AppConfig) -> Result<AppState, SiE
         maximized_ready: false,
         hit_test_win_pt,
         hit_test_drag_h_pt,
+        hit_test_button_h_pt,
     })
 }
 

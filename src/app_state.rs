@@ -531,9 +531,12 @@ impl WindowAction {
 // hit-test region, the mouse hit-testing, and the drawn rects can never drift.
 // ---------------------------------------------------------------------------
 
-/// Logical width of each titlebar button.
+/// Logical width of each titlebar button at [`WINDOW_BUTTON_H`]. The buttons
+/// are as tall as the header line, which follows the font scale, and keep this
+/// width-to-height shape.
 pub const WINDOW_BUTTON_W: f32 = 46.0;
-/// Logical height of each titlebar button (also the draggable top-strip height).
+/// Reference height of each titlebar button, used until the first frame has
+/// measured the header line.
 pub const WINDOW_BUTTON_H: f32 = 30.0;
 
 /// Whether the window controls sit at the top-left (macOS traffic-light
@@ -544,9 +547,20 @@ pub const fn controls_on_left() -> bool {
 
 /// Point-space rects `(x, y, w, h)` of the three titlebar buttons, laid out in a
 /// row in the order `[minimize, maximize, close]`. `win_w_pt` is the window width
-/// in logical points; `on_left` selects the left/right corner.
-pub fn window_button_rects(win_w_pt: f32, on_left: bool) -> [(f32, f32, f32, f32); 3] {
-    let strip_w = WINDOW_BUTTON_W * 3.0;
+/// in logical points; `on_left` selects the left/right corner; `button_h_pt` is
+/// the buttons' height (the header line's), and sets their width too.
+pub fn window_button_rects(
+    win_w_pt: f32,
+    on_left: bool,
+    button_h_pt: f32,
+) -> [(f32, f32, f32, f32); 3] {
+    let button_h = if button_h_pt > 0.0 {
+        button_h_pt
+    } else {
+        WINDOW_BUTTON_H
+    };
+    let button_w = button_h * WINDOW_BUTTON_W / WINDOW_BUTTON_H;
+    let strip_w = button_w * 3.0;
     let start_x = if on_left {
         0.0
     } else {
@@ -555,12 +569,7 @@ pub fn window_button_rects(win_w_pt: f32, on_left: bool) -> [(f32, f32, f32, f32
     let mut rects = [(0.0, 0.0, 0.0, 0.0); 3];
     let mut i = 0;
     while i < 3 {
-        rects[i] = (
-            start_x + WINDOW_BUTTON_W * i as f32,
-            0.0,
-            WINDOW_BUTTON_W,
-            WINDOW_BUTTON_H,
-        );
+        rects[i] = (start_x + button_w * i as f32, 0.0, button_w, button_h);
         i += 1;
     }
     rects
@@ -2424,10 +2433,15 @@ pub struct AppState {
     pub hit_test_win_pt:
         std::sync::Arc<(std::sync::atomic::AtomicI32, std::sync::atomic::AtomicI32)>,
     /// The draggable strip's height in logical points, which the view keeps at
-    /// the header line's (and never above [`WINDOW_BUTTON_H`]), so the strip never
-    /// covers the parent line, which the mouse clicks. Zero while the header is
-    /// itself a click (a full-screen view's, which leaves it).
+    /// the header line's, so the strip never covers the parent line, which the
+    /// mouse clicks. Zero while the header is itself a click (a full-screen
+    /// view's, which leaves it).
     pub hit_test_drag_h_pt: std::sync::Arc<std::sync::atomic::AtomicI32>,
+    /// The titlebar buttons' height in logical points (`f32` bits), the header
+    /// line's, written by the view each frame. The callback lays the buttons out
+    /// with the very value they were drawn with, so a click on a drawn button is
+    /// never taken for a drag.
+    pub hit_test_button_h_pt: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl AppState {
@@ -2611,7 +2625,7 @@ mod tests {
 
     #[test]
     fn window_buttons_right_aligned_by_default() {
-        let rects = window_button_rects(1000.0, false);
+        let rects = window_button_rects(1000.0, false, WINDOW_BUTTON_H);
         // Three buttons flush to the right edge, in min/max/close order.
         let strip = WINDOW_BUTTON_W * 3.0;
         assert_eq!(rects[0].0, 1000.0 - strip);
@@ -2628,15 +2642,35 @@ mod tests {
 
     #[test]
     fn window_buttons_left_aligned_on_mac_layout() {
-        let rects = window_button_rects(1000.0, true);
+        let rects = window_button_rects(1000.0, true, WINDOW_BUTTON_H);
         assert_eq!(rects[0].0, 0.0);
         assert_eq!(rects[1].0, WINDOW_BUTTON_W);
         assert_eq!(rects[2].0, WINDOW_BUTTON_W * 2.0);
     }
 
     #[test]
+    fn window_buttons_follow_the_header_height() {
+        // A small font scale makes a short header: the buttons shrink with it,
+        // keeping their shape, so they never hang below the header line.
+        let h = 20.0;
+        let w = h * WINDOW_BUTTON_W / WINDOW_BUTTON_H;
+        let right = window_button_rects(1000.0, false, h);
+        for r in &right {
+            assert_eq!(r.1, 0.0);
+            assert_eq!(r.2, w);
+            assert_eq!(r.3, h);
+        }
+        assert_eq!(right[2].0 + right[2].2, 1000.0);
+        let left = window_button_rects(1000.0, true, h);
+        assert_eq!(left[0].0, 0.0);
+        assert_eq!(left[2].0, w * 2.0);
+        // Before the first frame has measured the header, the reference size.
+        assert_eq!(window_button_rects(1000.0, true, 0.0)[0].3, WINDOW_BUTTON_H);
+    }
+
+    #[test]
     fn window_button_at_hits_each_button_and_misses_gaps() {
-        let rects = window_button_rects(1000.0, false);
+        let rects = window_button_rects(1000.0, false, WINDOW_BUTTON_H);
         // A point in the middle of each button resolves to that index.
         for i in 0..3 {
             let (x, y, w, h) = rects[i];
