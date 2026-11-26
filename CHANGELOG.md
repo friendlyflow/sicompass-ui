@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.6
+
+- The window controls (minimize, maximize and close) are as tall as the header line
+  and grow and shrink with the font scale. They used to be a fixed size, so at a
+  small scale they hung below the header, most visibly at the top left on macOS.
+
 ## 0.2.5
 
 Needs sicompass-sdk 0.9.17.

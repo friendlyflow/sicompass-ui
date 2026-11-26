@@ -3,7 +3,7 @@
 # (`tag = "vX.Y.Z"`, see the release skill), which is the whole distribution.
 publish = false
 name = "sicompass-ui"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "The Vulkan/SDL3 list renderer shared by sicompass and its login greeter"
